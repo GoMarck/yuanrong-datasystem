@@ -25,6 +25,7 @@ def main():
     parser.add_argument("--seconds", type=int, default=30)
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--pairs", type=int, default=5)
+    parser.add_argument("--case", choices=["64-sync", "1024-async", "1048576-sync"], action="append")
     args = parser.parse_args()
     if not os.environ.get("DS_OPENSOURCE_DIR"):
         parser.error("verified DS_OPENSOURCE_DIR is required")
@@ -36,6 +37,8 @@ def main():
     env.pop("CHECKSUM_PROBE_AUTH_ENABLED", None)
     env["LD_LIBRARY_PATH"] = (binary.parent / "runtime-path.txt").read_text().strip()
     cases = [(64, 1, "sync"), (1024, 8, "async"), (1048576, 1, "sync")]
+    if args.case:
+        cases = [case for case in cases if f"{case[0]}-{case[2]}" in args.case]
     schedule = []
     rng = random.Random(20261019)
     for case in cases:
