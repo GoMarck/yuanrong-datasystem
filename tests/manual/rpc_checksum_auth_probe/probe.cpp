@@ -1,11 +1,16 @@
 #include <array>
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
+#include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
+#include <sys/resource.h>
 
 #include <bthread/bthread.h>
 #include <brpc/channel.h>
@@ -309,10 +314,212 @@ void Call(brpc::Channel &channel, const google::protobuf::Message &message, bool
         }
     }
 }
+
+class OffPathStub {
+public:
+    explicit OffPathStub(brpc::Channel &channel)
+        : channel_(channel), plain_(checksum_probe::PlainProbe::descriptor()->method(0)),
+          auth_(checksum_probe::AuthProbe::descriptor()->method(0)),
+          enabled_(std::getenv("CHECKSUM_PROBE_AUTH_ENABLED") != nullptr) {}
+
+    __attribute__((noinline, noclone)) void Original(brpc::Controller *cntl, const checksum_probe::RequestV1 *request,
+                                                  checksum_probe::Reply *reply, google::protobuf::Closure *done)
+    {
+        channel_.CallMethod(plain_, cntl, request, reply, done);
+    }
+
+    __attribute__((noinline, noclone)) void WithModeChoice(brpc::Controller *cntl,
+                                                        const checksum_probe::RequestV1 *request,
+                                                        checksum_probe::Reply *reply, google::protobuf::Closure *done)
+    {
+        if (enabled_) {
+            cntl->set_request_checksum_type(kAuthChecksum);
+            Credentials credentials{cntl, "test-ak-a", Fault::None};
+            CredentialScope scope(&credentials);
+            channel_.CallMethod(auth_, cntl, request, reply, done);
+            return;
+        }
+        channel_.CallMethod(plain_, cntl, request, reply, done);
+    }
+private:
+    brpc::Channel &channel_;
+    const google::protobuf::MethodDescriptor *plain_;
+    const google::protobuf::MethodDescriptor *auth_;
+    bool enabled_;
+};
+
+class BenchFactory final : public brpc::DataFactory {
+public:
+    void *CreateData() const override { ++created; return new Capture; }
+    void DestroyData(void *data) const override { ++destroyed; delete static_cast<Capture *>(data); }
+    bool ResetData(void *data) const override { ++reset; *static_cast<Capture *>(data) = Capture{}; return true; }
+    mutable std::atomic<int> created{0}, reset{0}, destroyed{0};
+};
+
+int64_t MonotonicNs()
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+double CpuSeconds(const rusage &usage)
+{
+    return usage.ru_utime.tv_sec + usage.ru_stime.tv_sec
+           + (usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1000000.0;
+}
+
+struct BenchSamples {
+    std::vector<int64_t> latency;
+    uint64_t errors = 0;
+    int64_t finish = 0;
+};
+
+int RunBenchmark(char **argv)
+{
+    const std::string mode = argv[2];
+    const bool disabled = mode == "disabled";
+    Require(disabled || mode == "baseline", "benchmark mode");
+    Require(std::getenv("CHECKSUM_PROBE_AUTH_ENABLED") == nullptr, "benchmark must keep AK/SK disabled");
+    const size_t bytes = std::stoull(argv[3]);
+    const int clients = std::stoi(argv[4]);
+    const std::string style = argv[5];
+    const bool asynchronous = style == "async";
+    const int seconds = std::stoi(argv[6]), warmup = std::stoi(argv[7]);
+    Require(bytes <= 1024 * 1024 && clients > 0 && clients <= 32 && seconds > 0 && warmup >= 0,
+            "benchmark bounds");
+    Require(asynchronous || style == "sync", "benchmark call style");
+    if (disabled) {
+        Require(bthread_key_create(&credentialKey, nullptr) == 0, "benchmark credential key init");
+        Require(brpc::RegisterChecksumHandler(kAuthChecksum, {Compute, Verify, "test-only-auth-sha256"}) == 0,
+                "benchmark checksum registration");
+    }
+    BenchFactory factory;
+    PlainService plain;
+    AuthService auth;
+    brpc::Server server;
+    Require(server.AddService(&plain, brpc::SERVER_DOESNT_OWN_SERVICE) == 0, "benchmark plain service");
+    if (disabled) {
+        Require(server.AddService(&auth, brpc::SERVER_DOESNT_OWN_SERVICE) == 0, "benchmark auth service");
+    }
+    brpc::ServerOptions options;
+    options.num_threads = 8;
+    options.has_builtin_services = false;
+    options.session_local_data_factory = disabled ? &factory : nullptr;
+    Require(server.Start("127.0.0.1:0", &options) == 0, "benchmark server start");
+    brpc::Channel channel;
+    brpc::ChannelOptions channelOptions;
+    channelOptions.protocol = brpc::PROTOCOL_BAIDU_STD;
+    channelOptions.connection_type = brpc::CONNECTION_TYPE_SINGLE;
+    Require(channel.Init(server.listen_address(), &channelOptions) == 0, "benchmark channel init");
+    OffPathStub stub(channel);
+    using Send = void (OffPathStub::*)(brpc::Controller *, const checksum_probe::RequestV1 *,
+                                      checksum_probe::Reply *, google::protobuf::Closure *);
+    const Send send = disabled ? &OffPathStub::WithModeChoice : &OffPathStub::Original;
+    std::vector<BenchSamples> samples(clients);
+    std::mutex mutex;
+    std::condition_variable readyCondition, startCondition;
+    int ready = 0;
+    bool start = false;
+    int64_t deadline = 0;
+    std::vector<std::thread> threads;
+    for (int i = 0; i < clients; ++i) {
+        threads.emplace_back([&, i] {
+            checksum_probe::RequestV1 request;
+            request.set_payload(std::string(bytes, 'x'));
+            request.set_known(3);
+            auto invoke = [&] {
+                brpc::Controller cntl;
+                cntl.set_timeout_ms(3000);
+                cntl.set_max_retry(0);
+                checksum_probe::Reply reply;
+                const brpc::CallId callId = asynchronous ? cntl.call_id() : 0;
+                (stub.*send)(&cntl, &request, &reply, asynchronous ? brpc::DoNothing() : nullptr);
+                if (asynchronous) {
+                    brpc::Join(callId);
+                }
+                return !cntl.Failed();
+            };
+            samples[i].latency.reserve(4 * 1024 * 1024);
+            const int64_t warmDeadline = MonotonicNs() + int64_t(warmup) * 1000000000;
+            do {
+                Require(invoke(), "benchmark warmup RPC");
+            } while (MonotonicNs() < warmDeadline);
+            {
+                std::unique_lock<std::mutex> lock(mutex);
+                ++ready;
+                readyCondition.notify_one();
+                startCondition.wait(lock, [&] { return start; });
+            }
+            do {
+                const int64_t begin = MonotonicNs();
+                if (!invoke()) {
+                    ++samples[i].errors;
+                }
+                samples[i].finish = MonotonicNs();
+                samples[i].latency.push_back(samples[i].finish - begin);
+            } while (samples[i].finish < deadline);
+        });
+    }
+    rusage cpuBegin{}, cpuEnd{};
+    int64_t begin = 0;
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        readyCondition.wait(lock, [&] { return ready == clients; });
+        Require(getrusage(RUSAGE_SELF, &cpuBegin) == 0, "benchmark cpu start");
+        begin = MonotonicNs();
+        deadline = begin + int64_t(seconds) * 1000000000;
+        start = true;
+        startCondition.notify_all();
+    }
+    for (auto &thread : threads) {
+        thread.join();
+    }
+    Require(getrusage(RUSAGE_SELF, &cpuEnd) == 0, "benchmark cpu end");
+    int64_t finish = begin;
+    uint64_t errors = 0;
+    std::vector<int64_t> latency;
+    for (const auto &sample : samples) {
+        finish = std::max(finish, sample.finish);
+        errors += sample.errors;
+        latency.insert(latency.end(), sample.latency.begin(), sample.latency.end());
+    }
+    std::sort(latency.begin(), latency.end());
+    const double wall = (finish - begin) / 1000000000.0;
+    const double cpu = CpuSeconds(cpuEnd) - CpuSeconds(cpuBegin);
+    const auto quantile = [&](double q) { return latency[static_cast<size_t>(q * (latency.size() - 1))] / 1000.0; };
+    double sum = 0;
+    for (auto ns : latency) {
+        sum += ns;
+    }
+    Require(errors == 0, "benchmark RPC errors");
+    Require(computes == 0 && verifies == 0 && borrows == 0 && business == 0 && factory.created == 0
+                && factory.reset == 0 && factory.destroyed == 0, "disabled path unexpectedly did auth work");
+    std::cout << std::setprecision(12)
+              << "BENCH {\"mode\":\"" << mode << "\",\"bytes\":" << bytes << ",\"clients\":" << clients
+              << ",\"style\":\"" << style << "\",\"operations\":" << latency.size()
+              << ",\"errors\":" << errors << ",\"wall_s\":" << wall << ",\"qps\":" << latency.size() / wall
+              << ",\"mean_us\":" << sum / latency.size() / 1000 << ",\"p50_us\":" << quantile(.50)
+              << ",\"p99_us\":" << quantile(.99) << ",\"cpu_s\":" << cpu
+              << ",\"cpu_us_per_op\":" << cpu * 1000000 / latency.size()
+              << ",\"peak_rss_kib\":" << cpuEnd.ru_maxrss
+              << ",\"compute\":" << computes << ",\"verify\":" << verifies << ",\"local_access\":" << borrows
+              << ",\"factory_create\":" << factory.created << ",\"factory_reset\":" << factory.reset
+              << "}" << std::endl;
+    server.Stop(0);
+    server.Join();
+    if (disabled) {
+        bthread_key_delete(credentialKey);
+    }
+    return 0;
+}
 }  // namespace
 
-int main()
+int main(int argc, char **argv)
 {
+    if (argc == 8 && std::string(argv[1]) == "--bench") {
+        return RunBenchmark(argv);
+    }
+    Require(argc == 1, "usage: probe [--bench baseline|disabled bytes clients sync|async seconds warmup]");
     Require(bthread_key_create(&credentialKey, nullptr) == 0, "credential key create");
     Require(brpc::RegisterChecksumHandler(kAuthChecksum, {Compute, Verify, "test-only-auth-sha256"}) == 0,
             "checksum registration");
