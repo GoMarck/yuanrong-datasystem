@@ -17,6 +17,12 @@ def snapshot():
     return result
 
 
+def compiler_count():
+    names = subprocess.check_output(["ps", "-eo", "comm="], text=True).split()
+    return sum(name in {"cc1plus", "cc1", "clang", "clang++", "rustc", "collect2", "ld", "ld.bfd", "lto1"}
+               for name in names)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", type=Path, required=True)
@@ -26,6 +32,7 @@ def main():
     parser.add_argument("--warmup", type=int, default=2)
     parser.add_argument("--pairs", type=int, default=5)
     parser.add_argument("--case", choices=["64-sync", "1024-async", "1048576-sync"], action="append")
+    parser.add_argument("--watch-compilers", action="store_true")
     args = parser.parse_args()
     if not os.environ.get("DS_OPENSOURCE_DIR"):
         parser.error("verified DS_OPENSOURCE_DIR is required")
@@ -60,15 +67,28 @@ def main():
         log = args.output / f"{size}-{clients}-{style}-pair{pair}-{mode}.log"
         before = snapshot()
         started = time.time()
+        compiler_events = []
         with log.open("w") as output:
-            completed = subprocess.run(command, env=env, stdout=output, stderr=subprocess.STDOUT,
-                                       timeout=args.seconds + args.warmup + 30)
+            process = subprocess.Popen(command, env=env, stdout=output, stderr=subprocess.STDOUT)
+            while True:
+                if args.watch_compilers:
+                    count = compiler_count()
+                    if count:
+                        compiler_events.append({"elapsed_s": time.time() - started, "count": count})
+                try:
+                    process.wait(timeout=1)
+                    break
+                except subprocess.TimeoutExpired:
+                    if time.time() - started > args.seconds + args.warmup + 30:
+                        process.kill()
+                        process.wait()
+                        raise RuntimeError(f"benchmark timed out: log={log}")
         lines = [line[6:] for line in log.read_text().splitlines() if line.startswith("BENCH ")]
-        if completed.returncode != 0 or len(lines) != 1:
-            raise RuntimeError(f"benchmark failed: exit={completed.returncode}, log={log}")
+        if process.returncode != 0 or len(lines) != 1:
+            raise RuntimeError(f"benchmark failed: exit={process.returncode}, log={log}")
         row = json.loads(lines[0])
         row.update(pair=pair, sequence=index, log=log.name, started=started, command=command,
-                   environment_before=before, environment_after=snapshot())
+                   environment_before=before, environment_after=snapshot(), compiler_events=compiler_events)
         results.append(row)
         (args.output / "results.json").write_text(json.dumps(results, indent=2))
         status = {"completed": index, "total": len(schedule), "last": {
@@ -76,6 +96,8 @@ def main():
                                "cpu_us_per_op", "errors")}}
         (args.output / "status.json").write_text(json.dumps(status))
         print(json.dumps(status), flush=True)
+        if compiler_events:
+            raise RuntimeError(f"external compiler load detected; exclude this run and retry when idle: log={log}")
     metadata["finish"] = snapshot()
     (args.output / "metadata.json").write_text(json.dumps(metadata, indent=2))
 
