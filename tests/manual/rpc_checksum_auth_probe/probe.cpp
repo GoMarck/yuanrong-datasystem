@@ -432,7 +432,7 @@ int RunBenchmark(char **argv)
                 cntl.set_timeout_ms(3000);
                 cntl.set_max_retry(0);
                 checksum_probe::Reply reply;
-                const brpc::CallId callId = asynchronous ? cntl.call_id() : 0;
+                const brpc::CallId callId = asynchronous ? cntl.call_id() : brpc::CallId{};
                 (stub.*send)(&cntl, &request, &reply, asynchronous ? brpc::DoNothing() : nullptr);
                 if (asynchronous) {
                     brpc::Join(callId);
