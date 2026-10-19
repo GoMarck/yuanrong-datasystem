@@ -1,0 +1,27 @@
+syntax = "proto3";
+package checksum_probe;
+option cc_generic_services = true;
+
+message RequestV1 {
+  bytes payload = 1;
+  uint64 known = 10;
+}
+message RequestV2 {
+  bytes payload = 1;
+  uint64 added = 5;
+  uint64 known = 10;
+}
+message Reply {
+  bytes digest = 1;
+  bool unknown_seen = 2;
+  bool reencoded_differs = 3;
+  uint64 wire_size = 4;
+  uint64 blocks = 5;
+}
+service PlainProbe {
+  rpc Echo(RequestV1) returns (Reply);
+}
+service AuthProbe {
+  rpc Echo(RequestV1) returns (Reply);
+  rpc Other(RequestV1) returns (Reply);
+}

@@ -1,0 +1,43 @@
+cmake_minimum_required(VERSION 3.16)
+project(rpc_checksum_auth_probe LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(DS_MAIN_BUILD "${CMAKE_CURRENT_SOURCE_DIR}/../../../build" CACHE PATH "Existing dependency cache configuration")
+function(read_cache name out)
+  file(STRINGS "${DS_MAIN_BUILD}/CMakeCache.txt" entry REGEX "^${name}:[^=]*=")
+  if(NOT entry)
+    message(FATAL_ERROR "Missing ${name} in existing main build cache")
+  endif()
+  string(REGEX REPLACE "^[^=]*=" "" value "${entry}")
+  set(${out} "${value}" PARENT_SCOPE)
+endfunction()
+read_cache(BRPC_LIBRARY brpc)
+read_cache(gflags_LIBRARY gflags)
+read_cache(Protobuf_DIR protobuf_config)
+read_cache(absl_DIR absl_config)
+read_cache(OPENSSL_CRYPTO_LIBRARY crypto)
+read_cache(OPENSSL_SSL_LIBRARY ssl)
+read_cache(OPENSSL_INCLUDE_DIR ssl_include)
+get_filename_component(protobuf_root "${protobuf_config}/../../.." ABSOLUTE)
+get_filename_component(absl_root "${absl_config}/../../.." ABSOLUTE)
+get_filename_component(brpc_libdir "${brpc}" DIRECTORY)
+get_filename_component(gflags_libdir "${gflags}" DIRECTORY)
+get_filename_component(ssl_libdir "${crypto}" DIRECTORY)
+set(runtime_dirs "${brpc_libdir};${gflags_libdir};${ssl_libdir};${protobuf_root}/lib64;${absl_root}/lib64")
+string(REPLACE ";" ":" runtime_path "${runtime_dirs}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/runtime-path.txt" "${runtime_path}")
+add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/probe.pb.cc" "${CMAKE_CURRENT_BINARY_DIR}/probe.pb.h"
+  COMMAND ${CMAKE_COMMAND} -E env "LD_LIBRARY_PATH=${runtime_path}"
+    "${protobuf_root}/bin/protoc" "--proto_path=${CMAKE_CURRENT_SOURCE_DIR}"
+    "--cpp_out=${CMAKE_CURRENT_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/probe.proto"
+  DEPENDS probe.proto VERBATIM)
+add_executable(rpc_checksum_auth_probe probe.cpp "${CMAKE_CURRENT_BINARY_DIR}/probe.pb.cc")
+target_include_directories(rpc_checksum_auth_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" "${brpc_libdir}/../include"
+  "${gflags_libdir}/../include" "${protobuf_root}/include" "${absl_root}/include" "${ssl_include}")
+target_compile_options(rpc_checksum_auth_probe PRIVATE -Wall -Wextra)
+target_link_libraries(rpc_checksum_auth_probe PRIVATE "${brpc}" "${gflags}" "${crypto}" "${ssl}"
+  "${protobuf_root}/lib64/libprotobuf.so" "${protobuf_root}/lib64/libprotoc.so"
+  "${absl_root}/lib64/libabseil_dll.so" pthread dl z rt)
+set_target_properties(rpc_checksum_auth_probe PROPERTIES BUILD_RPATH "${runtime_dirs}")
+enable_testing()
+add_test(NAME rpc_checksum_auth_probe COMMAND rpc_checksum_auth_probe)
+set_tests_properties(rpc_checksum_auth_probe PROPERTIES TIMEOUT 30 ENVIRONMENT "LD_LIBRARY_PATH=${runtime_path}")
