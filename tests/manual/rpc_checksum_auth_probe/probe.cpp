@@ -176,7 +176,7 @@ void Compute(const brpc::ChecksumIn &in)
 bool Verify(const brpc::ChecksumIn &in)
 {
     ++verifies;
-    if (in.cntl->request_user_fields()->count("test_skip_capture")) {
+    if (in.cntl->request_user_fields()->seek("test_skip_capture")) {
         return true;  // Test-only fault injection: transport hook succeeds without recording a digest.
     }
     Capture *capture = Local(in.cntl);
@@ -197,7 +197,6 @@ public:
     explicit CountingRequest(const google::protobuf::Message *message) : message_(message) {}
     void MergeFrom(const CountingRequest &other) override { message_ = other.message_; }
     size_t ByteSizeLong() const override { return message_->ByteSizeLong(); }
-    int GetCachedSize() const override { return message_->GetCachedSize(); }
     uint8_t *_InternalSerialize(uint8_t *target, google::protobuf::io::EpsCopyOutputStream *stream) const override
     {
         ++serializations;
