@@ -3,6 +3,18 @@ load("//bazel:build_defs.bzl", "ds_cc_test")
 package(default_visibility = ["//visibility:public"])
 
 ds_cc_test(
+    name = "brpc_client_stream_test",
+    srcs = ["brpc_client_stream_test.cpp"],
+    deps = [
+        "//src/datasystem/common/rpc:rpc_stub",
+        "//src/datasystem/common/rpc:rpc_server_stream_base",
+        "//src/datasystem/protos:utils_cc_proto",
+        "@com_github_apache_brpc//:brpc",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+ds_cc_test(
     name = "timeout_duration_test",
     srcs = ["timeout_duration_test.cpp"],
     deps = [

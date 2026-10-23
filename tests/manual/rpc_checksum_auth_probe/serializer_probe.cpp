@@ -237,7 +237,7 @@ int main()
     channel.failPreparation = false;
     CountingRequest cancelled(request);
     brpc::Controller before;
-    before.StartCancel();
+    brpc::StartCancel(before.call_id());
     channel.CallMethod(method, &before, &cancelled, &reply, nullptr);
     Require(before.Failed() && cancelled.encodes == 0, "pre-cancel preserves native failure without encoding");
     server.Stop(0);
