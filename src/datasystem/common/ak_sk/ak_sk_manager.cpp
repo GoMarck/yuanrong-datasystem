@@ -124,7 +124,10 @@ Status AkSkManager::SetClientAkSk(const std::string &accessKey, SensitiveValue s
         return Status::OK();
     }
     std::lock_guard<std::shared_timed_mutex> lock(mutex_);
-    AkSkData next = clientKey_;
+    AkSkData next;
+    next.dataKey = clientKey_.dataKey;
+    CHECK_FAIL_RETURN_STATUS(next.dataKey.GetSize() == clientKey_.dataKey.GetSize(), K_OUT_OF_MEMORY,
+                             "Failed to retain client key data.");
     if (!dataKey.Empty()) {
         RETURN_IF_NOT_OK(CopyDk(std::move(dataKey), next));
     }

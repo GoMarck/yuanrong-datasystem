@@ -373,6 +373,7 @@ ds_cc_library(
     deps = [
         ":brpc_perf_trace",
         ":rpc_message",
+        ":timeout_duration",
         ":server_writer_reader_base",
         "//src/datasystem/common/log:common_log",
         "@com_github_apache_brpc//:brpc",

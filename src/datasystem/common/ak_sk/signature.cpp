@@ -34,7 +34,10 @@ Signature::Signature(const std::string &clientAccessKey, const SensitiveValue &c
 Status Signature::SetClientAkSk(const std::string &accessKey, SensitiveValue secretKey)
 {
     std::lock_guard<std::shared_timed_mutex> lock(mutex_);
-    AkSkData next = clientKey_;
+    AkSkData next;
+    next.dataKey = clientKey_.dataKey;
+    CHECK_FAIL_RETURN_STATUS(next.dataKey.GetSize() == clientKey_.dataKey.GetSize(), K_OUT_OF_MEMORY,
+                             "Failed to retain client key data.");
     RETURN_IF_NOT_OK(CopyAkSk(accessKey, std::move(secretKey), AkSkType::CLIENT, next));
     clientKey_ = std::move(next);
     return Status::OK();
@@ -46,6 +49,8 @@ Status Signature::SnapshotClientKey(AkSkData &out) const
     AkSkData snapshot;
     snapshot.accessKey = clientKey_.accessKey;
     snapshot.secretKey = clientKey_.secretKey;
+    CHECK_FAIL_RETURN_STATUS(snapshot.secretKey.GetSize() == clientKey_.secretKey.GetSize(), K_OUT_OF_MEMORY,
+                             "Failed to snapshot client credentials.");
     snapshot.type = clientKey_.type;
     out = std::move(snapshot);
     return Status::OK();

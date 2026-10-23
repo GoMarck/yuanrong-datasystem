@@ -174,6 +174,12 @@ TEST_F(AkSkTest, DigestVerificationRejectsInvalidProof)
 
 TEST_F(AkSkTest, ClientKeySnapshotStaysPairedDuringRotation)
 {
+    Signature empty;
+    AkSkData initial;
+    initial.secretKey = "test-only-previous";
+    DS_ASSERT_OK(empty.SnapshotClientKey(initial));
+    EXPECT_TRUE(initial.accessKey.empty());
+    EXPECT_TRUE(initial.secretKey.Empty());
     Signature provider("test-only-access-a", SensitiveValue("test-only-secret-a"));
     std::atomic<bool> invalid{false};
     std::thread rotate([&] {

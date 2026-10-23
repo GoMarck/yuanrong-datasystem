@@ -29,6 +29,21 @@ namespace {
 using google::protobuf::internal::WireFormatLite;
 using google::protobuf::io::CodedInputStream;
 
+class WireInputStream final : public butil::IOBufAsZeroCopyInputStream {
+public:
+    explicit WireInputStream(const butil::IOBuf &body) : IOBufAsZeroCopyInputStream(body) {}
+
+    bool Skip(int count) override
+    {
+        if (count < 0) {
+            return false;
+        }
+        const auto before = ByteCount();
+        // BRPC 1.15 returns false after exactly consuming EOF; protobuf requires success.
+        return IOBufAsZeroCopyInputStream::Skip(count) || ByteCount() - before == count;
+    }
+};
+
 Status InvalidWire()
 {
     return Status(K_INVALID, "Malformed SC migration request bytes.");
@@ -59,7 +74,7 @@ Status BuildScMigrationAuthBytes(const butil::IOBuf &body, butil::IOBuf &project
     if (body.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
         return InvalidWire();
     }
-    butil::IOBufAsZeroCopyInputStream stream(body);
+    WireInputStream stream(body);
     CodedInputStream input(&stream);
     butil::IOBuf unconsumed(body);
     butil::IOBuf result;
@@ -99,7 +114,8 @@ Status BuildScMigrationAuthBytes(const butil::IOBuf &body, butil::IOBuf &project
         result.append(header);
         uint8_t encoded[10];
         auto *lengthEnd = google::protobuf::io::CodedOutputStream::WriteVarint64ToArray(nested.size(), encoded);
-        result.append(encoded, lengthEnd - encoded);
+        CHECK_FAIL_RETURN_STATUS(result.append(encoded, lengthEnd - encoded) == 0, K_OUT_OF_MEMORY,
+                                 "Failed to build SC migration authentication bytes.");
         result.append(nested);
     }
     projected.swap(result);

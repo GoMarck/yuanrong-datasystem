@@ -30,18 +30,23 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/probe.pb.cc" "${CMAKE_CUR
     "${protobuf_root}/bin/protoc" "--proto_path=${CMAKE_CURRENT_SOURCE_DIR}"
     "--cpp_out=${CMAKE_CURRENT_BINARY_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/probe.proto"
   DEPENDS probe.proto VERBATIM)
-add_executable(rpc_checksum_auth_probe probe.cpp "${CMAKE_CURRENT_BINARY_DIR}/probe.pb.cc")
+add_library(rpc_probe_messages STATIC "${CMAKE_CURRENT_BINARY_DIR}/probe.pb.cc")
+target_include_directories(rpc_probe_messages PUBLIC "${CMAKE_CURRENT_BINARY_DIR}" "${protobuf_root}/include"
+  "${absl_root}/include")
+target_link_libraries(rpc_probe_messages PUBLIC "${protobuf_root}/lib64/libprotobuf.so"
+  "${absl_root}/lib64/libabseil_dll.so")
+add_executable(rpc_checksum_auth_probe probe.cpp)
 target_include_directories(rpc_checksum_auth_probe PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" "${brpc_libdir}/../include"
   "${gflags_libdir}/../include" "${protobuf_root}/include" "${absl_root}/include" "${ssl_include}")
 target_compile_options(rpc_checksum_auth_probe PRIVATE -Wall -Wextra)
-target_link_libraries(rpc_checksum_auth_probe PRIVATE "${brpc}" "${gflags}" "${crypto}" "${ssl}"
+target_link_libraries(rpc_checksum_auth_probe PRIVATE rpc_probe_messages "${brpc}" "${gflags}" "${crypto}" "${ssl}"
   "${protobuf_root}/lib64/libprotobuf.so" "${protobuf_root}/lib64/libprotoc.so"
   "${absl_root}/lib64/libabseil_dll.so" pthread dl z rt)
 set_target_properties(rpc_checksum_auth_probe PROPERTIES BUILD_RPATH "${runtime_dirs}")
 enable_testing()
 add_test(NAME rpc_checksum_auth_probe COMMAND rpc_checksum_auth_probe)
 set_tests_properties(rpc_checksum_auth_probe PROPERTIES TIMEOUT 30 ENVIRONMENT "LD_LIBRARY_PATH=${runtime_path}")
-add_executable(rpc_serializer_probe serializer_probe.cpp "${CMAKE_CURRENT_BINARY_DIR}/probe.pb.cc")
+add_executable(rpc_serializer_probe serializer_probe.cpp)
 get_target_property(probe_includes rpc_checksum_auth_probe INCLUDE_DIRECTORIES)
 get_target_property(probe_libraries rpc_checksum_auth_probe LINK_LIBRARIES)
 target_include_directories(rpc_serializer_probe PRIVATE ${probe_includes})
