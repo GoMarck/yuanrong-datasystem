@@ -443,6 +443,11 @@ public:
     template <typename W>
     Status Complete(const W &reply, const Status &status)
     {
+        auto end = WaitForWritesEnd();
+        if (end.IsError()) {
+            Close();
+            return end;
+        }
         RETURN_IF_NOT_OK(SendStatus(status));
         if (pendingStatus_.IsOk() && !hasReply_) {
             pendingStatus_ = WritePb(reply);
@@ -497,6 +502,22 @@ public:
     const TimeoutDuration& GetScTimeoutDuration() const { return scTimeoutDuration_; }
 
 private:
+    Status WaitForWritesEnd()
+    {
+        // The client sends its end marker after CallMethod returns. Closing earlier
+        // can recycle the request stream before BRPC finishes handling the handshake.
+        std::unique_lock<bthread::Mutex> lock(readMtx_);
+        while (!writesEnded_ && !readError_ && !streamEnd_) {
+            pendingMessages_.clear();
+            if (readCond_.wait_until(lock, deadline_) == ETIMEDOUT) {
+                RETURN_STATUS(K_RPC_DEADLINE_EXCEEDED, "Client-streaming writes deadline exceeded.");
+            }
+        }
+        CHECK_FAIL_RETURN_STATUS(writesEnded_ && !readError_, K_RPC_CANCELLED,
+                                 "Client-streaming writes interrupted.");
+        return Status::OK();
+    }
+
     std::unique_ptr<R> firstRequest_;
     timespec deadline_{};
     butil::IOBuf pendingReply_;
