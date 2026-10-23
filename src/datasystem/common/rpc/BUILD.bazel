@@ -3,6 +3,18 @@ load("//bazel:build_defs.bzl", "ds_cc_library")
 package(default_visibility = ["//visibility:public"])
 
 ds_cc_library(
+    name = "sc_migration_auth_bytes",
+    srcs = ["sc_migration_auth_bytes.cpp"],
+    hdrs = ["sc_migration_auth_bytes.h"],
+    deps = [
+        "//src/datasystem/common/util:status_helper",
+        "//include/datasystem/utils:utils_headers",
+        "@com_github_apache_brpc//:brpc",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+ds_cc_library(
     name = "timeout_duration",
     hdrs = [
         "rpc_constants.h",

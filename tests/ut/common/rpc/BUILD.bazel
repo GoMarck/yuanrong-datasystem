@@ -3,6 +3,12 @@ load("//bazel:build_defs.bzl", "ds_cc_test")
 package(default_visibility = ["//visibility:public"])
 
 ds_cc_test(
+    name = "sc_migration_auth_bytes_test",
+    srcs = ["sc_migration_auth_bytes_test.cpp"],
+    deps = ["//src/datasystem/common/rpc:sc_migration_auth_bytes"],
+)
+
+ds_cc_test(
     name = "brpc_client_stream_test",
     srcs = ["brpc_client_stream_test.cpp"],
     deps = [

@@ -18,6 +18,7 @@
 #include <brpc/closure_guard.h>
 #include <brpc/server.h>
 #include <google/protobuf/descriptor.pb.h>
+#include <mutex>
 
 #include "datasystem/common/rpc/brpc_client_stream_impl.h"
 #include "datasystem/common/rpc/brpc_server_stream_impl.h"
@@ -63,6 +64,13 @@ public:
         auto *controller = static_cast<brpc::Controller *>(base);
         auto reader = std::make_shared<BrpcServerReaderImpl<HostPortPb>>(controller, "SingleRead.Echo");
         reader->Init();
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            reader_ = reader;
+            if (cancelled_) {
+                reader->on_idle_timeout(brpc::INVALID_STREAM_ID);
+            }
+        }
         HostPortPb request;
         auto status = reader->Read(request);
         if (status.IsOk()) {
@@ -70,10 +78,28 @@ public:
         }
         (void)reader->SendStatus(status);
         reader->Close();
+        std::lock_guard<std::mutex> lock(mutex_);
+        reader_.reset();
+    }
+
+    void CancelPendingRead()
+    {
+        std::shared_ptr<BrpcServerReaderImpl<HostPortPb>> reader;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            cancelled_ = true;
+            reader = reader_;
+        }
+        if (reader) {
+            reader->on_idle_timeout(brpc::INVALID_STREAM_ID);
+        }
     }
 private:
     google::protobuf::DescriptorPool pool_;
     const google::protobuf::ServiceDescriptor *descriptor_ = nullptr;
+    std::mutex mutex_;
+    bool cancelled_ = false;
+    std::shared_ptr<BrpcServerReaderImpl<HostPortPb>> reader_;
 };
 }  // namespace
 
@@ -101,6 +127,7 @@ TEST(BrpcClientStreamTest, FirstWriteAndReadCompleteBeforeFinish)
             EXPECT_TRUE(read.IsOk()) << read.ToString();
             EXPECT_EQ(response.host(), request.host());
         }
+        service.CancelPendingRead();
         EXPECT_TRUE(writer.Finish().IsOk());
     }
     server.Stop(0);

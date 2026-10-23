@@ -21,6 +21,7 @@
 #define DATASYSTEM_COMMON_AK_SK_SIGNATURE_H
 
 #include <chrono>
+#include <array>
 #include <memory>
 #include <shared_mutex>
 #include <string>
@@ -41,6 +42,8 @@
 #include "datasystem/utils/sensitive_value.h"
 
 namespace datasystem {
+
+using AkSkDigest = std::array<unsigned char, SHA256_DIGEST_LENGTH>;
 
 enum class AkSkType { CLIENT, SYSTEM, TENANT, OBS, UNKNOWN };
 
@@ -76,6 +79,10 @@ public:
      * @return Status of the call.
      */
     Status SetClientAkSk(const std::string &accessKey, SensitiveValue secretKey);
+
+    Status SnapshotClientKey(AkSkData &out) const;
+
+    static Status GetSignatureFromDigest(const AkSkData &key, const AkSkDigest &digest, std::string &signature);
 
     /**
      * @brief Generate signature and insert it to req.
@@ -178,8 +185,8 @@ protected:
      * @param[out] signature sign string.
      * @return Status of the call.
      */
-    Status HmacAndEncode(const AkSkData &data, std::unique_ptr<unsigned char[]> &signatureData,
-                         unsigned int signatureDataSize, std::string &signature);
+    static Status HmacAndEncode(const AkSkData &data, std::unique_ptr<unsigned char[]> &signatureData,
+                               unsigned int signatureDataSize, std::string &signature);
 
     inline std::time_t GetSystemClockTimeStampUs()
     {

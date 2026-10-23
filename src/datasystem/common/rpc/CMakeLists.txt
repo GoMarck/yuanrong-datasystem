@@ -32,6 +32,7 @@ set(COMMON_RPC_ZMQ_SRCS
         api_deadline.cpp
         api_deadline_helpers.cpp
         brpc_factory.cpp
+        sc_migration_auth_bytes.cpp
         fanout_collector.cpp
         network_latency_estimator.cpp
         rpc_auth_key_manager.cpp

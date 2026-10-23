@@ -150,6 +150,9 @@ public:
     Status VerifySignatureAndTimestamp(const std::string &signature, uint64_t timestamp, const std::string &accessKey,
                                        const char *canonicalStr, size_t canonicalSize);
 
+    Status VerifySignatureFromDigest(const std::string &signature, uint64_t timestamp, const std::string &accessKey,
+                                    const AkSkDigest &digest);
+
     bool SystemAuthEnabled() const
     {
         return systemAuthEnabled_;
