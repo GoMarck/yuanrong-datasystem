@@ -47,3 +47,12 @@ The driver preserves per-arm logs, commands, host pressure snapshots, schedule, 
 It fails on any RPC/auth-counter error and will not overwrite an existing output directory. This measures the proposed
 mechanism in isolation, not a product SDK/Worker performance regression test. It excludes real token/tenant policies,
 stream frames, multi-node transport, and a signed/background workload interfering with unsigned traffic.
+
+## Serializer boundary probe
+
+`rpc_serializer_probe` tests the proposed fixed-version protected serializer slot independently of the older checksum
+experiment. It has no TLS or bthread-local credential state. Four focused cases cover one PB encoding across schemas,
+async completion that deletes its Controller, preparation failure through native completion, and cancellation before
+submission. The receiver compares locally captured raw-body digests; this boundary probe deliberately has no AK/SK
+algorithm or product admission policy. It does not establish stream, backup, retry, timeout, or full product correctness.
+Run only its named CTest when checking this boundary.
