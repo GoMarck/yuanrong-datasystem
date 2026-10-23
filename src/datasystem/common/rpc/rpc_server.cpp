@@ -17,6 +17,7 @@
 /**
  * Description: RPC Server.
  */
+#include "datasystem/common/rpc/brpc_single_stream.h"
 #include "datasystem/common/rpc/rpc_server.h"
 
 #include <brpc/server.h>
@@ -191,6 +192,18 @@ void RpcServer::StopBrpcServer()
         // Stop+Join, so doing it synchronously first makes the destructor's
         // calls no-ops (status=READY), avoiding a race with ~Server().
         brpcServer_->Stop(0);
+        std::vector<google::protobuf::Service *> services;
+        brpcServer_->ListServices(&services);
+        for (auto *service : services) {
+            if (auto *streamService = dynamic_cast<BrpcSingleStreamService *>(service)) {
+                streamService->Stop();
+            }
+        }
+        for (auto *service : services) {
+            if (auto *streamService = dynamic_cast<BrpcSingleStreamService *>(service)) {
+                streamService->Wait();
+            }
+        }
         brpcServer_->Join();
         brpcServer_.reset();
     }

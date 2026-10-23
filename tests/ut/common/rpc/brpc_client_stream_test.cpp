@@ -18,7 +18,7 @@
 #include <brpc/closure_guard.h>
 #include <brpc/server.h>
 #include <google/protobuf/descriptor.pb.h>
-#include <mutex>
+#include <atomic>
 
 #include "datasystem/common/rpc/brpc_client_stream_impl.h"
 #include "datasystem/common/rpc/brpc_server_stream_impl.h"
@@ -27,9 +27,10 @@
 namespace datasystem {
 namespace test {
 namespace {
-class SingleReadService final : public google::protobuf::Service {
+class SingleReadService final : public BrpcSingleStreamService {
 public:
-    SingleReadService() : pool_(google::protobuf::DescriptorPool::generated_pool())
+    explicit SingleReadService(bool readUntilEnd = false, bool fail = false, bool emptyReply = false)
+        : readUntilEnd_(readUntilEnd), fail_(fail), emptyReply_(emptyReply), pool_(google::protobuf::DescriptorPool::generated_pool())
     {
         google::protobuf::FileDescriptorProto file;
         file.set_name("client_stream_baseline_test.proto");
@@ -57,49 +58,57 @@ public:
         return HostPortPb::default_instance();
     }
     void CallMethod(const google::protobuf::MethodDescriptor *, google::protobuf::RpcController *base,
-                    const google::protobuf::Message *, google::protobuf::Message *,
+                    const google::protobuf::Message *initial, google::protobuf::Message *,
                     google::protobuf::Closure *done) override
     {
         brpc::ClosureGuard guard(done);
         auto *controller = static_cast<brpc::Controller *>(base);
-        auto reader = std::make_shared<BrpcServerReaderImpl<HostPortPb>>(controller, "SingleRead.Echo");
-        reader->Init();
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            reader_ = reader;
-            if (cancelled_) {
-                reader->on_idle_timeout(brpc::INVALID_STREAM_ID);
+        const auto *request = static_cast<const HostPortPb *>(initial);
+        auto reader = std::make_shared<BrpcServerReaderImpl<HostPortPb>>(controller, *request, "SingleRead.Echo");
+        const auto init = reader->Init(*controller);
+        if (init.IsError()) {
+            controller->SetFailed(init.ToString());
+            return;
+        }
+        CallScope scope(*this, reader);
+        if (!scope.IsActive()) {
+            reader->Close();
+            controller->SetFailed("Service stopping");
+            return;
+        }
+        guard.release()->Run();
+        HostPortPb requestPb;
+        HostPortPb response;
+        auto status = reader->Read(requestPb);
+        while (status.IsOk()) {
+            response.set_host(requestPb.host());
+            response.set_port(response.port() + 1);
+            if (!readUntilEnd_) {
+                break;
             }
+            status = reader->Read(requestPb);
         }
-        HostPortPb request;
-        auto status = reader->Read(request);
-        if (status.IsOk()) {
-            status = reader->WritePb(request);
+        lastRead.store(status.GetCode());
+        if (status.GetCode() == K_RPC_STREAM_END) {
+            status = Status::OK();
         }
-        (void)reader->SendStatus(status);
-        reader->Close();
-        std::lock_guard<std::mutex> lock(mutex_);
-        reader_.reset();
+        if (fail_) {
+            status = Status(K_NOT_AUTHORIZED, "test-only-denied");
+        }
+        if (emptyReply_) {
+            response.Clear();
+        }
+        (void)reader->Complete(response, status);
     }
 
-    void CancelPendingRead()
-    {
-        std::shared_ptr<BrpcServerReaderImpl<HostPortPb>> reader;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            cancelled_ = true;
-            reader = reader_;
-        }
-        if (reader) {
-            reader->on_idle_timeout(brpc::INVALID_STREAM_ID);
-        }
-    }
+    std::atomic<StatusCode> lastRead{K_OK};
 private:
+    bool readUntilEnd_;
+    bool fail_;
+    bool emptyReply_;
     google::protobuf::DescriptorPool pool_;
     const google::protobuf::ServiceDescriptor *descriptor_ = nullptr;
-    std::mutex mutex_;
-    bool cancelled_ = false;
-    std::shared_ptr<BrpcServerReaderImpl<HostPortPb>> reader_;
+
 };
 }  // namespace
 
@@ -127,11 +136,100 @@ TEST(BrpcClientStreamTest, FirstWriteAndReadCompleteBeforeFinish)
             EXPECT_TRUE(read.IsOk()) << read.ToString();
             EXPECT_EQ(response.host(), request.host());
         }
-        service.CancelPendingRead();
         EXPECT_TRUE(writer.Finish().IsOk());
     }
     server.Stop(0);
+    service.StopAndWait();
     server.Join();
+}
+TEST(BrpcClientStreamTest, MultipleWritesAndEmptyFirstMessageEndAtRead)
+{
+    SingleReadService service(true);
+    brpc::Server server;
+    ASSERT_EQ(server.AddService(&service, brpc::SERVER_DOESNT_OWN_SERVICE), 0);
+    ASSERT_EQ(server.Start("127.0.0.1:0", nullptr), 0);
+    brpc::Channel channel;
+    brpc::ChannelOptions options;
+    options.timeout_ms = 1000;
+    options.max_retry = 0;
+    ASSERT_EQ(channel.Init(server.listen_address(), &options), 0);
+    {
+        BrpcClientWriterImpl<HostPortPb> writer(&channel, service.GetDescriptor()->method(0), 1000);
+        HostPortPb request;
+        EXPECT_TRUE(writer.Write(request).IsOk());
+        EXPECT_TRUE(writer.Write(request).IsOk());
+        request.set_host("last-message");
+        EXPECT_TRUE(writer.Write(request).IsOk());
+        HostPortPb response;
+        EXPECT_TRUE(writer.Read(response).IsOk());
+        EXPECT_EQ(response.host(), request.host());
+        EXPECT_EQ(response.port(), 3);
+        EXPECT_TRUE(writer.Finish().IsOk());
+        EXPECT_TRUE(writer.Finish().IsOk());
+    }
+    server.Stop(0);
+    service.StopAndWait();
+    server.Join();
+}
+
+TEST(BrpcClientStreamTest, FinalStatusAndFinishBeforeRead)
+{
+    for (bool fail : {false, true}) {
+        SingleReadService service(true, fail, true);
+        brpc::Server server;
+        ASSERT_EQ(server.AddService(&service, brpc::SERVER_DOESNT_OWN_SERVICE), 0);
+        ASSERT_EQ(server.Start("127.0.0.1:0", nullptr), 0);
+        brpc::Channel channel;
+        brpc::ChannelOptions options;
+        options.timeout_ms = 1000;
+        options.max_retry = 0;
+        ASSERT_EQ(channel.Init(server.listen_address(), &options), 0);
+        {
+            BrpcClientWriterImpl<HostPortPb> writer(&channel, service.GetDescriptor()->method(0), 1000);
+            HostPortPb request;
+            EXPECT_TRUE(writer.Write(request).IsOk());
+            EXPECT_EQ(writer.Finish().GetCode(), fail ? K_NOT_AUTHORIZED : K_OK);
+            HostPortPb response;
+            EXPECT_EQ(writer.Read(response).GetCode(), fail ? K_NOT_AUTHORIZED : K_OK);
+            EXPECT_TRUE(response.host().empty());
+        }
+        server.Stop(0);
+        service.StopAndWait();
+        server.Join();
+    }
+}
+
+TEST(BrpcClientStreamTest, StopDrainsAcceptedBusinessAndRejectsNewCalls)
+{
+    SingleReadService service(true);
+    brpc::Server server;
+    ASSERT_EQ(server.AddService(&service, brpc::SERVER_DOESNT_OWN_SERVICE), 0);
+    ASSERT_EQ(server.Start("127.0.0.1:0", nullptr), 0);
+    brpc::Channel channel;
+    brpc::ChannelOptions options;
+    options.timeout_ms = 1000;
+    options.max_retry = 0;
+    ASSERT_EQ(channel.Init(server.listen_address(), &options), 0);
+    {
+        BrpcClientWriterImpl<HostPortPb> abandoned(&channel, service.GetDescriptor()->method(0), 1000);
+        HostPortPb request;
+        EXPECT_TRUE(abandoned.Write(request).IsOk());
+    }
+    service.Wait();
+    EXPECT_EQ(service.lastRead.load(), K_RPC_CANCELLED);
+    {
+        BrpcClientWriterImpl<HostPortPb> writer(&channel, service.GetDescriptor()->method(0), 1000);
+        HostPortPb request;
+        EXPECT_TRUE(writer.Write(request).IsOk());
+        service.StopAndWait();
+        service.StopAndWait();
+        BrpcClientWriterImpl<HostPortPb> rejected(&channel, service.GetDescriptor()->method(0), 1000);
+        EXPECT_TRUE(rejected.Write(request).IsError());
+        server.Stop(0);
+        server.Join();
+        HostPortPb response;
+        EXPECT_TRUE(writer.Read(response).IsError());
+    }
 }
 }  // namespace test
 }  // namespace datasystem
