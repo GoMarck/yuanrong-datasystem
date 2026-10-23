@@ -168,3 +168,15 @@ ds_cc_test(
         "@com_github_apache_brpc//:brpc",
     ],
 )
+
+ds_cc_test(
+    name = "brpc_auth_test",
+    srcs = ["brpc_auth_test.cpp"],
+    deps = [
+        "//src/datasystem/common/ak_sk:common_ak_sk",
+        "//src/datasystem/common/rpc:brpc_auth",
+        "//src/datasystem/protos:ut_object_cc_proto",
+        "@com_github_apache_brpc//:brpc",
+        "@com_google_protobuf//:protobuf",
+    ],
+)

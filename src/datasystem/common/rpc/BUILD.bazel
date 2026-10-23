@@ -285,6 +285,7 @@ ds_cc_library(
     srcs = ["brpc_factory.cpp"],
     hdrs = ["brpc_factory.h"],
     deps = [
+        "//include/datasystem/utils:utils_headers",
         "//src/datasystem/common/log:common_log",
         "@com_github_apache_brpc//:brpc",
     ],
@@ -508,6 +509,20 @@ ds_cc_library(
     hdrs = ["brpc_single_stream.h"],
     deps = [
         ":brpc_status_util",
+        "//src/datasystem/common/util:status_helper",
+        "@com_github_apache_brpc//:brpc",
+        "@com_google_protobuf//:protobuf",
+    ],
+)
+
+ds_cc_library(
+    name = "brpc_auth",
+    srcs = ["brpc_auth.cpp"],
+    hdrs = ["brpc_auth.h"],
+    deps = [
+        ":brpc_factory",
+        ":sc_migration_auth_bytes",
+        "//src/datasystem/common/ak_sk:common_ak_sk",
         "//src/datasystem/common/util:status_helper",
         "@com_github_apache_brpc//:brpc",
         "@com_google_protobuf//:protobuf",
