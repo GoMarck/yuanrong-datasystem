@@ -29,8 +29,10 @@ namespace test {
 namespace {
 class SingleReadService final : public BrpcSingleStreamService {
 public:
-    explicit SingleReadService(bool readUntilEnd = false, bool fail = false, bool emptyReply = false)
-        : readUntilEnd_(readUntilEnd), fail_(fail), emptyReply_(emptyReply), pool_(google::protobuf::DescriptorPool::generated_pool())
+    explicit SingleReadService(bool readUntilEnd = false, bool fail = false, bool emptyReply = false,
+                               bool pauseBeforeReply = false)
+        : readUntilEnd_(readUntilEnd), fail_(fail), emptyReply_(emptyReply), pauseBeforeReply_(pauseBeforeReply),
+          pool_(google::protobuf::DescriptorPool::generated_pool())
     {
         google::protobuf::FileDescriptorProto file;
         file.set_name("client_stream_baseline_test.proto");
@@ -88,6 +90,12 @@ public:
             }
             status = reader->Read(requestPb);
         }
+        {
+            std::unique_lock<bthread::Mutex> lock(replyMutex_);
+            while (pauseBeforeReply_) {
+                replyCondition_.wait(lock);
+            }
+        }
         lastRead.store(status.GetCode());
         if (status.GetCode() == K_RPC_STREAM_END) {
             status = Status::OK();
@@ -101,11 +109,20 @@ public:
         (void)reader->Complete(response, status);
     }
 
+    void ReleaseReply()
+    {
+        std::lock_guard<bthread::Mutex> lock(replyMutex_);
+        pauseBeforeReply_ = false;
+        replyCondition_.notify_all();
+    }
     std::atomic<StatusCode> lastRead{K_OK};
 private:
     bool readUntilEnd_;
     bool fail_;
     bool emptyReply_;
+    bthread::Mutex replyMutex_;
+    bthread::ConditionVariable replyCondition_;
+    bool pauseBeforeReply_;
     google::protobuf::DescriptorPool pool_;
     const google::protobuf::ServiceDescriptor *descriptor_ = nullptr;
 
@@ -197,6 +214,32 @@ TEST(BrpcClientStreamTest, FinalStatusAndFinishBeforeRead)
         service.StopAndWait();
         server.Join();
     }
+}
+
+TEST(BrpcClientStreamTest, ReadDeadlineClosesStreamAndPreservesFailure)
+{
+    SingleReadService service(true, false, false, true);
+    brpc::Server server;
+    ASSERT_EQ(server.AddService(&service, brpc::SERVER_DOESNT_OWN_SERVICE), 0);
+    ASSERT_EQ(server.Start("127.0.0.1:0", nullptr), 0);
+    brpc::Channel channel;
+    brpc::ChannelOptions options;
+    options.timeout_ms = 1000;
+    options.max_retry = 0;
+    ASSERT_EQ(channel.Init(server.listen_address(), &options), 0);
+    {
+        BrpcClientWriterImpl<HostPortPb> writer(&channel, service.GetDescriptor()->method(0), 200);
+        HostPortPb request;
+        EXPECT_TRUE(writer.Write(request).IsOk());
+        HostPortPb response;
+        EXPECT_EQ(writer.Read(response).GetCode(), K_RPC_DEADLINE_EXCEEDED);
+        EXPECT_EQ(writer.Read(response).GetCode(), K_RPC_DEADLINE_EXCEEDED);
+        EXPECT_EQ(writer.Finish().GetCode(), K_RPC_DEADLINE_EXCEEDED);
+        service.ReleaseReply();
+    }
+    server.Stop(0);
+    service.StopAndWait();
+    server.Join();
 }
 
 TEST(BrpcClientStreamTest, StopDrainsAcceptedBusinessAndRejectsNewCalls)

@@ -115,7 +115,8 @@ public:
         if (!state_) {
             CHECK_FAIL_RETURN_STATUS(channel_ != nullptr && method_ != nullptr, K_INVALID,
                                      "Missing client-streaming channel or method.");
-            const auto *prototype = google::protobuf::MessageFactory::generated_factory()->GetPrototype(method_->output_type());
+            const auto *prototype =
+                google::protobuf::MessageFactory::generated_factory()->GetPrototype(method_->output_type());
             CHECK_FAIL_RETURN_STATUS(prototype != nullptr, K_RUNTIME_ERROR, "Missing client-streaming response prototype.");
             deadline_ = butil::microseconds_from_now(
                 static_cast<int64_t>(timeoutMs_ > 0 ? timeoutMs_ : kStreamReadTimeoutSec * 1000) * 1000);
@@ -234,6 +235,8 @@ private:
         responseStatus_ = status;
         responseReady_ = true;
         writesEnded_ = true;
+        trace_.MarkClientRecv();
+        RecordTraceOnce();
         Close();
         return status;
     }

@@ -232,7 +232,6 @@ public:
           readReady_(false),
           streamEnd_(false),
           readError_(false),
-          execStarted_(false),
           traceRecorded_(false),
           trace_(Trace::Instance().GetTraceID(), std::move(methodName))
     {
@@ -422,10 +421,6 @@ public:
         if (!pb.ParseFromString(serialized)) {
             RETURN_STATUS(StatusCode::K_RUNTIME_ERROR, "Failed to parse protobuf from stream message");
         }
-        bool expected = false;
-        if (execStarted_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-            trace_.MarkServerExecStart();
-        }
         return Status::OK();
     }
 
@@ -436,10 +431,11 @@ public:
         if (!pb.SerializeToString(&serialized)) {
             RETURN_STATUS(StatusCode::K_RUNTIME_ERROR, "Failed to serialize final response");
         }
-        pendingReply_.clear();
-        CHECK_FAIL_RETURN_STATUS(pendingReply_.append(&SINGLE_STREAM_DATA, 1) == 0 &&
-                                     pendingReply_.append(serialized) == 0, K_OUT_OF_MEMORY,
+        butil::IOBuf pending;
+        CHECK_FAIL_RETURN_STATUS(pending.append(&SINGLE_STREAM_DATA, 1) == 0 &&
+                                     pending.append(serialized) == 0, K_OUT_OF_MEMORY,
                                  "Failed to buffer client-streaming response.");
+        pendingReply_.swap(pending);
         hasReply_ = true;
         return Status::OK();
     }
@@ -524,7 +520,6 @@ private:
         std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<BrpcServerReaderImpl<R>> keepalive_;
     TimeoutDuration scTimeoutDuration_;
-    std::atomic<bool> execStarted_;
     std::atomic<bool> traceRecorded_;
     BrpcPerfTrace trace_;
 
