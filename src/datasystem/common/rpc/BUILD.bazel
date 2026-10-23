@@ -520,6 +520,7 @@ ds_cc_library(
     srcs = ["brpc_auth.cpp"],
     hdrs = ["brpc_auth.h"],
     deps = [
+        "//src/datasystem/common/util:timer",
         ":brpc_factory",
         ":sc_migration_auth_bytes",
         "//src/datasystem/common/ak_sk:common_ak_sk",

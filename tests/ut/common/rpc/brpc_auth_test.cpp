@@ -23,6 +23,7 @@
 #include <gtest/gtest.h>
 
 #include "datasystem/common/ak_sk/ak_sk_manager.h"
+#include "datasystem/common/util/timer.h"
 #include "datasystem/common/rpc/brpc_auth.h"
 #include "datasystem/protos/ut_object.pb.h"
 
