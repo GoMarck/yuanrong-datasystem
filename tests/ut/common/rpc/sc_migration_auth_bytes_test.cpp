@@ -15,6 +15,9 @@
  */
 
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <memory>
+#include <utility>
 
 #include "datasystem/common/rpc/sc_migration_auth_bytes.h"
 
@@ -30,6 +33,23 @@ butil::IOBuf Buffer(const std::string &bytes)
 {
     butil::IOBuf buffer;
     buffer.append(bytes);
+    return buffer;
+}
+
+butil::IOBuf SegmentedBuffer(const std::string &bytes, size_t split)
+{
+    butil::IOBuf buffer;
+    for (const auto range : {std::make_pair(size_t{0}, split), std::make_pair(split, bytes.size())}) {
+        const auto size = range.second - range.first;
+        auto data = std::make_unique<char[]>(size);
+        std::copy_n(bytes.data() + range.first, size, data.get());
+        const auto result = buffer.append_user_data(data.get(), size, [](void *p) { delete[] static_cast<char *>(p); });
+        EXPECT_EQ(result, 0);
+        if (result == 0) {
+            data.release();
+        }
+    }
+    EXPECT_EQ(buffer.backing_block_num(), 2);
     return buffer;
 }
 }  // namespace
@@ -66,6 +86,24 @@ TEST(ScMigrationAuthBytesTest, RejectsMalformedNestedAndTopLevelWire)
                               Wire({0x12, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01})}) {
         butil::IOBuf projected;
         EXPECT_TRUE(BuildScMigrationAuthBytes(Buffer(bytes), projected).IsError());
+    }
+}
+
+TEST(ScMigrationAuthBytesTest, IndependentBlocksAndSourceReleasePreserveProjectionAtEveryCut)
+{
+    for (const auto &entry : {
+             std::make_pair(Wire({0x12, 0x04, 0x32, 0x02, 0x08, 0x01}), Wire({0x12, 0x00})),
+             std::make_pair(Wire({0x4a, 0x02, 0x08, 0x01}), Wire({0x4a, 0x02, 0x08, 0x01})),
+             std::make_pair(Wire({0x12, 0x04, 0x1b, 0x32, 0x00, 0x1c}),
+                            Wire({0x12, 0x04, 0x1b, 0x32, 0x00, 0x1c}))}) {
+        for (size_t split = 1; split < entry.first.size(); ++split) {
+            butil::IOBuf projected;
+            {
+                const auto source = SegmentedBuffer(entry.first, split);
+                ASSERT_TRUE(BuildScMigrationAuthBytes(source, projected).IsOk()) << "split=" << split;
+            }
+            EXPECT_EQ(projected.to_string(), entry.second) << "split=" << split;
+        }
     }
 }
 }  // namespace test
