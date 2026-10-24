@@ -76,6 +76,7 @@ bool RpcGenerator::Generate(const google::protobuf::FileDescriptor *file, const 
     CreateAuthProto(*file, generatorCtx);
     // Generate the brpc adapter header (.brpc.pb.h).
     CreateBrpcAdapterHeader(*file, generatorCtx);
+    CreateBrpcAuthAdapterHeader(*file, generatorCtx);
     // Generate the brpc adapter cpp (.brpc.pb.cc).
     CreateBrpcAdapterCpp(*file, generatorCtx);
     // Generate the brpc client stub header (.brpc.stub.pb.h).

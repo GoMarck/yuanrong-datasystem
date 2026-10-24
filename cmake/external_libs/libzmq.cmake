@@ -103,6 +103,7 @@ function(GENERATE_ZMQ_CPP ZMQ_PROTO_LIB_DEPEND source_files header_files target_
         list(APPEND ${header_files} "${_OUTPUT_PREFIX}/${file_name}.irpc.pb.h")
         list(APPEND ${source_files} "${_OUTPUT_PREFIX}/${file_name}.brpc.pb.cc")
         list(APPEND ${header_files} "${_OUTPUT_PREFIX}/${file_name}.brpc.pb.h")
+        list(APPEND ${header_files} "${_OUTPUT_PREFIX}/${file_name}.brpc.auth.pb.h")
         list(APPEND ${source_files} "${_OUTPUT_PREFIX}/${file_name}.brpc.stub.pb.cc")
         list(APPEND ${header_files} "${_OUTPUT_PREFIX}/${file_name}.brpc.stub.pb.h")
         list(APPEND ${source_files} "${_OUTPUT_PREFIX}/${file_name}.auth.pb.cc")
@@ -122,6 +123,7 @@ function(GENERATE_ZMQ_CPP ZMQ_PROTO_LIB_DEPEND source_files header_files target_
             "${_OUTPUT_PREFIX}/${file_name}.brpc.stub.pb.cc"
             "${_OUTPUT_PREFIX}/${file_name}.brpc.stub.pb.h"
             "${_OUTPUT_PREFIX}/${file_name}.auth.proto"
+            "${_OUTPUT_PREFIX}/${file_name}.brpc.auth.pb.h"
             COMMAND ${CMAKE_COMMAND} -E env LD_LIBRARY_PATH=${LD_LIB_PATH}
                     $<TARGET_FILE:protobuf::protoc>
             ARGS -I ${CMAKE_SOURCE_DIR}/src -I ${proto_src_directory}
@@ -154,7 +156,8 @@ function(GENERATE_ZMQ_CPP ZMQ_PROTO_LIB_DEPEND source_files header_files target_
                 "${_OUTPUT_PREFIX}/${file_name}.brpc.stub.pb.cc"
                 "${_OUTPUT_PREFIX}/${file_name}.brpc.stub.pb.h"
                 "${_OUTPUT_PREFIX}/${file_name}.auth.pb.cc"
-                "${_OUTPUT_PREFIX}/${file_name}.auth.pb.h")
+                "${_OUTPUT_PREFIX}/${file_name}.auth.pb.h"
+                "${_OUTPUT_PREFIX}/${file_name}.brpc.auth.pb.h")
         add_dependencies(${ZMQ_PROTO_LIB_DEPEND} ZMQ_PROTO_LIB_DEPEND_${file_name})
     endforeach ()
 

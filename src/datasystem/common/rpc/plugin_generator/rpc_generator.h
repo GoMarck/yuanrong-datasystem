@@ -306,6 +306,8 @@ private:
      */
     void CreateBrpcAdapterCpp(const google::protobuf::FileDescriptor &file,
                               compiler::GeneratorContext *generatorCtx) const;
+    void CreateBrpcAuthAdapterHeader(const google::protobuf::FileDescriptor &file,
+                                     compiler::GeneratorContext *generatorCtx) const;
     void CreateAuthProto(const google::protobuf::FileDescriptor &file,
                          compiler::GeneratorContext *generatorCtx) const;
     void GenerateBrpcAdapterCppPrologue(io::Printer &printer, const google::protobuf::FileDescriptor &file) const;
@@ -315,43 +317,43 @@ private:
      */
     void ImplementBrpcServiceBoilerplate(io::Printer &printer,
                                           const google::protobuf::ServiceDescriptor &svc,
-                                          const std::string &svcName) const;
+                                          const std::string &svcName, bool authenticated = false) const;
     static void ImplementBrpcCallMethodDef(io::Printer &printer, const google::protobuf::ServiceDescriptor &svc,
-                                           const std::string &indent, const std::string &svcName);
+                                           const std::string &indent, const std::string &svcName, bool authenticated = false);
     static void ImplementBrpcMethodVariant(io::Printer &printer, const google::protobuf::MethodDescriptor &method,
-                                           int methodIndex, const std::string &indent);
+                                           int methodIndex, const std::string &indent, bool authenticated = false);
     static std::string BuildDirectCallCaseCode(const google::protobuf::MethodDescriptor &method);
     static std::string BuildSendRecvPayloadImpl();
     static std::string BuildSendRecvPayloadDecodeSnippet();
     static std::string BuildSendRecvPayloadEncodeSnippet();
-    static std::string BuildCallMethodPrologue();
+    static std::string BuildCallMethodPrologue(bool authenticated = false);
     static std::string BuildCallMethodEpilogue();
     static std::string BuildScTimeoutDurationInitSnippet();
     static void ImplementBrpcDirectCallMethodDef(io::Printer &printer, const google::protobuf::ServiceDescriptor &svc,
                                                   const std::string &indent, const std::string &svcName);
     static void ImplementBrpcCallMethodPlain(io::Printer &printer, const google::protobuf::MethodDescriptor &method,
-                                              int methodIndex, const std::string &indent);
+                                              int methodIndex, const std::string &indent, bool authenticated = false);
     static void ImplementBrpcCallMethodSendPayload(io::Printer &printer,
                                                     const google::protobuf::MethodDescriptor &method,
-                                                    int methodIndex, const std::string &indent);
+                                                    int methodIndex, const std::string &indent, bool authenticated = false);
     static void ImplementBrpcCallMethodRecvPayload(io::Printer &printer,
                                                     const google::protobuf::MethodDescriptor &method,
-                                                    int methodIndex, const std::string &indent);
+                                                    int methodIndex, const std::string &indent, bool authenticated = false);
     static void ImplementBrpcCallMethodSendRecvPayload(io::Printer &printer,
                                                         const google::protobuf::MethodDescriptor &method,
-                                                        int methodIndex, const std::string &indent);
+                                                        int methodIndex, const std::string &indent, bool authenticated = false);
     static void ImplementBrpcCallMethodUnarySocket(io::Printer &printer,
                                                     const google::protobuf::MethodDescriptor &method,
-                                                    int methodIndex, const std::string &indent);
+                                                    int methodIndex, const std::string &indent, bool authenticated = false);
     static void ImplementBrpcCallMethodClientStream(io::Printer &printer,
                                                      const google::protobuf::MethodDescriptor &method,
-                                                     int methodIndex, const std::string &indent);
+                                                     int methodIndex, const std::string &indent, bool authenticated = false);
     static void ImplementBrpcCallMethodServerStream(io::Printer &printer,
                                                      const google::protobuf::MethodDescriptor &method,
-                                                     int methodIndex, const std::string &indent);
+                                                     int methodIndex, const std::string &indent, bool authenticated = false);
     static void ImplementBrpcCallMethodBidiStream(io::Printer &printer,
                                                    const google::protobuf::MethodDescriptor &method,
-                                                   int methodIndex, const std::string &indent);
+                                                   int methodIndex, const std::string &indent, bool authenticated = false);
 
     // --- V8: brpc client stub generation ---
 

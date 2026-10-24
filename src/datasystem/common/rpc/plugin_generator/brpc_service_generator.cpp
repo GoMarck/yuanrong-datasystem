@@ -45,6 +45,56 @@ void RpcGenerator::CreateBrpcAdapterHeader(const google::protobuf::FileDescripto
     printer.PrintRaw(ENDIF);
 }
 
+void RpcGenerator::CreateBrpcAuthAdapterHeader(const google::protobuf::FileDescriptor &file,
+                                               compiler::GeneratorContext *generatorCtx) const
+{
+    std::unique_ptr<io::ZeroCopyOutputStream> output(generatorCtx->Open(fileName + ".brpc.auth.pb.h"));
+    io::Printer printer(output.get(), '$');
+    printer.PrintRaw("#pragma once\n#include \"" + fileName + ".brpc.pb.h\"\n#include \"" +
+                     fileName + ".auth.pb.h\"\n");
+    printer.PrintRaw(
+        "#include <brpc/closure_guard.h>\n"
+        "#include \"datasystem/common/rpc/brpc_auth.h\"\n"
+        "#include \"datasystem/common/rpc/api_deadline.h\"\n"
+        "#include \"datasystem/common/rpc/trace_attachment.h\"\n"
+        "#include \"datasystem/common/util/request_context.h\"\n"
+        "#include \"datasystem/common/util/thread_local.h\"\n");
+    printer.PrintRaw(namespaceBegin);
+    for (int i = 0; i < file.service_count(); ++i) {
+        const auto &service = *file.service(i);
+        std::map<std::string, std::string> vars;
+        vars["name"] = service.name() + "BrpcAuthAdapter";
+        vars["base"] = "google::protobuf::Service";
+        for (int j = 0; j < service.method_count(); ++j) {
+            if (service.method(j)->client_streaming() && !service.method(j)->server_streaming()) {
+                vars["base"] = "::datasystem::BrpcSingleStreamService";
+                break;
+            }
+        }
+        printer.Print(vars,
+            "template <typename Dispatcher, bool AuthWire = true>\n"
+            "class $name$ final : public $base$ {\n"
+            "public:\n"
+            "    explicit $name$(Dispatcher &impl) : impl_(impl) {}\n"
+            "    const google::protobuf::ServiceDescriptor* GetDescriptor() override;\n"
+            "    const google::protobuf::Message& GetRequestPrototype(\n"
+            "        const google::protobuf::MethodDescriptor* method) const override;\n"
+            "    const google::protobuf::Message& GetResponsePrototype(\n"
+            "        const google::protobuf::MethodDescriptor* method) const override;\n"
+            "    void CallMethod(const google::protobuf::MethodDescriptor* method,\n"
+            "                    google::protobuf::RpcController* controller,\n"
+            "                    const google::protobuf::Message* request,\n"
+            "                    google::protobuf::Message* response,\n"
+            "                    google::protobuf::Closure* done) override;\n"
+            "private:\n"
+            "    Dispatcher &impl_;\n"
+            "};\n");
+        ImplementBrpcServiceBoilerplate(printer, service, service.name(), true);
+        ImplementBrpcCallMethodDef(printer, service, PREFIX, service.name(), true);
+    }
+    printer.PrintRaw(namespaceEnd);
+}
+
 void RpcGenerator::GenerateBrpcAdapterPrologue(io::Printer &printer,
                                                const google::protobuf::FileDescriptor &file) const
 {
@@ -192,19 +242,32 @@ void RpcGenerator::GenerateBrpcAdapterCppPrologue(io::Printer &printer,
 
 void RpcGenerator::ImplementBrpcServiceBoilerplate(io::Printer &printer,
                                                    const google::protobuf::ServiceDescriptor &svc,
-                                                   const std::string &svcName) const
+                                                   const std::string &svcName, bool authenticated) const
 {
     std::map<std::string, std::string> vars;
-    vars["adapter_name"] = svcName + "BrpcAdapter";
+    vars["adapter_name"] = authenticated ? svcName + "BrpcAuthAdapter<Dispatcher, AuthWire>"
+                                         : svcName + "BrpcAdapter";
     vars["full_svc_name"] = svc.full_name();
+    vars["svc_name"] = svcName;
+    const std::string prefix = authenticated ? "template <typename Dispatcher, bool AuthWire>\n" : "";
     // GetDescriptor - non-const, uses DescriptorPool
     std::string code =
         "const google::protobuf::ServiceDescriptor* $adapter_name$::GetDescriptor() {\n"
         "    return google::protobuf::DescriptorPool::generated_pool()->FindServiceByName(\"$full_svc_name$\");\n"
         "}\n\n";
-    printer.Print(vars, code.c_str());
+    printer.PrintRaw(prefix);
+    if (authenticated) {
+        printer.Print(vars,
+            "const google::protobuf::ServiceDescriptor* $adapter_name$::GetDescriptor() {\n"
+            "    return AuthWire ? $svc_name$Auth::descriptor() :\n"
+            "        google::protobuf::DescriptorPool::generated_pool()->FindServiceByName(\"$full_svc_name$\");\n"
+            "}\n\n");
+    } else {
+        printer.Print(vars, code.c_str());
+    }
 
     // GetRequestPrototype - use method->index() instead of calling GetDescriptor()
+    printer.PrintRaw(prefix);
     printer.Print(vars, "const google::protobuf::Message& $adapter_name$::GetRequestPrototype(\n"
                         "    const google::protobuf::MethodDescriptor* method) const {\n");
     for (int i = 0; i < svc.method_count(); ++i) {
@@ -224,7 +287,9 @@ void RpcGenerator::ImplementBrpcServiceBoilerplate(io::Printer &printer,
                      "        ->GetPrototype(method->input_type())->New();\n}\n\n");
 
     // GetResponsePrototype
-    vars["adapter_name"] = svcName + "BrpcAdapter";
+    vars["adapter_name"] = authenticated ? svcName + "BrpcAuthAdapter<Dispatcher, AuthWire>"
+                                         : svcName + "BrpcAdapter";
+    printer.PrintRaw(prefix);
     printer.Print(vars, "const google::protobuf::Message& $adapter_name$::GetResponsePrototype(\n"
                         "    const google::protobuf::MethodDescriptor* method) const {\n");
     for (int i = 0; i < svc.method_count(); ++i) {
@@ -247,14 +312,18 @@ void RpcGenerator::ImplementBrpcServiceBoilerplate(io::Printer &printer,
 void RpcGenerator::ImplementBrpcCallMethodDef(io::Printer &printer,
                                               const google::protobuf::ServiceDescriptor &svc,
                                               const std::string &indent,
-                                              const std::string &svcName)
+                                              const std::string &svcName, bool authenticated)
 {
     const std::string level2Indent = indent + indent;
     std::map<std::string, std::string> vars;
     vars["svcName"] = svcName;
-    vars["adapter_name"] = svcName + "BrpcAdapter";
+    vars["adapter_name"] = authenticated ? svcName + "BrpcAuthAdapter<Dispatcher, AuthWire>"
+                                         : svcName + "BrpcAdapter";
 
-    printer.Print(vars, BuildCallMethodPrologue().c_str());
+    if (authenticated) {
+        printer.PrintRaw("template <typename Dispatcher, bool AuthWire>\n");
+    }
+    printer.Print(vars, BuildCallMethodPrologue(authenticated).c_str());
 
     for (auto j = 0; j < svc.method_count(); ++j) {
         if (svc.method(j) == nullptr) {
@@ -264,7 +333,7 @@ void RpcGenerator::ImplementBrpcCallMethodDef(io::Printer &printer,
         vars["methodName"] = method.name();
         vars["methodIndex"] = std::to_string(j);
         printer.Print(vars, "        case $methodIndex$: { // $methodName$\n");
-        ImplementBrpcMethodVariant(printer, method, j, level2Indent);
+        ImplementBrpcMethodVariant(printer, method, j, level2Indent, authenticated);
         printer.PrintRaw(
             "            return;\n"
             "        }  // case\n");
@@ -273,9 +342,9 @@ void RpcGenerator::ImplementBrpcCallMethodDef(io::Printer &printer,
     printer.PrintRaw(BuildCallMethodEpilogue().c_str());
 }
 
-std::string RpcGenerator::BuildCallMethodPrologue()
+std::string RpcGenerator::BuildCallMethodPrologue(bool authenticated)
 {
-    return
+    std::string code =
         "void $adapter_name$::CallMethod(const google::protobuf::MethodDescriptor* method,\n"
         "                                google::protobuf::RpcController* cntl_base,\n"
         "                                const google::protobuf::Message* request,\n"
@@ -293,8 +362,11 @@ std::string RpcGenerator::BuildCallMethodPrologue()
         "    ::datasystem::LogSampleState rpcSampleState = ::datasystem::LOG_SAMPLE_UNDECIDED;\n"
         "    ::datasystem::ExtractTraceIDAndSampleState(cntl->request_attachment(), rpcTraceID, rpcSampleState);\n"
         "    ::datasystem::ScopedRequestContext scopedCtx(rpcTraceID);\n"
-        "    ::datasystem::ApplyLogSampleState(rpcSampleState);\n"
-        "    switch (method->index()) {\n";
+        "    ::datasystem::ApplyLogSampleState(rpcSampleState);\n";
+    if (authenticated) {
+        code += "    const auto proof = ::datasystem::CopyRpcRequestProof(*cntl);\n";
+    }
+    return code + "    switch (method->index()) {\n";
 }
 
 std::string RpcGenerator::BuildCallMethodEpilogue()
@@ -311,30 +383,30 @@ std::string RpcGenerator::BuildCallMethodEpilogue()
 
 void RpcGenerator::ImplementBrpcMethodVariant(io::Printer &printer,
                                               const google::protobuf::MethodDescriptor &method, int methodIndex,
-                                              const std::string &indent)
+                                              const std::string &indent, bool authenticated)
 {
     (void)indent;
     if (!method.client_streaming() && !method.server_streaming()) {
         if (UnarySocketNeeded(method)) {
-            ImplementBrpcCallMethodUnarySocket(printer, method, methodIndex, indent);
+            ImplementBrpcCallMethodUnarySocket(printer, method, methodIndex, indent, authenticated);
         } else if (HasPayloadSendOption(method) || HasPayloadRecvOption(method)) {
             // payload variants (plain, send-only, recv-only, or both)
             if (HasPayloadSendOption(method) && HasPayloadRecvOption(method)) {
-                ImplementBrpcCallMethodSendRecvPayload(printer, method, methodIndex, indent);
+                ImplementBrpcCallMethodSendRecvPayload(printer, method, methodIndex, indent, authenticated);
             } else if (HasPayloadSendOption(method)) {
-                ImplementBrpcCallMethodSendPayload(printer, method, methodIndex, indent);
+                ImplementBrpcCallMethodSendPayload(printer, method, methodIndex, indent, authenticated);
             } else {
-                ImplementBrpcCallMethodRecvPayload(printer, method, methodIndex, indent);
+                ImplementBrpcCallMethodRecvPayload(printer, method, methodIndex, indent, authenticated);
             }
         } else {
-            ImplementBrpcCallMethodPlain(printer, method, methodIndex, indent);
+            ImplementBrpcCallMethodPlain(printer, method, methodIndex, indent, authenticated);
         }
     } else if (method.client_streaming() && !method.server_streaming()) {
-        ImplementBrpcCallMethodClientStream(printer, method, methodIndex, indent);
+        ImplementBrpcCallMethodClientStream(printer, method, methodIndex, indent, authenticated);
     } else if (!method.client_streaming() && method.server_streaming()) {
-        ImplementBrpcCallMethodServerStream(printer, method, methodIndex, indent);
+        ImplementBrpcCallMethodServerStream(printer, method, methodIndex, indent, authenticated);
     } else {
-        ImplementBrpcCallMethodBidiStream(printer, method, methodIndex, indent);
+        ImplementBrpcCallMethodBidiStream(printer, method, methodIndex, indent, authenticated);
     }
 }
 
@@ -413,13 +485,14 @@ std::string RpcGenerator::BuildDirectCallCaseCode(const google::protobuf::Method
 void RpcGenerator::ImplementBrpcCallMethodPlain(io::Printer &printer,
                                                 const google::protobuf::MethodDescriptor &method,
                                                 int methodIndex,
-                                                const std::string &indent)
+                                                const std::string &indent, bool authenticated)
 {
     (void)indent;
     (void)methodIndex;
     std::map<std::string, std::string> vars;
     vars["indent"] = indent;
     vars["methodName"] = method.name();
+    vars["proof_arg"] = authenticated ? "proof, " : "";
     vars["inputTypeName"] = method.input_type()->name();
     vars["outputTypeName"] = method.output_type()->name();
 
@@ -442,7 +515,7 @@ void RpcGenerator::ImplementBrpcCallMethodPlain(io::Printer &printer,
     impl += BuildScTimeoutDurationInitSnippet();
     impl +=
         "$indent$rpcTrace.MarkServerExecStart();\n"
-        "$indent$::datasystem::Status st = impl_.$methodName$(*req, *rsp);\n"
+        "$indent$::datasystem::Status st = impl_.$methodName$($proof_arg$*req, *rsp);\n"
         "$indent$rpcTrace.MarkServerExecEnd();\n"
         "$indent$if (st.IsError()) {\n"
         "$indent$    cntl->SetFailed(st.GetMsg() + \"\\x01\" \"DS_ERR:\" + "
@@ -464,13 +537,14 @@ void RpcGenerator::ImplementBrpcCallMethodPlain(io::Printer &printer,
 void RpcGenerator::ImplementBrpcCallMethodSendPayload(io::Printer &printer,
                                                       const google::protobuf::MethodDescriptor &method,
                                                       int methodIndex,
-                                                      const std::string &indent)
+                                                      const std::string &indent, bool authenticated)
 {
     (void)indent;
     (void)methodIndex;
     std::map<std::string, std::string> vars;
     vars["indent"] = indent;
     vars["methodName"] = method.name();
+    vars["proof_arg"] = authenticated ? "proof, " : "";
     vars["inputTypeName"] = method.input_type()->name();
     vars["outputTypeName"] = method.output_type()->name();
 
@@ -514,7 +588,7 @@ void RpcGenerator::ImplementBrpcCallMethodSendPayload(io::Printer &printer,
     impl += BuildScTimeoutDurationInitSnippet();
     impl +=
         "$indent$rpcTrace.MarkServerExecStart();\n"
-        "$indent$::datasystem::Status st = impl_.$methodName$(*req, *rsp, std::move(payload));\n"
+        "$indent$::datasystem::Status st = impl_.$methodName$($proof_arg$*req, *rsp, std::move(payload));\n"
         "$indent$rpcTrace.MarkServerExecEnd();\n"
         "$indent$if (st.IsError()) {\n"
         "$indent$    cntl->SetFailed(st.GetMsg() + \"\\x01\" \"DS_ERR:\" + "
@@ -535,13 +609,14 @@ void RpcGenerator::ImplementBrpcCallMethodSendPayload(io::Printer &printer,
 void RpcGenerator::ImplementBrpcCallMethodRecvPayload(io::Printer &printer,
                                                       const google::protobuf::MethodDescriptor &method,
                                                       int methodIndex,
-                                                      const std::string &indent)
+                                                      const std::string &indent, bool authenticated)
 {
     (void)indent;
     (void)methodIndex;
     std::map<std::string, std::string> vars;
     vars["indent"] = indent;
     vars["methodName"] = method.name();
+    vars["proof_arg"] = authenticated ? "proof, " : "";
     vars["inputTypeName"] = method.input_type()->name();
     vars["outputTypeName"] = method.output_type()->name();
 
@@ -562,7 +637,7 @@ void RpcGenerator::ImplementBrpcCallMethodRecvPayload(io::Printer &printer,
     impl += BuildScTimeoutDurationInitSnippet();
     impl +=
         "$indent$rpcTrace.MarkServerExecStart();\n"
-        "$indent$::datasystem::Status st = impl_.$methodName$(*req, *rsp, outPayload);\n"
+        "$indent$::datasystem::Status st = impl_.$methodName$($proof_arg$*req, *rsp, outPayload);\n"
         "$indent$rpcTrace.MarkServerExecEnd();\n"
         "$indent$if (st.IsError()) {\n"
         "$indent$    cntl->SetFailed(st.GetMsg() + \"\\x01\" \"DS_ERR:\" + "
@@ -588,13 +663,14 @@ void RpcGenerator::ImplementBrpcCallMethodRecvPayload(io::Printer &printer,
 void RpcGenerator::ImplementBrpcCallMethodSendRecvPayload(io::Printer &printer,
                                                           const google::protobuf::MethodDescriptor &method,
                                                           int methodIndex,
-                                                          const std::string &indent)
+                                                          const std::string &indent, bool authenticated)
 {
     (void)indent;
     (void)methodIndex;
     std::map<std::string, std::string> vars;
     vars["indent"] = indent;
     vars["methodName"] = method.name();
+    vars["proof_arg"] = authenticated ? "proof, " : "";
     vars["inputTypeName"] = method.input_type()->name();
     vars["outputTypeName"] = method.output_type()->name();
 
@@ -637,7 +713,7 @@ std::string RpcGenerator::BuildSendRecvPayloadImpl()
         "$indent$    }\n"
         "$indent$} while (false);\n"
         "$indent$rpcTrace.MarkServerExecStart();\n"
-        "$indent$::datasystem::Status st = impl_.$methodName$(*req, *rsp, std::move(payload), outPayload);\n"
+        "$indent$::datasystem::Status st = impl_.$methodName$($proof_arg$*req, *rsp, std::move(payload), outPayload);\n"
         "$indent$rpcTrace.MarkServerExecEnd();\n"
         "$indent$if (st.IsError()) {\n"
         "$indent$    cntl->SetFailed(st.GetMsg() + \"\\x01\" \"DS_ERR:\" + "
@@ -663,13 +739,17 @@ std::string RpcGenerator::BuildSendRecvPayloadImpl()
 void RpcGenerator::ImplementBrpcCallMethodUnarySocket(io::Printer &printer,
                                                       const google::protobuf::MethodDescriptor &method,
                                                       int methodIndex,
-                                                      const std::string &indent)
+                                                      const std::string &indent, bool authenticated)
 {
     (void)indent;
     (void)methodIndex;
     std::map<std::string, std::string> vars;
     vars["indent"] = indent;
     vars["methodName"] = method.name();
+    vars["proof_arg"] = authenticated ? "proof, " : "";
+    if (authenticated) {
+        vars["methodFullName"] = method.full_name();
+    }
     vars["inputTypeName"] = method.input_type()->name();
     vars["outputTypeName"] = method.output_type()->name();
 
@@ -691,7 +771,7 @@ void RpcGenerator::ImplementBrpcCallMethodUnarySocket(io::Printer &printer,
         "$indent$// Keep both request timeout domains aligned with the brpc deadline.\n"
         "$indent$::datasystem::GetRequestContext()->reqTimeoutDuration = serverApi->GetScTimeoutDuration();\n"
         "$indent$::datasystem::GetRequestContext()->scTimeoutDuration = serverApi->GetScTimeoutDuration();\n"
-        "$indent$::datasystem::Status st = impl_.$methodName$(serverApi);\n"
+        "$indent$::datasystem::Status st = impl_.$methodName$($proof_arg$serverApi);\n"
         "$indent$if (st.IsError()) {\n"
         "$indent$    VLOG(1) << \"[BRPC_UNARY_SOCKET_SET_FAILED] method=$methodName$\"\n"
         "$indent$            << \", status=\" << st.ToString()\n"
@@ -847,13 +927,14 @@ std::string RpcGenerator::BuildScTimeoutDurationInitSnippet()
 void RpcGenerator::ImplementBrpcCallMethodClientStream(io::Printer &printer,
                                                        const google::protobuf::MethodDescriptor &method,
                                                        int methodIndex,
-                                                       const std::string &indent)
+                                                       const std::string &indent, bool authenticated)
 {
     (void)indent;
     (void)methodIndex;
     std::map<std::string, std::string> vars;
     vars["indent"] = indent;
     vars["methodName"] = method.name();
+    vars["proof_arg"] = authenticated ? "proof, " : "";
     vars["methodFullName"] = method.full_name();
     vars["inputTypeName"] = method.input_type()->name();
     vars["outputTypeName"] = method.output_type()->name();
@@ -891,7 +972,7 @@ void RpcGenerator::ImplementBrpcCallMethodClientStream(io::Printer &printer,
         "$indent$}\n"
         "$indent$done_guard.release()->Run();\n"
         "$indent$$outputTypeName$ reply;\n"
-        "$indent$auto st = impl_.$methodName$(reader, reply$optRecvPayload1$);\n"
+        "$indent$auto st = impl_.$methodName$($proof_arg$reader, reply$optRecvPayload1$);\n"
         "$indent$(void)pimpl->Complete(reply, st);\n";
     printer.Print(vars, impl.c_str());
 }
@@ -899,13 +980,17 @@ void RpcGenerator::ImplementBrpcCallMethodClientStream(io::Printer &printer,
 void RpcGenerator::ImplementBrpcCallMethodServerStream(io::Printer &printer,
                                                        const google::protobuf::MethodDescriptor &method,
                                                        int methodIndex,
-                                                       const std::string &indent)
+                                                       const std::string &indent, bool authenticated)
 {
     (void)indent;
     (void)methodIndex;
     std::map<std::string, std::string> vars;
     vars["indent"] = indent;
     vars["methodName"] = method.name();
+    vars["proof_arg"] = authenticated ? "proof, " : "";
+    if (authenticated) {
+        vars["methodFullName"] = method.full_name();
+    }
     vars["inputTypeName"] = method.input_type()->name();
     vars["outputTypeName"] = method.output_type()->name();
     vars["optSendPayload1"] = HasPayloadSendOption(method) ? ", std::move(pl)" : "";
@@ -964,7 +1049,7 @@ void RpcGenerator::ImplementBrpcCallMethodServerStream(io::Printer &printer,
         "std::to_string(static_cast<int>(readSt.GetCode())) + \"\\x02\");\n"
         "$indent$    return;\n"
         "$indent$}\n"
-        "$indent$::datasystem::Status st = impl_.$methodName$(writer, rq$optSendPayload1$);\n"
+        "$indent$::datasystem::Status st = impl_.$methodName$($proof_arg$writer, rq$optSendPayload1$);\n"
         "$indent$if (st.IsError()) {\n"
         "$indent$    cntl->SetFailed(st.GetMsg() + \"\\x01\" \"DS_ERR:\" + "
         "std::to_string(static_cast<int>(st.GetCode())) + \"\\x02\");\n"
@@ -975,13 +1060,17 @@ void RpcGenerator::ImplementBrpcCallMethodServerStream(io::Printer &printer,
 void RpcGenerator::ImplementBrpcCallMethodBidiStream(io::Printer &printer,
                                                      const google::protobuf::MethodDescriptor &method,
                                                      int methodIndex,
-                                                     const std::string &indent)
+                                                     const std::string &indent, bool authenticated)
 {
     (void)indent;
     (void)methodIndex;
     std::map<std::string, std::string> vars;
     vars["indent"] = indent;
     vars["methodName"] = method.name();
+    vars["proof_arg"] = authenticated ? "proof, " : "";
+    if (authenticated) {
+        vars["methodFullName"] = method.full_name();
+    }
     vars["inputTypeName"] = method.input_type()->name();
     vars["outputTypeName"] = method.output_type()->name();
 
@@ -1000,7 +1089,7 @@ void RpcGenerator::ImplementBrpcCallMethodBidiStream(io::Printer &printer,
         "std::move(brpcStreamImpl));\n";
     impl += BuildScTimeoutDurationInitSnippet();
     impl +=
-        "$indent$::datasystem::Status st = impl_.$methodName$(stream);\n"
+        "$indent$::datasystem::Status st = impl_.$methodName$($proof_arg$stream);\n"
         "$indent$if (st.IsError()) {\n"
         "$indent$    cntl->SetFailed(st.GetMsg() + \"\\x01\" \"DS_ERR:\" + "
         "std::to_string(static_cast<int>(st.GetCode())) + \"\\x02\");\n"

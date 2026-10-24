@@ -230,6 +230,7 @@ genrule(
         "coordinator.brpc.stub.pb.h",
         "coordinator.brpc.stub.pb.cc",
         "coordinator.irpc.pb.h",
+        "coordinator.brpc.auth.pb.h",
         "coordinator.auth.pb.h",
         "coordinator.auth.pb.cc",
     ],
@@ -244,6 +245,7 @@ genrule(
         cp $$TMPD/datasystem/protos/coordinator.brpc.pb.h $$TMPD/datasystem/protos/coordinator.brpc.pb.cc $$TMPD/datasystem/protos/coordinator.brpc.stub.pb.h $$TMPD/datasystem/protos/coordinator.brpc.stub.pb.cc $$TMPD/datasystem/protos/coordinator.irpc.pb.h $$OUT_DIR/
         $$PROTOC -I$$TMPD -I$$PROTO_ROOT/src -I$$GOOGLE_PROTOBUF_SRC \
             --cpp_out=$$TMPD datasystem/protos/coordinator.auth.proto
+        cp $$TMPD/datasystem/protos/coordinator.brpc.auth.pb.h $$OUT_DIR/
         cp $$TMPD/datasystem/protos/coordinator.auth.pb.h \
            $$TMPD/datasystem/protos/coordinator.auth.pb.cc $$OUT_DIR/
         rm -rf $$TMPD
@@ -257,6 +259,7 @@ cc_library(
     strip_include_prefix = ".",
     include_prefix = "datasystem/protos",
     deps = [
+        "//src/datasystem/common/rpc:brpc_auth",
         ":coordinator_cc_proto",
         "@com_github_apache_brpc//:brpc",
         "//include/datasystem/utils:utils_headers",
@@ -402,6 +405,7 @@ genrule(
         "ut_object.brpc.stub.pb.h",
         "ut_object.brpc.stub.pb.cc",
         "ut_object.irpc.pb.h",
+        "ut_object.brpc.auth.pb.h",
         "ut_object.auth.pb.h",
         "ut_object.auth.pb.cc",
     ],
@@ -425,6 +429,7 @@ genrule(
            $$OUT_DIR/
         $$PROTOC -I$$TMPD -I$$PROTO_ROOT/src -I$$GOOGLE_PROTOBUF_SRC \
             --cpp_out=$$TMPD datasystem/protos/ut_object.auth.proto
+        cp $$TMPD/datasystem/protos/ut_object.brpc.auth.pb.h $$OUT_DIR/
         cp $$TMPD/datasystem/protos/ut_object.auth.pb.h \
            $$TMPD/datasystem/protos/ut_object.auth.pb.cc $$OUT_DIR/
         rm -rf $$TMPD
@@ -438,6 +443,7 @@ cc_library(
     strip_include_prefix = ".",
     include_prefix = "datasystem/protos",
     deps = [
+        "//src/datasystem/common/rpc:brpc_auth",
         ":ut_object_cc_proto",
         "@com_github_apache_brpc//:brpc",
         "//include/datasystem/utils:utils_headers",
@@ -609,6 +615,7 @@ genrule(
         "generic_service.brpc.stub.pb.h",
         "generic_service.brpc.stub.pb.cc",
         "generic_service.irpc.pb.h",
+        "generic_service.brpc.auth.pb.h",
         "generic_service.auth.pb.h",
         "generic_service.auth.pb.cc",
     ],
@@ -636,6 +643,7 @@ genrule(
            $$OUT_DIR/
         $$PROTOC -I$$TMPD -I$$PROTO_ROOT/src \
             --cpp_out=$$TMPD datasystem/protos/generic_service.auth.proto
+        cp $$TMPD/datasystem/protos/generic_service.brpc.auth.pb.h $$OUT_DIR/
         cp $$TMPD/datasystem/protos/generic_service.auth.pb.h \
            $$TMPD/datasystem/protos/generic_service.auth.pb.cc $$OUT_DIR/
         rm -rf $$TMPD
@@ -649,6 +657,7 @@ cc_library(
     strip_include_prefix = ".",
     include_prefix = "datasystem/protos",
     deps = [
+        "//src/datasystem/common/rpc:brpc_auth",
         ":generic_service_cc_proto",
         ":rpc_option_cc_proto",
         "@com_github_apache_brpc//:brpc",
@@ -679,6 +688,7 @@ genrule(
         "master_heartbeat.brpc.stub.pb.h",
         "master_heartbeat.brpc.stub.pb.cc",
         "master_heartbeat.irpc.pb.h",
+        "master_heartbeat.brpc.auth.pb.h",
         "master_heartbeat.auth.pb.h",
         "master_heartbeat.auth.pb.cc",
     ],
@@ -693,6 +703,7 @@ genrule(
         cp $$TMPD/datasystem/protos/master_heartbeat.brpc.pb.h $$TMPD/datasystem/protos/master_heartbeat.brpc.pb.cc $$TMPD/datasystem/protos/master_heartbeat.brpc.stub.pb.h $$TMPD/datasystem/protos/master_heartbeat.brpc.stub.pb.cc $$TMPD/datasystem/protos/master_heartbeat.irpc.pb.h $$OUT_DIR/
         $$PROTOC -I$$TMPD -I$$PROTO_ROOT/src -I$$GOOGLE_PROTOBUF_SRC \
             --cpp_out=$$TMPD datasystem/protos/master_heartbeat.auth.proto
+        cp $$TMPD/datasystem/protos/master_heartbeat.brpc.auth.pb.h $$OUT_DIR/
         cp $$TMPD/datasystem/protos/master_heartbeat.auth.pb.h \
            $$TMPD/datasystem/protos/master_heartbeat.auth.pb.cc $$OUT_DIR/
         rm -rf $$TMPD
@@ -706,6 +717,7 @@ cc_library(
     strip_include_prefix = ".",
     include_prefix = "datasystem/protos",
     deps = [
+        "//src/datasystem/common/rpc:brpc_auth",
         ":master_heartbeat_cc_proto",
         ":rpc_option_cc_proto",
         "@com_github_apache_brpc//:brpc",
@@ -734,6 +746,7 @@ genrule(
         "share_memory.brpc.pb.h", "share_memory.brpc.pb.cc",
         "share_memory.brpc.stub.pb.h", "share_memory.brpc.stub.pb.cc",
         "share_memory.irpc.pb.h",
+        "share_memory.brpc.auth.pb.h",
         "share_memory.auth.pb.h",
         "share_memory.auth.pb.cc",
     ],
@@ -748,6 +761,7 @@ genrule(
         cp $$TMPD/datasystem/protos/share_memory.brpc.pb.h $$TMPD/datasystem/protos/share_memory.brpc.pb.cc $$TMPD/datasystem/protos/share_memory.brpc.stub.pb.h $$TMPD/datasystem/protos/share_memory.brpc.stub.pb.cc $$TMPD/datasystem/protos/share_memory.irpc.pb.h $$OUT_DIR/
         $$PROTOC -I$$TMPD -I$$PROTO_ROOT/src -I$$GOOGLE_PROTOBUF_SRC \
             --cpp_out=$$TMPD datasystem/protos/share_memory.auth.proto
+        cp $$TMPD/datasystem/protos/share_memory.brpc.auth.pb.h $$OUT_DIR/
         cp $$TMPD/datasystem/protos/share_memory.auth.pb.h \
            $$TMPD/datasystem/protos/share_memory.auth.pb.cc $$OUT_DIR/
         rm -rf $$TMPD
@@ -761,6 +775,7 @@ cc_library(
     strip_include_prefix = ".",
     include_prefix = "datasystem/protos",
     deps = [
+        "//src/datasystem/common/rpc:brpc_auth",
         ":share_memory_cc_proto", ":meta_transport_cc_proto", ":utils_cc_proto", ":rpc_option_cc_proto",
         "@com_github_apache_brpc//:brpc",
         "//include/datasystem/utils:utils_headers",
@@ -797,6 +812,7 @@ genrule(
         "worker_object.brpc.pb.h", "worker_object.brpc.pb.cc",
         "worker_object.brpc.stub.pb.h", "worker_object.brpc.stub.pb.cc",
         "worker_object.irpc.pb.h",
+        "worker_object.brpc.auth.pb.h",
         "worker_object.auth.pb.h",
         "worker_object.auth.pb.cc",
     ],
@@ -811,6 +827,7 @@ genrule(
         cp $$TMPD/datasystem/protos/worker_object.brpc.pb.h $$TMPD/datasystem/protos/worker_object.brpc.pb.cc $$TMPD/datasystem/protos/worker_object.brpc.stub.pb.h $$TMPD/datasystem/protos/worker_object.brpc.stub.pb.cc $$TMPD/datasystem/protos/worker_object.irpc.pb.h $$OUT_DIR/
         $$PROTOC -I$$TMPD -I$$PROTO_ROOT/src -I$$GOOGLE_PROTOBUF_SRC \
             --cpp_out=$$TMPD datasystem/protos/worker_object.auth.proto
+        cp $$TMPD/datasystem/protos/worker_object.brpc.auth.pb.h $$OUT_DIR/
         cp $$TMPD/datasystem/protos/worker_object.auth.pb.h \
            $$TMPD/datasystem/protos/worker_object.auth.pb.cc $$OUT_DIR/
         rm -rf $$TMPD
@@ -824,6 +841,7 @@ cc_library(
     strip_include_prefix = ".",
     include_prefix = "datasystem/protos",
     deps = [
+        "//src/datasystem/common/rpc:brpc_auth",
         ":worker_object_cc_proto", ":meta_transport_cc_proto",
         ":object_posix_cc_proto", ":p2p_subscribe_cc_proto", ":rpc_option_cc_proto", ":share_memory_cc_proto",
         ":utils_cc_proto",
@@ -863,6 +881,7 @@ genrule(
         "master_object.brpc.pb.h", "master_object.brpc.pb.cc",
         "master_object.brpc.stub.pb.h", "master_object.brpc.stub.pb.cc",
         "master_object.irpc.pb.h",
+        "master_object.brpc.auth.pb.h",
         "master_object.auth.pb.h",
         "master_object.auth.pb.cc",
     ],
@@ -877,6 +896,7 @@ genrule(
         cp $$TMPD/datasystem/protos/master_object.brpc.pb.h $$TMPD/datasystem/protos/master_object.brpc.pb.cc $$TMPD/datasystem/protos/master_object.brpc.stub.pb.h $$TMPD/datasystem/protos/master_object.brpc.stub.pb.cc $$TMPD/datasystem/protos/master_object.irpc.pb.h $$OUT_DIR/
         $$PROTOC -I$$TMPD -I$$PROTO_ROOT/src -I$$GOOGLE_PROTOBUF_SRC \
             --cpp_out=$$TMPD datasystem/protos/master_object.auth.proto
+        cp $$TMPD/datasystem/protos/master_object.brpc.auth.pb.h $$OUT_DIR/
         cp $$TMPD/datasystem/protos/master_object.auth.pb.h \
            $$TMPD/datasystem/protos/master_object.auth.pb.cc $$OUT_DIR/
         rm -rf $$TMPD
@@ -890,6 +910,7 @@ cc_library(
     strip_include_prefix = ".",
     include_prefix = "datasystem/protos",
     deps = [
+        "//src/datasystem/common/rpc:brpc_auth",
         ":master_object_cc_proto", ":object_posix_cc_proto", ":p2p_subscribe_cc_proto",
         ":rpc_option_cc_proto", ":utils_cc_proto", ":worker_object_cc_proto",
         ":meta_transport_cc_proto",
@@ -919,6 +940,7 @@ genrule(
         "stream_posix.brpc.pb.h", "stream_posix.brpc.pb.cc",
         "stream_posix.brpc.stub.pb.h", "stream_posix.brpc.stub.pb.cc",
         "stream_posix.irpc.pb.h",
+        "stream_posix.brpc.auth.pb.h",
         "stream_posix.auth.pb.h",
         "stream_posix.auth.pb.cc",
     ],
@@ -933,6 +955,7 @@ genrule(
         cp $$TMPD/datasystem/protos/stream_posix.brpc.pb.h $$TMPD/datasystem/protos/stream_posix.brpc.pb.cc $$TMPD/datasystem/protos/stream_posix.brpc.stub.pb.h $$TMPD/datasystem/protos/stream_posix.brpc.stub.pb.cc $$TMPD/datasystem/protos/stream_posix.irpc.pb.h $$OUT_DIR/
         $$PROTOC -I$$TMPD -I$$PROTO_ROOT/src -I$$GOOGLE_PROTOBUF_SRC \
             --cpp_out=$$TMPD datasystem/protos/stream_posix.auth.proto
+        cp $$TMPD/datasystem/protos/stream_posix.brpc.auth.pb.h $$OUT_DIR/
         cp $$TMPD/datasystem/protos/stream_posix.auth.pb.h \
            $$TMPD/datasystem/protos/stream_posix.auth.pb.cc $$OUT_DIR/
         rm -rf $$TMPD
@@ -946,6 +969,7 @@ cc_library(
     strip_include_prefix = ".",
     include_prefix = "datasystem/protos",
     deps = [
+        "//src/datasystem/common/rpc:brpc_auth",
         ":stream_posix_cc_proto", ":rpc_option_cc_proto", ":utils_cc_proto",
         "@com_github_apache_brpc//:brpc",
         "//include/datasystem/utils:utils_headers",
@@ -973,6 +997,7 @@ genrule(
         "perf_posix.brpc.pb.h", "perf_posix.brpc.pb.cc",
         "perf_posix.brpc.stub.pb.h", "perf_posix.brpc.stub.pb.cc",
         "perf_posix.irpc.pb.h",
+        "perf_posix.brpc.auth.pb.h",
         "perf_posix.auth.pb.h",
         "perf_posix.auth.pb.cc",
     ],
@@ -987,6 +1012,7 @@ genrule(
         cp $$TMPD/datasystem/protos/perf_posix.brpc.pb.h $$TMPD/datasystem/protos/perf_posix.brpc.pb.cc $$TMPD/datasystem/protos/perf_posix.brpc.stub.pb.h $$TMPD/datasystem/protos/perf_posix.brpc.stub.pb.cc $$TMPD/datasystem/protos/perf_posix.irpc.pb.h $$OUT_DIR/
         $$PROTOC -I$$TMPD -I$$PROTO_ROOT/src -I$$GOOGLE_PROTOBUF_SRC \
             --cpp_out=$$TMPD datasystem/protos/perf_posix.auth.proto
+        cp $$TMPD/datasystem/protos/perf_posix.brpc.auth.pb.h $$OUT_DIR/
         cp $$TMPD/datasystem/protos/perf_posix.auth.pb.h \
            $$TMPD/datasystem/protos/perf_posix.auth.pb.cc $$OUT_DIR/
         rm -rf $$TMPD
@@ -998,6 +1024,7 @@ cc_library(
     srcs = [":perf_posix_brpc_gen"],
     hdrs = [":perf_posix_brpc_gen"],
     deps = [
+        "//src/datasystem/common/rpc:brpc_auth",
         ":perf_posix_cc_proto",
         "@com_github_apache_brpc//:brpc",
         "//include/datasystem/utils:utils_headers",
@@ -1028,6 +1055,7 @@ genrule(
         "master_stream.brpc.pb.h", "master_stream.brpc.pb.cc",
         "master_stream.brpc.stub.pb.h", "master_stream.brpc.stub.pb.cc",
         "master_stream.irpc.pb.h",
+        "master_stream.brpc.auth.pb.h",
         "master_stream.auth.pb.h",
         "master_stream.auth.pb.cc",
     ],
@@ -1042,6 +1070,7 @@ genrule(
         cp $$TMPD/datasystem/protos/master_stream.brpc.pb.h $$TMPD/datasystem/protos/master_stream.brpc.pb.cc $$TMPD/datasystem/protos/master_stream.brpc.stub.pb.h $$TMPD/datasystem/protos/master_stream.brpc.stub.pb.cc $$TMPD/datasystem/protos/master_stream.irpc.pb.h $$OUT_DIR/
         $$PROTOC -I$$TMPD -I$$PROTO_ROOT/src -I$$GOOGLE_PROTOBUF_SRC \
             --cpp_out=$$TMPD datasystem/protos/master_stream.auth.proto
+        cp $$TMPD/datasystem/protos/master_stream.brpc.auth.pb.h $$OUT_DIR/
         cp $$TMPD/datasystem/protos/master_stream.auth.pb.h \
            $$TMPD/datasystem/protos/master_stream.auth.pb.cc $$OUT_DIR/
         rm -rf $$TMPD
@@ -1055,6 +1084,7 @@ cc_library(
     strip_include_prefix = ".",
     include_prefix = "datasystem/protos",
     deps = [
+        "//src/datasystem/common/rpc:brpc_auth",
         ":master_stream_cc_proto", ":rpc_option_cc_proto", ":utils_cc_proto",
         ":worker_stream_cc_proto", ":stream_posix_cc_proto",
         "@com_github_apache_brpc//:brpc",
@@ -1083,6 +1113,7 @@ genrule(
         "worker_stream.brpc.pb.h", "worker_stream.brpc.pb.cc",
         "worker_stream.brpc.stub.pb.h", "worker_stream.brpc.stub.pb.cc",
         "worker_stream.irpc.pb.h",
+        "worker_stream.brpc.auth.pb.h",
         "worker_stream.auth.pb.h",
         "worker_stream.auth.pb.cc",
     ],
@@ -1097,6 +1128,7 @@ genrule(
         cp $$TMPD/datasystem/protos/worker_stream.brpc.pb.h $$TMPD/datasystem/protos/worker_stream.brpc.pb.cc $$TMPD/datasystem/protos/worker_stream.brpc.stub.pb.h $$TMPD/datasystem/protos/worker_stream.brpc.stub.pb.cc $$TMPD/datasystem/protos/worker_stream.irpc.pb.h $$OUT_DIR/
         $$PROTOC -I$$TMPD -I$$PROTO_ROOT/src -I$$GOOGLE_PROTOBUF_SRC \
             --cpp_out=$$TMPD datasystem/protos/worker_stream.auth.proto
+        cp $$TMPD/datasystem/protos/worker_stream.brpc.auth.pb.h $$OUT_DIR/
         cp $$TMPD/datasystem/protos/worker_stream.auth.pb.h \
            $$TMPD/datasystem/protos/worker_stream.auth.pb.cc $$OUT_DIR/
         rm -rf $$TMPD
@@ -1110,6 +1142,7 @@ cc_library(
     strip_include_prefix = ".",
     include_prefix = "datasystem/protos",
     deps = [
+        "//src/datasystem/common/rpc:brpc_auth",
         ":worker_stream_cc_proto", ":stream_posix_cc_proto", ":rpc_option_cc_proto", ":utils_cc_proto",
         "@com_github_apache_brpc//:brpc",
         "//include/datasystem/utils:utils_headers",
@@ -1147,6 +1180,7 @@ genrule(
         "object_posix.brpc.stub.pb.h",
         "object_posix.brpc.stub.pb.cc",
         "object_posix.irpc.pb.h",
+        "object_posix.brpc.auth.pb.h",
         "object_posix.auth.pb.h",
         "object_posix.auth.pb.cc",
     ],
@@ -1170,6 +1204,7 @@ genrule(
            $$OUT_DIR/
         $$PROTOC -I$$TMPD -I$$PROTO_ROOT/src -I$$GOOGLE_PROTOBUF_SRC \
             --cpp_out=$$TMPD datasystem/protos/object_posix.auth.proto
+        cp $$TMPD/datasystem/protos/object_posix.brpc.auth.pb.h $$OUT_DIR/
         cp $$TMPD/datasystem/protos/object_posix.auth.pb.h \
            $$TMPD/datasystem/protos/object_posix.auth.pb.cc $$OUT_DIR/
         rm -rf $$TMPD
@@ -1183,6 +1218,7 @@ cc_library(
     strip_include_prefix = ".",
     include_prefix = "datasystem/protos",
     deps = [
+        "//src/datasystem/common/rpc:brpc_auth",
         ":object_posix_cc_proto",
         ":cluster_topology_cc_proto",
         ":rpc_option_cc_proto",

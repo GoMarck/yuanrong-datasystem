@@ -197,7 +197,17 @@ const RpcRequestCapture *GetRpcRequestCapture(brpc::Controller &controller)
     return capture != nullptr && capture->owner == &controller ? capture : nullptr;
 }
 
-Status VerifyRpcRequest(AkSkManager &manager, const RpcRequestCapture *capture)
+RpcRequestProof CopyRpcRequestProof(brpc::Controller &controller) noexcept
+{
+    try {
+        const auto *capture = GetRpcRequestCapture(controller);
+        return capture == nullptr ? RpcRequestProof{} : static_cast<const RpcRequestProof &>(*capture);
+    } catch (const std::bad_alloc &) {
+        return RpcRequestProof{};
+    }
+}
+
+Status VerifyRpcRequest(AkSkManager &manager, const RpcRequestProof *capture)
 {
     if (capture == nullptr || !capture->captured) {
         return manager.VerifySignatureFromDigest("", 0, "", AkSkDigest{});

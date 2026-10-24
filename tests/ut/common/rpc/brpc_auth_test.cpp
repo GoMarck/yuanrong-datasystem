@@ -25,7 +25,9 @@
 #include "datasystem/common/ak_sk/ak_sk_manager.h"
 #include "datasystem/common/util/timer.h"
 #include "datasystem/common/rpc/brpc_auth.h"
+#include "datasystem/common/rpc/brpc_client_stream_impl.h"
 #include "datasystem/protos/ut_object.auth.pb.h"
+#include "datasystem/protos/ut_object.brpc.auth.pb.h"
 #include "datasystem/protos/ut_object.pb.h"
 
 namespace datasystem {
@@ -105,6 +107,53 @@ private:
     const google::protobuf::FileDescriptor *file_ = nullptr;
 };
 
+class GeneratedAuthProbe {
+public:
+    template <typename... Args>
+    Status GetWorkerGRefTable(const RpcRequestProof &, Args &&...) { return Status::OK(); }
+    template <typename... Args>
+    Status GetMasterGRefTable(const RpcRequestProof &, Args &&...) { return Status::OK(); }
+    template <typename... Args>
+    Status GetCmNodeTable(const RpcRequestProof &, Args &&...) { return Status::OK(); }
+    template <typename... Args>
+    Status TestUnaryCompatibilityV1(const RpcRequestProof &proof, Args &&...)
+    {
+        return VerifyRpcRequest(manager, &proof);
+    }
+    template <typename... Args>
+    Status TestUnaryCompatibilityV2(const RpcRequestProof &proof, Args &&...)
+    {
+        return VerifyRpcRequest(manager, &proof);
+    }
+    template <typename... Args>
+    Status TestStreamCompatibilityV1(const RpcRequestProof &, Args &&...) { return Status::OK(); }
+    template <typename... Args>
+    Status TestStreamCompatibilityV2(const RpcRequestProof &, Args &&...) { return Status::OK(); }
+    template <typename R, typename W>
+    Status ReadFirst(const RpcRequestProof &proof, const std::shared_ptr<ServerReader<R>> &reader, W &reply)
+    {
+        R request;
+        RETURN_IF_NOT_OK(reader->Read(request));
+        EXPECT_EQ(request.auth_req(), 2);
+        RETURN_IF_NOT_OK(VerifyRpcRequest(manager, &proof));
+        reply.GetReflection()->MutableUnknownFields(&reply)->AddVarint(7, request.auth_req());
+        verified.fetch_add(1);
+        return Status::OK();
+    }
+    Status TestStreamCompatibility1V1(const RpcRequestProof &proof,
+                                      const std::shared_ptr<ServerReader<TestReqPbV1>> &reader, TestRspPbV1 &reply)
+    {
+        return ReadFirst(proof, reader, reply);
+    }
+    Status TestStreamCompatibility1V2(const RpcRequestProof &proof,
+                                      const std::shared_ptr<ServerReader<TestReqPbV2>> &reader, TestRspPbV1 &reply)
+    {
+        return ReadFirst(proof, reader, reply);
+    }
+    AkSkManager manager;
+    std::atomic<unsigned> verified{0};
+};
+
 class BrpcAuthTest : public ::testing::Test {
 protected:
     void SetUp() override
@@ -112,7 +161,10 @@ protected:
         ASSERT_TRUE(RegisterRpcAuthCapture().IsOk());
         ASSERT_TRUE(service_.manager.SetServerAkSk(
             AkSkType::SYSTEM, "test-only-access", SensitiveValue("test-only-secret")).IsOk());
+        ASSERT_TRUE(generated_.manager.SetServerAkSk(
+            AkSkType::SYSTEM, "test-only-access", SensitiveValue("test-only-secret")).IsOk());
         ASSERT_EQ(server_.AddService(&service_, brpc::SERVER_DOESNT_OWN_SERVICE), 0);
+        ASSERT_EQ(server_.AddService(&adapter_, brpc::SERVER_DOESNT_OWN_SERVICE), 0);
         brpc::ServerOptions options;
         options.session_local_data_factory = &factory_;
         ASSERT_EQ(server_.Start("127.0.0.1:0", &options), 0);
@@ -127,10 +179,13 @@ protected:
     void TearDown() override
     {
         server_.Stop(0);
+        adapter_.StopAndWait();
         server_.Join();
     }
     RpcAuthDataFactory factory_;
     AuthProbe service_;
+    GeneratedAuthProbe generated_;
+    UtOCServiceBrpcAuthAdapter<GeneratedAuthProbe> adapter_{generated_};
     brpc::Server server_;
     std::shared_ptr<Signature> provider_;
     std::shared_ptr<const RpcMethodMap> methods_;
@@ -175,6 +230,34 @@ TEST_F(BrpcAuthTest, EncodesOnceAndVerifiesRawBytesAcrossSchemas)
     EXPECT_FALSE(controller.Failed()) << controller.ErrorText();
     EXPECT_EQ(counted.encodes, 1);
     EXPECT_EQ(service_.verified.load(), 1);
+}
+
+TEST_F(BrpcAuthTest, GeneratedAdapterOwnsProofAfterFirstStreamHandshake)
+{
+    const auto *plain = TestReqPbV1::descriptor()->file()->FindServiceByName("UtOCService");
+    std::shared_ptr<const RpcMethodMap> methods;
+    ASSERT_TRUE(RpcMethodMap::Create({{plain, UtOCServiceAuth::descriptor()}}, methods).IsOk());
+    BrpcChannelConfig config;
+    config.endpoint = butil::endpoint2str(server_.listen_address()).c_str();
+    config.timeout_ms = 1000;
+    config.max_retry = 0;
+    std::unique_ptr<brpc::Channel> channel;
+    ASSERT_TRUE(CreateBrpcAuthChannel(config, {provider_, methods}, channel).IsOk());
+    TestReqPbV1 request;
+    request.set_auth_req(2);
+    CountedRequest counted(request);
+    const auto *method = plain->FindMethodByName("TestStreamCompatibility1V1");
+    BrpcClientWriterImpl<CountedRequest> writer(channel.get(), method, 1000);
+    ASSERT_TRUE(writer.Write(counted).IsOk());
+    TestRspPbV1 response;
+    ASSERT_TRUE(writer.Read(response).IsOk());
+    const auto &fields = response.GetReflection()->GetUnknownFields(response);
+    ASSERT_EQ(fields.field_count(), 1);
+    EXPECT_EQ(fields.field(0).number(), 7);
+    EXPECT_EQ(fields.field(0).varint(), 2);
+    ASSERT_TRUE(writer.Finish().IsOk());
+    EXPECT_EQ(counted.encodes, 1);
+    EXPECT_EQ(generated_.verified.load(), 1);
 }
 
 TEST_F(BrpcAuthTest, MissingProofOnlyFailsWhenTheMethodRequiresIt)

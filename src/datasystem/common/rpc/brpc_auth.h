@@ -50,13 +50,16 @@ struct RpcSigningBinding {
     std::shared_ptr<const RpcMethodMap> methods;
 };
 
-struct RpcRequestCapture {
-    const brpc::Controller *owner = nullptr;
+struct RpcRequestProof {
     bool captured = false;
     AkSkDigest digest{};
     uint64_t timestampUs = 0;
     std::string accessKey;
     std::string signature;
+};
+
+struct RpcRequestCapture : RpcRequestProof {
+    const brpc::Controller *owner = nullptr;
 };
 
 class RpcAuthDataFactory final : public brpc::DataFactory {
@@ -73,7 +76,8 @@ Status ComputeRpcRequestDigest(const google::protobuf::MethodDescriptor &method,
                                const butil::IOBuf &body, AkSkDigest &out);
 Status CaptureRpcRequest(const brpc::ChecksumIn &input, RpcRequestCapture &capture);
 const RpcRequestCapture *GetRpcRequestCapture(brpc::Controller &controller);
-Status VerifyRpcRequest(AkSkManager &manager, const RpcRequestCapture *capture);
+RpcRequestProof CopyRpcRequestProof(brpc::Controller &controller) noexcept;
+Status VerifyRpcRequest(AkSkManager &manager, const RpcRequestProof *proof);
 
 class BrpcAuthChannel final : public brpc::Channel {
 public:
