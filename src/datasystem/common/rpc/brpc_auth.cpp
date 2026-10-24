@@ -47,6 +47,12 @@ struct RpcAuthRequestCarrier final : brpc::SerializedRequest {
     Status status;
 };
 
+bool UsesScMigrationProjection(const google::protobuf::MethodDescriptor &method)
+{
+    return method.name() == "MigrateSCMetadata" &&
+           method.input_type()->full_name() == "datasystem.master.MigrateSCMetadataReqPb";
+}
+
 void ComputeCapture(const brpc::ChecksumIn &)
 {
 }
@@ -138,8 +144,7 @@ Status ComputeRpcRequestDigest(const google::protobuf::MethodDescriptor &method,
 {
     const butil::IOBuf *input = &body;
     butil::IOBuf projected;
-    if (method.name() == "MigrateSCMetadata" &&
-        method.input_type()->full_name() == "datasystem.master.MigrateSCMetadataReqPb") {
+    if (UsesScMigrationProjection(method)) {
         RETURN_IF_NOT_OK(BuildScMigrationAuthBytes(body, projected));
         input = &projected;
     }
@@ -259,6 +264,9 @@ void BrpcAuthChannel::SerializeAuthenticated(butil::IOBuf *out, brpc::Controller
         RETURN_IF_NOT_OK(carrier->binding.credentials->SnapshotClientKey(key));
         CHECK_FAIL_RETURN_STATUS(!key.accessKey.empty() && !key.secretKey.Empty(), K_INVALID,
                                  "Missing RPC signing credentials.");
+        CHECK_FAIL_RETURN_STATUS(!UsesScMigrationProjection(*controller->method()) ||
+                                     controller->request_compress_type() == brpc::COMPRESS_TYPE_NONE,
+                                 K_NOT_SUPPORTED, "SC metadata authentication requires uncompressed PB.");
         const auto timestamp = static_cast<uint64_t>(GetSystemClockTimeStampUs());
         controller->set_request_checksum_type(brpc::CHECKSUM_TYPE_NONE);
         carrier->serializer(out, controller, carrier->request);

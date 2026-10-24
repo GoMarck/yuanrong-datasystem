@@ -177,6 +177,8 @@ ds_cc_test(
         "//src/datasystem/common/ak_sk:common_ak_sk",
         "//src/datasystem/common/rpc:brpc_auth",
         "//src/datasystem/common/rpc:rpc_stub",
+        "//src/datasystem/protos:master_stream_cc_proto",
+        "//src/datasystem/protos:master_stream_brpc",
         "//src/datasystem/protos:ut_object_cc_proto",
         "//src/datasystem/protos:ut_object_brpc",
         "@com_github_apache_brpc//:brpc",

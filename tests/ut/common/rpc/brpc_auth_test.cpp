@@ -26,6 +26,9 @@
 #include "datasystem/common/util/timer.h"
 #include "datasystem/common/rpc/brpc_auth.h"
 #include "datasystem/common/rpc/brpc_client_stream_impl.h"
+#include "datasystem/common/rpc/brpc_client_stream_writer_reader.h"
+#include "datasystem/protos/master_stream.auth.pb.h"
+#include "datasystem/protos/master_stream.pb.h"
 #include "datasystem/protos/ut_object.auth.pb.h"
 #include "datasystem/protos/ut_object.brpc.auth.pb.h"
 #include "datasystem/protos/ut_object.pb.h"
@@ -125,12 +128,18 @@ public:
     {
         return VerifyRpcRequest(manager, &proof);
     }
-    template <typename... Args>
-    Status TestStreamCompatibilityV1(const RpcRequestProof &, Args &&...) { return Status::OK(); }
+    Status TestStreamCompatibilityV1(
+        const RpcRequestProof &proof, const std::shared_ptr<ServerWriterReader<TestRspPbV1, TestReqPbV1>> &stream)
+    {
+        TestRspPbV1 reply;
+        RETURN_IF_NOT_OK(ReadFirstRequest<TestReqPbV1>(proof, stream, reply));
+        RETURN_IF_NOT_OK(stream->Write(reply));
+        return stream->Finish();
+    }
     template <typename... Args>
     Status TestStreamCompatibilityV2(const RpcRequestProof &, Args &&...) { return Status::OK(); }
-    template <typename R, typename W>
-    Status ReadFirst(const RpcRequestProof &proof, const std::shared_ptr<ServerReader<R>> &reader, W &reply)
+    template <typename R, typename Reader>
+    Status ReadFirstRequest(const RpcRequestProof &proof, const Reader &reader, TestRspPbV1 &reply)
     {
         R request;
         RETURN_IF_NOT_OK(reader->Read(request));
@@ -143,12 +152,12 @@ public:
     Status TestStreamCompatibility1V1(const RpcRequestProof &proof,
                                       const std::shared_ptr<ServerReader<TestReqPbV1>> &reader, TestRspPbV1 &reply)
     {
-        return ReadFirst(proof, reader, reply);
+        return ReadFirstRequest<TestReqPbV1>(proof, reader, reply);
     }
     Status TestStreamCompatibility1V2(const RpcRequestProof &proof,
                                       const std::shared_ptr<ServerReader<TestReqPbV2>> &reader, TestRspPbV1 &reply)
     {
-        return ReadFirst(proof, reader, reply);
+        return ReadFirstRequest<TestReqPbV2>(proof, reader, reply);
     }
     AkSkManager manager;
     std::atomic<unsigned> verified{0};
@@ -223,13 +232,43 @@ TEST_F(BrpcAuthTest, EncodesOnceAndVerifiesRawBytesAcrossSchemas)
     request.set_filed1(1);
     request.set_filed5(5);
     request.set_auth_req(2);
+    unsigned verified = 0;
+    for (const auto compression : {brpc::COMPRESS_TYPE_NONE, brpc::COMPRESS_TYPE_GZIP}) {
+        SCOPED_TRACE(compression);
+        CountedRequest counted(request);
+        TestRspPbV1 response;
+        brpc::Controller controller;
+        controller.set_request_compress_type(compression);
+        channel_->CallMethod(service_.Plain()->method(0), &controller, &counted, &response, nullptr);
+        EXPECT_FALSE(controller.Failed()) << controller.ErrorText();
+        EXPECT_EQ(counted.encodes, 1);
+        EXPECT_EQ(service_.verified.load(), ++verified);
+    }
+}
+
+TEST_F(BrpcAuthTest, ScMigrationRejectsCompressionBeforeEncoding)
+{
+    const auto *plain = master::MigrateSCMetadataReqPb::descriptor()->file()->FindServiceByName("MasterSCService");
+    ASSERT_NE(plain, nullptr);
+    std::shared_ptr<const RpcMethodMap> methods;
+    ASSERT_TRUE(RpcMethodMap::Create({{plain, master::MasterSCServiceAuth::descriptor()}}, methods).IsOk());
+    BrpcChannelConfig config;
+    config.endpoint = butil::endpoint2str(server_.listen_address()).c_str();
+    config.timeout_ms = 1000;
+    config.max_retry = 0;
+    std::unique_ptr<brpc::Channel> channel;
+    ASSERT_TRUE(CreateBrpcAuthChannel(config, {provider_, methods}, channel).IsOk());
+    const auto *method = plain->FindMethodByName("MigrateSCMetadata");
+    ASSERT_NE(method, nullptr);
+    master::MigrateSCMetadataReqPb request;
+    master::MigrateSCMetadataRspPb response;
     CountedRequest counted(request);
-    TestRspPbV1 response;
     brpc::Controller controller;
-    channel_->CallMethod(service_.Plain()->method(0), &controller, &counted, &response, nullptr);
-    EXPECT_FALSE(controller.Failed()) << controller.ErrorText();
-    EXPECT_EQ(counted.encodes, 1);
-    EXPECT_EQ(service_.verified.load(), 1);
+    controller.set_request_compress_type(brpc::COMPRESS_TYPE_GZIP);
+    channel->CallMethod(method, &controller, &counted, &response, nullptr);
+    ASSERT_TRUE(controller.Failed());
+    EXPECT_NE(controller.ErrorText().find("SC metadata authentication requires uncompressed PB"), std::string::npos);
+    EXPECT_EQ(counted.encodes, 0);
 }
 
 TEST_F(BrpcAuthTest, GeneratedAdapterOwnsProofAfterFirstStreamHandshake)
@@ -258,6 +297,20 @@ TEST_F(BrpcAuthTest, GeneratedAdapterOwnsProofAfterFirstStreamHandshake)
     ASSERT_TRUE(writer.Finish().IsOk());
     EXPECT_EQ(counted.encodes, 1);
     EXPECT_EQ(generated_.verified.load(), 1);
+
+    CountedRequest bidiCounted(request);
+    auto bidi = std::make_shared<BrpcClientStreamWriterReader<CountedRequest, TestRspPbV1>>(
+        channel.get(), plain->FindMethodByName("TestStreamCompatibilityV1"), 1000);
+    ASSERT_TRUE(bidi->Write(bidiCounted).IsOk());
+    TestRspPbV1 bidiResponse;
+    ASSERT_TRUE(bidi->Read(bidiResponse).IsOk());
+    const auto &bidiFields = bidiResponse.GetReflection()->GetUnknownFields(bidiResponse);
+    ASSERT_EQ(bidiFields.field_count(), 1);
+    EXPECT_EQ(bidiFields.field(0).number(), 7);
+    EXPECT_EQ(bidiFields.field(0).varint(), 2);
+    ASSERT_TRUE(bidi->Finish().IsOk());
+    EXPECT_EQ(bidiCounted.encodes, 1);
+    EXPECT_EQ(generated_.verified.load(), 2);
 }
 
 TEST_F(BrpcAuthTest, MissingProofOnlyFailsWhenTheMethodRequiresIt)

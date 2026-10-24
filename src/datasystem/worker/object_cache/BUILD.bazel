@@ -277,6 +277,7 @@ ds_cc_library(
         "worker_oc_service_impl.h",
         "worker_oc_service_body.inc",
         "worker_oc_service_rpc_helpers.h",
+        "worker_oc_service_rpc_dispatcher.h",
         "worker_self_port_health.h",
     ],
     deps = [

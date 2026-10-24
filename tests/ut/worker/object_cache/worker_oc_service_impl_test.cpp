@@ -46,6 +46,8 @@
 #include "datasystem/common/parallel/parallel_for.h"
 #include "datasystem/common/rdma/fast_transport_manager_wrapper.h"
 #include "datasystem/common/rpc/rpc_message.h"
+#include <brpc/server.h>
+
 #include "datasystem/common/rpc/brpc_auth.h"
 #include "datasystem/common/rpc/brpc_server_unary_writer_reader.h"
 #include "datasystem/common/shared_memory/allocator.h"
@@ -58,6 +60,7 @@
 #include "datasystem/protos/worker_object.pb.h"
 #include "datasystem/worker/authenticate.h"
 #include "datasystem/worker/rpc_tenant_resolver.h"
+#include "datasystem/protos/object_posix.brpc.auth.pb.h"
 #include "datasystem/worker/client_manager/client_manager.h"
 #include "datasystem/worker/cluster_event_type.h"
 #include "datasystem/worker/object_cache/device/worker_device_oc_manager.h"
@@ -74,6 +77,7 @@
 #include "datasystem/worker/object_cache/worker_oc_service_impl.h"
 #include "datasystem/worker/object_cache/worker_worker_oc_service_impl.h"
 #undef private
+#include "datasystem/worker/object_cache/worker_oc_service_rpc_dispatcher.h"
 
 using namespace ::testing;
 
@@ -2973,6 +2977,81 @@ TEST_F(WorkerOcServiceImplTest, RpcDeviceAdmissionKeepsReadShapeAndExplicitClien
     EXPECT_EQ(impl_->PublishDeviceObjectWithTenantResolver(publish, published, {}, resolver).GetCode(),
               K_CLIENT_WORKER_DISCONNECT);
     EXPECT_EQ(lookups, 18u);
+}
+
+TEST_F(WorkerOcServiceImplTest, RpcGeneratedAdapterBindsUnarySocketProofToTheOriginalTenantPoint)
+{
+    const bool skip = FLAGS_skip_authenticate;
+    FLAGS_skip_authenticate = false;
+    Raii restore([skip] {
+        FLAGS_skip_authenticate = skip;
+        (void)inject::Clear("WorkerOCServiceImpl.Get.Timeout");
+        EXPECT_TRUE(TenantAuthManager::Instance()->Init(false).IsOk());
+    });
+    ASSERT_TRUE(TenantAuthManager::Instance()->Init(false).IsOk());
+    ASSERT_TRUE(RegisterRpcAuthCapture().IsOk());
+    ASSERT_TRUE(inject::Set("WorkerOCServiceImpl.Get.Timeout", "call(1000000)").IsOk());
+    auto manager = std::make_shared<AkSkManager>();
+    ASSERT_TRUE(manager->SetServerAkSk(AkSkType::SYSTEM, "test-only-wire-access",
+                                       SensitiveValue("test-only-wire-secret")).IsOk());
+    impl_->getProc_->akSkManager_ = manager;
+    auto client = std::make_shared<worker::ClientInfo>(-1, ClientKey::Intern("test-only-wire-client"),
+                                                      true, false, "");
+    BINEXPECT_CALL(&worker::ClientManager::GetClientInfo, (_))
+        .WillRepeatedly([client](const ClientKey &actual) {
+            EXPECT_EQ(actual.ToString(), client->GetClientId());
+            return client;
+        });
+    BINEXPECT_CALL(&WorkerOCServiceImpl::ValidateWorkerStateForRequest, (_, _))
+        .WillRepeatedly([this](BthreadReadGuard &guard, int) {
+            guard.Assign(&impl_->reconFlag_);
+            EXPECT_TRUE(guard.TryLockIfUnlocked());
+            return Status::OK();
+        });
+    Raii releaseStubs([] { RELEASE_STUBS });
+    WorkerOCServiceRpcDispatcher dispatcher(*impl_);
+    WorkerOCServiceBrpcAuthAdapter<WorkerOCServiceRpcDispatcher> adapter(dispatcher);
+    WorkerOCServiceBrpcAuthAdapter<WorkerOCServiceRpcDispatcher, false> originalWire(dispatcher);
+    RpcAuthDataFactory factory;
+    brpc::Server server;
+    ASSERT_EQ(server.AddService(&adapter, brpc::SERVER_DOESNT_OWN_SERVICE), 0);
+    ASSERT_EQ(server.AddService(&originalWire, brpc::SERVER_DOESNT_OWN_SERVICE), 0);
+    brpc::ServerOptions options;
+    options.session_local_data_factory = &factory;
+    ASSERT_EQ(server.Start("127.0.0.1:0", &options), 0);
+    Raii stop([&server] { server.Stop(0); server.Join(); });
+    const auto *plain = GetReqPb::descriptor()->file()->FindServiceByName("WorkerOCService");
+    ASSERT_NE(plain, nullptr);
+    std::shared_ptr<const RpcMethodMap> methods;
+    ASSERT_TRUE(RpcMethodMap::Create({{plain, WorkerOCServiceAuth::descriptor()}}, methods).IsOk());
+    auto provider = std::make_shared<Signature>("test-only-wire-access", SensitiveValue("test-only-wire-secret"));
+    BrpcChannelConfig config;
+    config.endpoint = butil::endpoint2str(server.listen_address()).c_str();
+    config.timeout_ms = 1000;
+    config.max_retry = 0;
+    std::unique_ptr<brpc::Channel> channel;
+    ASSERT_TRUE(CreateBrpcAuthChannel(config, {provider, methods}, channel).IsOk());
+    const auto *method = plain->FindMethodByName("Get");
+    ASSERT_NE(method, nullptr);
+    GetReqPb request;
+    request.set_client_id("test-only-wire-client");
+    request.set_sub_timeout(-1);
+    GetRspPb response;
+    brpc::Controller signedCall;
+    channel->CallMethod(method, &signedCall, &request, &response, nullptr);
+    EXPECT_TRUE(signedCall.Failed());
+    EXPECT_NE(signedCall.ErrorText().find("SubTimeout is out of range"), std::string::npos);
+    auto native = BrpcChannelFactory::Create(config);
+    ASSERT_NE(native, nullptr);
+    brpc::Controller missingCall;
+    native->CallMethod(method, &missingCall, &request, &response, nullptr);
+    EXPECT_TRUE(missingCall.Failed());
+    EXPECT_NE(missingCall.ErrorText().find("AK/SK or token not provide"), std::string::npos);
+    ASSERT_TRUE(provider->SetClientAkSk("test-only-wire-access", SensitiveValue("test-only-wrong-secret")).IsOk());
+    brpc::Controller badCall;
+    channel->CallMethod(method, &badCall, &request, &response, nullptr);
+    EXPECT_TRUE(badCall.Failed());
+    EXPECT_NE(badCall.ErrorText().find("AK/SK authorized failed"), std::string::npos);
 }
 
 TEST_F(WorkerOcServiceImplTest, DeviceRemoteGetReservesCleanupBudgetBeforeRetry)
