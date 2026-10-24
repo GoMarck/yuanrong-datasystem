@@ -2464,6 +2464,69 @@ TEST_F(WorkerOcServiceImplTest, CreateAndMultiPublishRpcTenantsKeepPreconditions
     }
 }
 
+TEST_F(WorkerOcServiceImplTest, RpcWriteTenantAdmissionKeepsTheOriginalRecoveryGuard)
+{
+    const bool skip = FLAGS_skip_authenticate;
+    FLAGS_skip_authenticate = false;
+    Raii restore([skip] { FLAGS_skip_authenticate = skip; });
+    const RpcRequestProof missing;
+    worker::RpcTenantResolver resolver(missing);
+    size_t authenticated = 0;
+    BINEXPECT_CALL(&WorkerOCServiceImpl::VerifyClientWriteAdmission, (_))
+        .WillRepeatedly([](bool) { return Status::OK(); });
+    BINEXPECT_CALL(&WorkerOCServiceImpl::ValidateWorkerStateForRequest, (_, _))
+        .WillRepeatedly([this](BthreadReadGuard &guard, int) {
+            guard.Assign(&impl_->reconFlag_);
+            EXPECT_TRUE(guard.TryLockIfUnlocked());
+            return Status::OK();
+        });
+    BINEXPECT_CALL(&worker::ClientManager::GetClientInfo, (_))
+        .WillRepeatedly([this, &authenticated](const ClientKey &) {
+            BthreadWriteGuard exclusive;
+            exclusive.Assign(&impl_->reconFlag_);
+            EXPECT_FALSE(exclusive.TryLockIfUnlocked());
+            ++authenticated;
+            return std::shared_ptr<worker::ClientInfo>{};
+        });
+    for (bool useRpc : {false, true}) {
+        ScopedRequestContext context;
+        GetRequestContext()->reqTimeoutDuration.Init(1000);
+        CreateReqPb request;
+        request.set_client_id("test-only-missing-write-client");
+        CreateRspPb response;
+        auto rc = useRpc ? impl_->CreateWithTenantResolver(request, response, resolver)
+                         : impl_->Create(request, response);
+        EXPECT_EQ(rc.GetCode(), K_CLIENT_WORKER_DISCONNECT);
+        {
+            BthreadWriteGuard exclusive;
+            exclusive.Assign(&impl_->reconFlag_);
+            EXPECT_TRUE(exclusive.TryLockIfUnlocked());
+        }
+        MultiCreateReqPb create;
+        create.set_client_id(request.client_id());
+        MultiCreateRspPb created;
+        rc = useRpc ? impl_->MultiCreateWithTenantResolver(create, created, resolver)
+                    : impl_->MultiCreate(create, created);
+        EXPECT_EQ(rc.GetCode(), K_CLIENT_WORKER_DISCONNECT);
+        {
+            BthreadWriteGuard exclusive;
+            exclusive.Assign(&impl_->reconFlag_);
+            EXPECT_TRUE(exclusive.TryLockIfUnlocked());
+        }
+        MultiPublishReqPb publish;
+        publish.set_client_id(request.client_id());
+        publish.add_object_info()->set_object_key("test-only-write-key");
+        MultiPublishRspPb published;
+        rc = useRpc ? impl_->MultiPublishWithTenantResolver(publish, published, {}, resolver)
+                    : impl_->MultiPublish(publish, published, {});
+        EXPECT_EQ(rc.GetCode(), K_CLIENT_WORKER_DISCONNECT);
+        BthreadWriteGuard exclusive;
+        exclusive.Assign(&impl_->reconFlag_);
+        EXPECT_TRUE(exclusive.TryLockIfUnlocked());
+    }
+    EXPECT_EQ(authenticated, 6u);
+}
+
 TEST_F(WorkerOcServiceImplTest, DeviceRemoteGetReservesCleanupBudgetBeforeRetry)
 {
     constexpr uint64_t queryMetaVersion = 61;

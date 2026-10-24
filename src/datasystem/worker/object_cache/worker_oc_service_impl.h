@@ -267,6 +267,8 @@ public:
      * K_DUPLICATED: the object already exists, no need to create.
      */
     Status Create(const CreateReqPb &req, CreateRspPb &resp) override;
+    Status CreateWithTenantResolver(const CreateReqPb &req, CreateRspPb &resp,
+                                   const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Drain all local object data once for one member-wide ScaleIn batch.
@@ -417,6 +419,9 @@ public:
      */
     Status MultiPublish(const MultiPublishReqPb &req, MultiPublishRspPb &resp,
                         std::vector<RpcMessage> payloads) override;
+    Status MultiPublishWithTenantResolver(const MultiPublishReqPb &req, MultiPublishRspPb &resp,
+                                         std::vector<RpcMessage> payloads,
+                                         const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Deal with the request for object data from client.
@@ -993,6 +998,8 @@ public:
      * @return Status of the call
      */
     Status MultiCreate(const MultiCreateReqPb &req, MultiCreateRspPb &resp) override;
+    Status MultiCreateWithTenantResolver(const MultiCreateReqPb &req, MultiCreateRspPb &resp,
+                                        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Check whether local topology ScaleIn data draining has started.

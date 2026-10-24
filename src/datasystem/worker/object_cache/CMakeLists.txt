@@ -4,6 +4,7 @@ set(WORKER_OC_SRCS
         worker_worker_oc_api.cpp
         worker_worker_peer_state_codec.cpp
         worker_oc_service_impl.cpp
+        worker_oc_service_rpc.cpp
         worker_self_port_health.cpp
         object_cache_worker_flags.cpp
         worker_request_manager.cpp
@@ -124,6 +125,7 @@ target_link_libraries(worker_object_cache PRIVATE ${WORKER_OBJECT_CACHE_DEPEND_L
 # can consume 2-3 GB RSS.  Lowering to -O1 cuts per-process memory while preserving _FORTIFY_SOURCE compatibility.
 set(WORKER_OC_HEAVY_FILES
     worker_oc_service_impl.cpp
+    worker_oc_service_rpc.cpp
     service/worker_oc_service_get_impl.cpp
     service/worker_oc_service_get_rpc.cpp
     service/worker_query_and_get_impl.cpp

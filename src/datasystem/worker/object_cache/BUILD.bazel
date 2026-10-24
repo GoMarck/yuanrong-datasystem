@@ -267,6 +267,7 @@ ds_cc_library(
         "slot_recovery_orchestrator.cpp",
         "metadata_recovery_manager.cpp",
         "worker_oc_service_impl.cpp",
+        "worker_oc_service_rpc.cpp",
         "worker_self_port_health.cpp",
     ],
     hdrs = [
@@ -274,9 +275,12 @@ ds_cc_library(
         "metadata_recovery_manager.h",
         "slot_recovery_orchestrator.h",
         "worker_oc_service_impl.h",
+        "worker_oc_service_body.inc",
+        "worker_oc_service_rpc_helpers.h",
         "worker_self_port_health.h",
     ],
     deps = [
+        "//src/datasystem/worker:rpc_tenant_resolver",
         "//src/datasystem/cluster:remote_ub_port_health_verifier",
         "//src/datasystem/cluster:cluster_topology_scope",
         "//src/datasystem/worker:metadata_route_resolver",
