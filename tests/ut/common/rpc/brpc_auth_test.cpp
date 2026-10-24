@@ -25,6 +25,7 @@
 #include "datasystem/common/ak_sk/ak_sk_manager.h"
 #include "datasystem/common/util/timer.h"
 #include "datasystem/common/rpc/brpc_auth.h"
+#include "datasystem/protos/ut_object.auth.pb.h"
 #include "datasystem/protos/ut_object.pb.h"
 
 namespace datasystem {
@@ -136,6 +137,30 @@ protected:
     std::unique_ptr<brpc::Channel> channel_;
 };
 }  // namespace
+
+TEST(BrpcAuthDescriptorTest, GeneratedCompanionPreservesMethodsAndRejectsInvalidMappings)
+{
+    const auto *plain = TestReqPbV1::descriptor()->file()->FindServiceByName("UtOCService");
+    const auto *auth = UtOCServiceAuth::descriptor();
+    ASSERT_NE(plain, nullptr);
+    ASSERT_NE(auth, nullptr);
+    std::shared_ptr<const RpcMethodMap> methods;
+    ASSERT_TRUE(RpcMethodMap::Create({{plain, auth}}, methods).IsOk());
+    for (int i = 0; i < plain->method_count(); ++i) {
+        SCOPED_TRACE(plain->method(i)->full_name());
+        const auto *mapped = methods->Find(plain->method(i));
+        ASSERT_EQ(mapped, auth->method(i));
+        EXPECT_EQ(mapped->name(), plain->method(i)->name());
+        EXPECT_EQ(mapped->input_type(), plain->method(i)->input_type());
+        EXPECT_EQ(mapped->output_type(), plain->method(i)->output_type());
+        EXPECT_EQ(mapped->client_streaming(), plain->method(i)->client_streaming());
+        EXPECT_EQ(mapped->server_streaming(), plain->method(i)->server_streaming());
+    }
+    EXPECT_FALSE(RpcMethodMap::Create({{plain, plain}}, methods).IsOk());
+    EXPECT_FALSE(RpcMethodMap::Create({{plain, auth}, {plain, auth}}, methods).IsOk());
+    EXPECT_EQ(google::protobuf::DescriptorPool::generated_pool()->FindServiceByName(
+                  "datasystem.UtOCServiceAuthAuth"), nullptr);
+}
 
 TEST_F(BrpcAuthTest, EncodesOnceAndVerifiesRawBytesAcrossSchemas)
 {
