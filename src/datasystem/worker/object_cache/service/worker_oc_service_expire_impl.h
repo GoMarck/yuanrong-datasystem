@@ -25,6 +25,9 @@
 #include "datasystem/worker/object_cache/service/worker_oc_service_crud_common_api.h"
 
 namespace datasystem {
+namespace worker {
+class RpcTenantResolver;
+}
 namespace object_cache {
 
 class WorkerOcServiceExpireImpl : public WorkerOcServiceCrudCommonApi {
@@ -38,6 +41,8 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status Expire(const ExpireReqPb &req, ExpireRspPb &rsp);
+    Status ExpireWithTenantResolver(
+        const ExpireReqPb &req, ExpireRspPb &rsp, const worker::RpcTenantResolver &resolver);
 
 private:
 

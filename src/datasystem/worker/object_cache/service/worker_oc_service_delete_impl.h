@@ -24,6 +24,9 @@
 #include "datasystem/worker/object_cache/service/worker_oc_service_get_impl.h"
 
 namespace datasystem {
+namespace worker {
+class RpcTenantResolver;
+}
 namespace object_cache {
 
 class WorkerOcServiceDeleteImpl : public WorkerOcServiceCrudCommonApi {
@@ -39,6 +42,8 @@ public:
      * @return Status of the call.
      */
     Status DeleteAllCopy(const DeleteAllCopyReqPb &req, DeleteAllCopyRspPb &resp);
+    Status DeleteAllCopyWithTenantResolver(
+        const DeleteAllCopyReqPb &req, DeleteAllCopyRspPb &resp, const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief The rpc method to delete the objects.
@@ -73,6 +78,9 @@ private:
      * @return Status of the call.
      */
     Status DeleteAllCopyImpl(const DeleteAllCopyReqPb &req, DeleteAllCopyRspPb &resp, uint64_t &deletedSize);
+    Status DeleteAllCopyImplWithTenantResolver(
+        const DeleteAllCopyReqPb &req, DeleteAllCopyRspPb &resp, uint64_t &deletedSize,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Delete the objects.

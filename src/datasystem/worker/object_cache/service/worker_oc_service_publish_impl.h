@@ -37,6 +37,9 @@
 #include "datasystem/worker/object_cache/service/worker_oc_service_crud_common_api.h"
 
 namespace datasystem {
+namespace worker {
+class RpcTenantResolver;
+}
 namespace object_cache {
 
 class WorkerOcServicePublishImpl : public WorkerOcServiceCrudCommonApi {
@@ -61,6 +64,9 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status Publish(const PublishReqPb &req, PublishRspPb &resp, std::vector<RpcMessage> &payloads);
+    Status PublishWithTenantResolver(
+        const PublishReqPb &req, PublishRspPb &resp, std::vector<RpcMessage> &payloads,
+        const worker::RpcTenantResolver &resolver);
 
 private:
     struct MetadataOwnerProbe {
@@ -88,6 +94,9 @@ private:
      * @return K_OK on success; the error code otherwise.
      */
     Status PublishImpl(const PublishReqPb &req, PublishRspPb &resp, std::vector<RpcMessage> &payloads);
+    Status PublishImplWithTenantResolver(
+        const PublishReqPb &req, PublishRspPb &resp, std::vector<RpcMessage> &payloads,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Reserve/get and lock a object from ObjectTable and publish/seal it.

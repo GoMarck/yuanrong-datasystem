@@ -40,34 +40,6 @@
 using namespace datasystem::master;
 namespace datasystem {
 namespace object_cache {
-namespace {
-Status WaitExpireTasks(std::vector<std::future<Status>> &futures, ObjectAccessRecorder &access)
-{
-    for (auto &future : futures) {
-        future.wait();
-        Status rc = future.get();
-        if (rc.IsError()) {
-            access.Result(rc).Record();
-            return rc;
-        }
-    }
-    return Status::OK();
-}
-
-void FinishExpireRequest(const worker::MetaOwnerRouteGroups &grouped, std::vector<std::string> &absentObjectKeys,
-                         std::unordered_set<std::string> &failedObjectKeys, ExpireRspPb &rsp,
-                         ObjectAccessRecorder &access, const Status &status, Timer &timer)
-{
-    for (const auto &failure : grouped.failures) {
-        absentObjectKeys.emplace_back(ExtractObjectId(failure.first));
-    }
-    failedObjectKeys.insert(absentObjectKeys.begin(), absentObjectKeys.end());
-    *rsp.mutable_failed_object_keys() = { failedObjectKeys.begin(), failedObjectKeys.end() };
-    access.Result(status).Record();
-    GetWorkerTimeCost().Append("Total Expire", static_cast<int64_t>(timer.ElapsedMilliSecond()));
-    LOG(INFO) << FormatString("The operations of Expire %s", GetWorkerTimeCost().GetInfo());
-}
-}  // namespace
 
 WorkerOcServiceExpireImpl::WorkerOcServiceExpireImpl(WorkerOcServiceCrudParam &initParam,
                                                      std::shared_ptr<AkSkManager> akSkManager)
@@ -75,67 +47,16 @@ WorkerOcServiceExpireImpl::WorkerOcServiceExpireImpl(WorkerOcServiceCrudParam &i
 {
 }
 
-Status WorkerOcServiceExpireImpl::Expire(const ExpireReqPb &req, ExpireRspPb &rsp)
-{
-    ScopedRequestContext ctx;
-    Timer timer;
-    int64_t realTimeoutMs = GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTime();
-    LOG(INFO) << "Expire start from client:" << req.client_id();
-    std::string tenantId;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(worker::Authenticate(akSkManager_, req, tenantId), "Authenticate failed.");
-    auto objectKeys = TenantAuthManager::ConstructNamespaceUriWithTenantId(tenantId, req.object_keys());
-    auto access = AccessRecorder::Object(AccessRecorderKey::DS_POSIX_EXPIRE);
-    access.ObjectKeysRef(objectKeys).TtlSecond(req.ttl_second());
-
-    CHECK_FAIL_RETURN_STATUS(metadataRouteResolver_ != nullptr, K_NOT_READY, "Metadata route resolver is unavailable");
-    auto grouped = metadataRouteResolver_->GroupOwners(objectKeys);
-    auto &objKeysGrpByMaster = grouped.groups;
-
-    std::unordered_set<std::string> objKeysExpireFailed;
-    std::vector<std::string> absentObjectKeys;
-    uint32_t ttlSeconds = req.ttl_second();
-    std::vector<std::future<Status>> futures;
-    std::string traceID = Trace::Instance().GetTraceID();
-    Status rc;
-    const bool useThreadPoolFanout = ShouldUseServiceThreadPoolFanout();
-    std::unique_ptr<ThreadPool> batchExpireThreadPool;
-    if (useThreadPoolFanout) {
-        size_t threadNum = std::min<size_t>(objKeysGrpByMaster.size(), FLAGS_rpc_thread_num);
-        batchExpireThreadPool = std::make_unique<ThreadPool>(1, threadNum, "BatchExpireMeta");
-    }
-    futures.reserve(objKeysGrpByMaster.size());
-    auto expire = [&, timer](const auto &item) {
-        TraceGuard traceGuard = Trace::Instance().SetTraceNewID(traceID);
-        int64_t elapsed = static_cast<int64_t>(timer.ElapsedMilliSecond());
-        GetRequestContext()->reqTimeoutDuration.Init(realTimeoutMs - elapsed);
-
-        HostPort workerAddr = item.first;
-        const std::vector<std::string> &currentIds = item.second;
-        rc = ExpireFromMaster(currentIds, workerAddr, ttlSeconds, absentObjectKeys, objKeysExpireFailed, rsp);
-        if (rc.IsError()) {
-            return rc;
-        }
-        return Status::OK();
-    };
-    if (useThreadPoolFanout) {
-        for (auto &item : objKeysGrpByMaster) {
-            futures.emplace_back(batchExpireThreadPool->Submit([&, item]() { return expire(item); }));
-        }
-    } else {
-        Status serialRc = RunServiceTasksSerially(objKeysGrpByMaster.begin(), objKeysGrpByMaster.end(), expire);
-        if (serialRc.IsError()) {
-            access.Result(serialRc).Record();
-            return serialRc;
-        }
-    }
-
-    Status waitRc = WaitExpireTasks(futures, access);
-    if (waitRc.IsError()) {
-        return waitRc;
-    }
-    FinishExpireRequest(grouped, absentObjectKeys, objKeysExpireFailed, rsp, access, rc, timer);
-    return rc;
-}
+#define DS_OC_PROC_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_OC_PROC_FORWARD(name, ...) name(__VA_ARGS__)
+#define DS_OC_REQUEST_TENANT(manager, request, tenant) \
+    worker::AuthenticateRequest(manager, request, request.tenant_id(), tenant)
+#define DS_OC_SESSION_TENANT(manager, request, tenant) worker::Authenticate(manager, request, tenant)
+#include "datasystem/worker/object_cache/service/worker_oc_service_expire_body.inc"
+#undef DS_OC_SESSION_TENANT
+#undef DS_OC_REQUEST_TENANT
+#undef DS_OC_PROC_FORWARD
+#undef DS_OC_PROC_ENTRY
 
 Status WorkerOcServiceExpireImpl::ExpireFromMaster(std::vector<std::string> objectKeys, const HostPort &masterAddr,
                                                    uint32_t ttlSeconds, std::vector<std::string> &absentObj,

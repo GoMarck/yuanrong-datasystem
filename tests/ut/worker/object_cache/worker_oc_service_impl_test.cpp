@@ -2527,6 +2527,71 @@ TEST_F(WorkerOcServiceImplTest, RpcWriteTenantAdmissionKeepsTheOriginalRecoveryG
     EXPECT_EQ(authenticated, 6u);
 }
 
+TEST_F(WorkerOcServiceImplTest, RpcCrudTenantResolutionPrecedesObjectAndRoutingWork)
+{
+    const bool skip = FLAGS_skip_authenticate;
+    FLAGS_skip_authenticate = false;
+    Raii restore([skip] { FLAGS_skip_authenticate = skip; });
+    const RpcRequestProof missing;
+    worker::RpcTenantResolver resolver(missing);
+    auto param = MakeCrudParam();
+    param.metadataRouteResolver = nullptr;
+    WorkerOcServicePublishImpl publish(param, nullptr, nullptr, localAddress_);
+    WorkerOcServiceExpireImpl expire(param, nullptr);
+    auto expectMissing = [&resolver](auto &handler, auto &request, auto &response, auto ordinary, auto authenticated) {
+        request.set_client_id("test-only-missing-crud-client");
+        auto original = (handler.*ordinary)(request, response);
+        auto rpc = (handler.*authenticated)(request, response, resolver);
+        EXPECT_EQ(original.GetCode(), K_CLIENT_WORKER_DISCONNECT);
+        EXPECT_EQ(rpc.GetCode(), original.GetCode());
+        EXPECT_EQ(rpc.GetMsg(), original.GetMsg());
+    };
+    ScopedRequestContext context;
+    GetRequestContext()->reqTimeoutDuration.Init(1000);
+    ExpireReqPb expiration;
+    ExpireRspPb expired;
+    expectMissing(expire, expiration, expired, &WorkerOcServiceExpireImpl::Expire,
+                  &WorkerOcServiceExpireImpl::ExpireWithTenantResolver);
+    DeleteAllCopyReqPb deletion;
+    DeleteAllCopyRspPb deleted;
+    expectMissing(*deleteProc_, deletion, deleted, &WorkerOcServiceDeleteImpl::DeleteAllCopy,
+                  &WorkerOcServiceDeleteImpl::DeleteAllCopyWithTenantResolver);
+    GIncreaseReqPb increase;
+    GIncreaseRspPb increased;
+    expectMissing(*gRefProc_, increase, increased, &WorkerOcServiceGlobalReferenceImpl::GIncreaseRef,
+                  &WorkerOcServiceGlobalReferenceImpl::GIncreaseRefWithTenantResolver);
+    increase.set_remote_client_id("test-only-remote-client");
+    expectMissing(*gRefProc_, increase, increased, &WorkerOcServiceGlobalReferenceImpl::GIncreaseRef,
+                  &WorkerOcServiceGlobalReferenceImpl::GIncreaseRefWithTenantResolver);
+    GDecreaseReqPb decrease;
+    GDecreaseRspPb decreased;
+    expectMissing(*gRefProc_, decrease, decreased, &WorkerOcServiceGlobalReferenceImpl::GDecreaseRef,
+                  &WorkerOcServiceGlobalReferenceImpl::GDecreaseRefWithTenantResolver);
+    ReleaseGRefsReqPb release;
+    ReleaseGRefsRspPb released;
+    expectMissing(*gRefProc_, release, released, &WorkerOcServiceGlobalReferenceImpl::ReleaseGRefs,
+                  &WorkerOcServiceGlobalReferenceImpl::ReleaseGRefsWithTenantResolver);
+    QueryGlobalRefNumReqPb query;
+    QueryGlobalRefNumRspCollectionPb queried;
+    expectMissing(*gRefProc_, query, queried, &WorkerOcServiceGlobalReferenceImpl::QueryGlobalRefNum,
+                  &WorkerOcServiceGlobalReferenceImpl::QueryGlobalRefNumWithTenantResolver);
+    PublishReqPb request;
+    PublishRspPb response;
+    request.set_client_id(expiration.client_id());
+    std::vector<RpcMessage> payloads;
+    for (bool useRpc : {false, true}) {
+        request.set_is_routed(false);
+        auto rc = useRpc ? publish.PublishWithTenantResolver(request, response, payloads, resolver)
+                         : publish.Publish(request, response, payloads);
+        EXPECT_EQ(rc.GetCode(), K_CLIENT_WORKER_DISCONNECT);
+        request.set_is_routed(true);
+        rc = useRpc ? publish.PublishWithTenantResolver(request, response, payloads, resolver)
+                    : publish.Publish(request, response, payloads);
+        EXPECT_EQ(rc.GetCode(), K_INVALID);
+        EXPECT_NE(rc.GetMsg().find("AK/SK manager has not been initialized"), std::string::npos);
+    }
+}
+
 TEST_F(WorkerOcServiceImplTest, DeviceRemoteGetReservesCleanupBudgetBeforeRetry)
 {
     constexpr uint64_t queryMetaVersion = 61;

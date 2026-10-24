@@ -154,11 +154,14 @@ ds_cc_library(
     name = "worker_oc_service_global_reference_impl",
     srcs = [
         "worker_oc_service_global_reference_impl.cpp",
+        "worker_oc_service_global_reference_rpc.cpp",
     ],
     hdrs = [
         "worker_oc_service_global_reference_impl.h",
+        "worker_oc_service_global_reference_body.inc",
     ],
     deps = [
+        "//src/datasystem/worker:rpc_tenant_resolver",
         "//include/datasystem/utils:utils_headers",
         "//src/datasystem/common/iam:common_iam",
         "//src/datasystem/common/log:common_log",
@@ -227,11 +230,14 @@ ds_cc_library(
     name = "worker_oc_service_publish_impl",
     srcs = [
         "worker_oc_service_publish_impl.cpp",
+        "worker_oc_service_publish_rpc.cpp",
     ],
     hdrs = [
         "worker_oc_service_publish_impl.h",
+        "worker_oc_service_publish_body.inc",
     ],
     deps = [
+        "//src/datasystem/worker:rpc_tenant_resolver",
         ":worker_oc_service_publish_impl_header",
         "//include/datasystem/utils:utils_headers",
         "//src/datasystem/common/iam:common_iam",
@@ -263,11 +269,14 @@ ds_cc_library(
     name = "worker_oc_service_expire_impl",
     srcs = [
         "worker_oc_service_expire_impl.cpp",
+        "worker_oc_service_expire_rpc.cpp",
     ],
     hdrs = [
         "worker_oc_service_expire_impl.h",
+        "worker_oc_service_expire_body.inc",
     ],
     deps = [
+        "//src/datasystem/worker:rpc_tenant_resolver",
         ":service_execution_policy",
         "//include/datasystem/utils:utils_headers",
         "//src/datasystem/common/ak_sk:ak_sk_manager",
@@ -308,11 +317,14 @@ ds_cc_library(
     name = "worker_oc_service_delete_impl",
     srcs = [
         "worker_oc_service_delete_impl.cpp",
+        "worker_oc_service_delete_rpc.cpp",
     ],
     hdrs = [
         "worker_oc_service_delete_impl.h",
+        "worker_oc_service_delete_body.inc",
     ],
     deps = [
+        "//src/datasystem/worker:rpc_tenant_resolver",
         ":worker_oc_service_delete_impl_header",
         ":service_execution_policy",
         "//src/datasystem/common/flags:ds_flags",

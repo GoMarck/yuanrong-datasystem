@@ -54,21 +54,16 @@ WorkerOcServiceDeleteImpl::WorkerOcServiceDeleteImpl(WorkerOcServiceCrudParam &i
         PERSISTENCE_DELETE_POOL_MIN_THREAD_NUM, PERSISTENCE_DELETE_POOL_MAX_THREAD_NUM, PERSISTENCE_DELETE_POOL_NAME);
 }
 
-Status WorkerOcServiceDeleteImpl::DeleteAllCopy(const DeleteAllCopyReqPb &req, DeleteAllCopyRspPb &resp)
-{
-    ScopedRequestContext ctx;
-    Timer timer;
-    uint64_t deletedSize = 0;
-    auto access = AccessRecorder::Object(AccessRecorderKey::DS_POSIX_DELETE_ALL_COPY);
-    access.ObjectKeysRef(req.object_keys()).DataSizeProvider([&deletedSize]() -> uint64_t { return deletedSize; });
-    Status rc = DeleteAllCopyImpl(req, resp, deletedSize);
-    access.Result(rc).Record();
-    GetWorkerTimeCost().Append("Total DeleteAllCopy", timer.ElapsedMilliSecond());
-    LOG(INFO) << "DeleteAllCopy finish with request size: " << req.object_keys_size()
-              << ", failed size: " << resp.fail_object_keys_size() << ", the operation cost "
-              << GetWorkerTimeCost().GetInfo();
-    return rc;
-}
+#define DS_OC_PROC_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_OC_PROC_FORWARD(name, ...) name(__VA_ARGS__)
+#define DS_OC_REQUEST_TENANT(manager, request, tenant) \
+    worker::AuthenticateRequest(manager, request, request.tenant_id(), tenant)
+#define DS_OC_SESSION_TENANT(manager, request, tenant) worker::Authenticate(manager, request, tenant)
+#include "datasystem/worker/object_cache/service/worker_oc_service_delete_body.inc"
+#undef DS_OC_SESSION_TENANT
+#undef DS_OC_REQUEST_TENANT
+#undef DS_OC_PROC_FORWARD
+#undef DS_OC_PROC_ENTRY
 
 Status WorkerOcServiceDeleteImpl::DeleteCopyNotification(const DeleteObjectReqPb &req, DeleteObjectRspPb &rsp)
 {
@@ -198,46 +193,6 @@ Status WorkerOcServiceDeleteImpl::DeleteObjectFromNotification(const std::string
         }
         RETURN_IF_NOT_OK_PRINT_ERROR_MSG(ClearObject(objectKV),
                                          FormatString("[ObjectKey %s] ClearObjectAndDelL2cache failed.", objectKey));
-    }
-    return Status::OK();
-}
-
-Status WorkerOcServiceDeleteImpl::DeleteAllCopyImpl(const DeleteAllCopyReqPb &req, DeleteAllCopyRspPb &resp,
-                                                    uint64_t &deletedSize)
-{
-    Timer timerCost;
-    std::string tenantId;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(worker::Authenticate(akSkManager_, req, tenantId), "Authenticate failed.");
-    CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(Validator::IsBatchSizeUnderLimit(req.object_keys_size()),
-                                         StatusCode::K_INVALID, "invalid object size");
-    auto needDeleteObjs = TenantAuthManager::ConstructNamespaceUriWithTenantId(tenantId, req.object_keys());
-    LOG(INFO) << "DeleteAllCopy request: client_id: " << req.client_id()
-              << ", objectKeys: " << VectorToString(needDeleteObjs)
-              << " before delete elapsed ms: " << timerCost.ElapsedMilliSecond();
-
-    std::vector<std::string> failedObjectKeys;
-    Status rc = RetryWhenDeadlock([this, &needDeleteObjs, &failedObjectKeys, &deletedSize] {
-        if (GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTime() <= 0) {
-            return Status(K_RPC_DEADLINE_EXCEEDED, "Rpc timeout");
-        }
-        if (!failedObjectKeys.empty()) {
-            needDeleteObjs = std::move(failedObjectKeys);
-        }
-        return DeleteAllCopyWithLock(needDeleteObjs, failedObjectKeys, deletedSize);
-    });
-    VLOG(1) << FormatString("The total size of the current deletion is %llu", deletedSize);
-    if (!failedObjectKeys.empty()) {
-        LOG(WARNING) << "Delete failed list: " << VectorToString(failedObjectKeys);
-        for (auto &objectKey : failedObjectKeys) {
-            std::string failedId;
-            TenantAuthManager::Instance()->NamespaceUriToObjectKey(objectKey, failedId);
-            resp.add_fail_object_keys(failedId);
-        }
-    }
-    resp.mutable_last_rc()->set_error_code(rc.GetCode());
-    resp.mutable_last_rc()->set_error_msg(rc.GetMsg());
-    if (rc.GetCode() == K_RPC_DEADLINE_EXCEEDED) {
-        return rc;
     }
     return Status::OK();
 }

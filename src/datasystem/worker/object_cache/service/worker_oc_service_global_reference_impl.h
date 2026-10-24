@@ -33,6 +33,9 @@
 #include "datasystem/worker/object_cache/service/worker_oc_service_crud_common_api.h"
 
 namespace datasystem {
+namespace worker {
+class RpcTenantResolver;
+}
 namespace object_cache {
 
 class WorkerOcServiceGlobalReferenceImpl : public WorkerOcServiceCrudCommonApi {
@@ -48,6 +51,8 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status GIncreaseRef(const GIncreaseReqPb &req, GIncreaseRspPb &resp);
+    Status GIncreaseRefWithTenantResolver(
+        const GIncreaseReqPb &req, GIncreaseRspPb &resp, const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Decrease the global reference count of object.
@@ -56,6 +61,8 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status GDecreaseRef(const GDecreaseReqPb &req, GDecreaseRspPb &resp);
+    Status GDecreaseRefWithTenantResolver(
+        const GDecreaseReqPb &req, GDecreaseRspPb &resp, const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Send request to master to decrease all objects of remote client id.
@@ -64,6 +71,8 @@ public:
      * @return Status of the call.
      */
     Status ReleaseGRefs(const ReleaseGRefsReqPb &req, ReleaseGRefsRspPb &resp);
+    Status ReleaseGRefsWithTenantResolver(
+        const ReleaseGRefsReqPb &req, ReleaseGRefsRspPb &resp, const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Bypass the request of query all objs global references in the cluster to master.
@@ -72,6 +81,9 @@ public:
      * @return Status of the call.
      */
     Status QueryGlobalRefNum(const QueryGlobalRefNumReqPb &req, QueryGlobalRefNumRspCollectionPb &rsp);
+    Status QueryGlobalRefNumWithTenantResolver(
+        const QueryGlobalRefNumReqPb &req, QueryGlobalRefNumRspCollectionPb &rsp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Decrease the global reference count of object.
@@ -126,6 +138,8 @@ private:
      * @return K_OK on success; the error code otherwise.
      */
     Status GIncreaseRefWithRemoteClientId(const GIncreaseReqPb &req, GIncreaseRspPb &resp);
+    Status GIncreaseRefWithRemoteClientIdWithTenantResolver(
+        const GIncreaseReqPb &req, GIncreaseRspPb &resp, const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Fill failed object keys into response, converting namespace URI to object key.

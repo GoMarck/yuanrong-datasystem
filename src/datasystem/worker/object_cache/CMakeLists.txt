@@ -48,17 +48,21 @@ set(WORKER_OC_SRCS
         service/worker_oc_service_create_impl.cpp
         service/worker_oc_service_create_rpc.cpp
         service/worker_oc_service_publish_impl.cpp
+        service/worker_oc_service_publish_rpc.cpp
         service/worker_oc_service_multi_publish_impl.cpp
         service/worker_oc_service_multi_publish_rpc.cpp
         service/worker_oc_service_get_impl.cpp
         service/worker_oc_service_get_rpc.cpp
         service/worker_query_and_get_impl.cpp
         service/worker_oc_service_delete_impl.cpp
+        service/worker_oc_service_delete_rpc.cpp
         service/worker_oc_service_clear_data_flow.cpp
         service/worker_oc_service_global_reference_impl.cpp
+        service/worker_oc_service_global_reference_rpc.cpp
         service/worker_oc_service_migrate_impl.cpp
         service/worker_oc_service_batch_get_impl.cpp
         service/worker_oc_service_expire_impl.cpp
+        service/worker_oc_service_expire_rpc.cpp
         slot_recovery/slot_recovery_store.cpp
         slot_recovery/slot_recovery_manager.cpp)
 
