@@ -15,6 +15,7 @@
  */
 
 #include <atomic>
+#include <future>
 
 #include <brpc/closure_guard.h>
 #include <brpc/nonreflectable_message.h>
@@ -134,7 +135,8 @@ public:
         TestRspPbV1 reply;
         RETURN_IF_NOT_OK(ReadFirstRequest<TestReqPbV1>(proof, stream, reply));
         RETURN_IF_NOT_OK(stream->Write(reply));
-        return stream->Finish();
+        bidiStream.set_value(stream);
+        return Status::OK();
     }
     template <typename... Args>
     Status TestStreamCompatibilityV2(const RpcRequestProof &, Args &&...) { return Status::OK(); }
@@ -161,6 +163,7 @@ public:
     }
     AkSkManager manager;
     std::atomic<unsigned> verified{0};
+    std::promise<std::shared_ptr<ServerWriterReader<TestRspPbV1, TestReqPbV1>>> bidiStream;
 };
 
 class BrpcAuthTest : public ::testing::Test {
@@ -308,6 +311,9 @@ TEST_F(BrpcAuthTest, GeneratedAdapterOwnsProofAfterFirstStreamHandshake)
     ASSERT_EQ(bidiFields.field_count(), 1);
     EXPECT_EQ(bidiFields.field(0).number(), 7);
     EXPECT_EQ(bidiFields.field(0).varint(), 2);
+    auto serverStream = generated_.bidiStream.get_future().get();
+    ASSERT_TRUE(serverStream->Finish().IsOk());
+    serverStream.reset();
     ASSERT_TRUE(bidi->Finish().IsOk());
     EXPECT_EQ(bidiCounted.encodes, 1);
     EXPECT_EQ(generated_.verified.load(), 2);
