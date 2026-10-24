@@ -104,6 +104,9 @@
 #include <bthread/condition_variable.h>
 
 namespace datasystem {
+namespace worker {
+class RpcTenantResolver;
+}
 namespace master {
 class MasterOCServiceImpl;
 }
@@ -421,6 +424,8 @@ public:
      * @return Status of the call.
      */
     Status Get(std::shared_ptr<ServerUnaryWriterReader<GetRspPb, GetReqPb>> serverApi) override;
+    Status GetWithTenantResolver(std::shared_ptr<ServerUnaryWriterReader<GetRspPb, GetReqPb>> serverApi,
+                                 const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Read metadata-owner-local objects and return locations for local misses.

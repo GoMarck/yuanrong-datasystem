@@ -40,6 +40,8 @@
 #include "datasystem/utils/sensitive_value.h"
 #include "datasystem/utils/status.h"
 #include "datasystem/worker/authenticate.h"
+#include "datasystem/worker/rpc_tenant_resolver.h"
+#include "datasystem/common/rpc/brpc_auth.h"
 #include "datasystem/protos/object_posix.pb.h"
 #include "datasystem/common/util/raii.h"
 #include "../../../common/binmock/binmock.h"
@@ -102,6 +104,75 @@ protected:
     std::string accessKey_ = "QTWAOYTTINDUT2QVKYUC";
     std::string secretKey_ = "MFyfvK41ba2giqM7**********KGpownRZlmVmHc";
 };
+
+TEST_F(AuthenticateTest, RpcTenantResolverUsesOwnedProofAndPreservesTokenPriority)
+{
+    const bool skip = FLAGS_skip_authenticate;
+    const auto iamUrl = FLAGS_yuanrong_iam_url;
+    FLAGS_skip_authenticate = false;
+    FLAGS_yuanrong_iam_url = "http://127.0.0.1:1";
+    Raii restore([skip, iamUrl] {
+        FLAGS_skip_authenticate = skip;
+        FLAGS_yuanrong_iam_url = iamUrl;
+        EXPECT_TRUE(TenantAuthManager::Instance()->Init(false).IsOk());
+    });
+    auto manager = std::make_shared<AkSkManager>();
+    ASSERT_TRUE(manager->SetServerAkSk(AkSkType::SYSTEM, "test-only-access",
+                                       SensitiveValue("test-only-secret")).IsOk());
+    Signature provider("test-only-access", SensitiveValue("test-only-secret"));
+    AkSkData key;
+    ASSERT_TRUE(provider.SnapshotClientKey(key).IsOk());
+    RpcRequestProof proof;
+    proof.captured = true;
+    proof.timestampUs = GetSystemClockTimeStampUs();
+    proof.accessKey = key.accessKey;
+    ASSERT_TRUE(Signature::GetSignatureFromDigest(key, proof.digest, proof.signature).IsOk());
+    worker::RpcTenantResolver resolver(proof);
+    ASSERT_TRUE(TenantAuthManager::Instance()->Init(false).IsOk());
+    std::string tenant;
+    ASSERT_TRUE(resolver.Request(manager, "test-tenant", "", tenant).IsOk());
+    EXPECT_EQ(tenant, "test-tenant");
+    proof.signature.front() ^= 1;
+    EXPECT_EQ(resolver.Request(manager, "test-tenant", "", tenant).GetCode(), K_NOT_AUTHORIZED);
+
+    ASSERT_TRUE(TenantAuthManager::Instance()->Init(true, manager).IsOk());
+    ASSERT_TRUE(inject::Set("worker.auth", "return(test-only-token,test-token-tenant)").IsOk());
+    ASSERT_TRUE(resolver.Request(manager, "test-tenant", "test-only-token", tenant).IsOk());
+    EXPECT_EQ(tenant, "test-token-tenant");
+
+    proof.signature.front() ^= 1;
+    Raii releaseStubs([] { RELEASE_STUBS });
+    BINEXPECT_CALL(&TenantAuthManager::TenantTokenAuth, (_, _))
+        .WillOnce([](const SensitiveValue &, std::string &) {
+            return Status(K_NOT_AUTHORIZED, "test token rejected");
+        });
+    EXPECT_EQ(resolver.Request(manager, "test-tenant", "test-rejected-token", tenant).GetCode(), K_NOT_AUTHORIZED);
+    const RpcRequestProof missing;
+    worker::RpcTenantResolver missingResolver(missing);
+    EXPECT_EQ(missingResolver.Request(manager, "test-tenant", "", tenant).GetCode(), K_RUNTIME_ERROR);
+}
+
+TEST_F(AuthenticateTest, RpcTenantResolverKeepsSkipAndSessionErrorOrder)
+{
+    const bool skip = FLAGS_skip_authenticate;
+    Raii restore([skip] {
+        FLAGS_skip_authenticate = skip;
+        EXPECT_TRUE(TenantAuthManager::Instance()->Init(false).IsOk());
+    });
+    const RpcRequestProof missing;
+    worker::RpcTenantResolver resolver(missing);
+    auto manager = std::make_shared<AkSkManager>();
+    ASSERT_TRUE(TenantAuthManager::Instance()->Init(false).IsOk());
+    FLAGS_skip_authenticate = false;
+    std::string tenant;
+    ASSERT_TRUE(resolver.Request(manager, "test-tenant", "", tenant).IsOk());
+    EXPECT_EQ(tenant, "test-tenant");
+    const std::string client = "test-only-missing-client";
+    EXPECT_EQ(resolver.Session(nullptr, "", "", client, tenant).GetCode(), K_CLIENT_WORKER_DISCONNECT);
+    FLAGS_skip_authenticate = true;
+    EXPECT_TRUE(resolver.Session(nullptr, "", "", client, tenant).IsOk());
+    EXPECT_EQ(resolver.Session(nullptr, "test-tenant", "", client, tenant).GetCode(), K_INVALID);
+}
 
 TEST_F(AuthenticateTest, TestEnableAll)
 {

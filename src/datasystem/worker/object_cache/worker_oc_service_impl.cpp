@@ -2053,6 +2053,17 @@ Status WorkerOCServiceImpl::Get(std::shared_ptr<::datasystem::ServerUnaryWriterR
     return getProc_->Get(serverApi);
 }
 
+Status WorkerOCServiceImpl::GetWithTenantResolver(
+    std::shared_ptr<ServerUnaryWriterReader<GetRspPb, GetReqPb>> serverApi, const worker::RpcTenantResolver &resolver)
+{
+    ScopedRequestContext ctx;
+    BthreadReadGuard noRecon;
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
+        ValidateWorkerStateForRequest(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
+        "validate worker state failed");
+    return getProc_->GetWithTenantResolver(serverApi, resolver);
+}
+
 Status WorkerOCServiceImpl::QueryAndGet(
     std::shared_ptr<ServerUnaryWriterReader<QueryAndGetRspPb, QueryAndGetReqPb>> serverApi)
 {

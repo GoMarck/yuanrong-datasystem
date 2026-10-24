@@ -366,6 +366,18 @@ ds_cc_library(
     ],
 )
 
+ds_cc_library(
+    name = "rpc_tenant_resolver",
+    srcs = ["rpc_tenant_resolver.cpp"],
+    hdrs = ["rpc_tenant_resolver.h"],
+    deps = [
+        ":authenticate",
+        "//include/datasystem/utils:utils_headers",
+        "//src/datasystem/common/rpc:brpc_auth",
+        "//src/datasystem/common/string_intern:string_ref",
+    ],
+)
+
 # success
 ds_cc_library(
     name = "cluster_event_type",

@@ -70,6 +70,7 @@
 #include "datasystem/protos/utils.pb.h"
 #include "datasystem/utils/status.h"
 #include "datasystem/worker/authenticate.h"
+#include "datasystem/worker/rpc_tenant_resolver.h"
 #include "datasystem/common/util/meta_route_tool.h"
 #include "datasystem/common/shared_memory/delayed_release_shm_manager.h"
 #include "datasystem/worker/object_cache/object_kv.h"
@@ -310,7 +311,19 @@ WorkerOcServiceGetImpl::~WorkerOcServiceGetImpl()
     }
 }
 
-Status WorkerOcServiceGetImpl::Get(std::shared_ptr<ServerUnaryWriterReader<GetRspPb, GetReqPb>> &serverApi)
+namespace {
+struct OrdinaryGetTenantResolver {
+    [[gnu::always_inline]] static inline Status Resolve(const std::shared_ptr<AkSkManager> &manager,
+                                                        const GetReqPb &request, std::string &tenant)
+    {
+        return worker::Authenticate(manager, request, tenant);
+    }
+};
+}  // namespace
+
+template <typename TenantResolver>
+[[gnu::always_inline]] inline Status WorkerOcServiceGetImpl::GetWithTenantResolverImpl(
+    std::shared_ptr<ServerUnaryWriterReader<GetRspPb, GetReqPb>> &serverApi, const TenantResolver &resolver)
 {
     PerfPoint point(PerfKey::WORKER_GET_OBJECT);
     ScopedRequestContext ctx;
@@ -333,7 +346,7 @@ Status WorkerOcServiceGetImpl::Get(std::shared_ptr<ServerUnaryWriterReader<GetRs
     VLOG(1) << FormatString("[Get] Receive, clientId: %s, serverApiReadCost: %.3fms, inflightRemoteGet: %d", clientId,
                             timer.ElapsedMilliSecond(), inflightGauge.Get());
     std::string tenantId;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(worker::Authenticate(akSkManager_, req, tenantId), "Authenticate failed.");
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(resolver.Resolve(akSkManager_, req, tenantId), "Authenticate failed.");
 
     int64_t subTimeout = req.sub_timeout();
     int64_t remainingUs = GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTimeUs();
@@ -454,6 +467,17 @@ Status WorkerOcServiceGetImpl::Get(std::shared_ptr<ServerUnaryWriterReader<GetRs
                          GetWorkerTimeCost().GetInfo()));
     }
     return Status::OK();
+}
+
+Status WorkerOcServiceGetImpl::Get(std::shared_ptr<ServerUnaryWriterReader<GetRspPb, GetReqPb>> &serverApi)
+{
+    return GetWithTenantResolverImpl(serverApi, OrdinaryGetTenantResolver{});
+}
+
+Status WorkerOcServiceGetImpl::GetWithTenantResolver(
+    std::shared_ptr<ServerUnaryWriterReader<GetRspPb, GetReqPb>> &serverApi, const worker::RpcTenantResolver &resolver)
+{
+    return GetWithTenantResolverImpl(serverApi, resolver);
 }
 
 Status WorkerOcServiceGetImpl::GetObjectFromAnywhere(const ReadKey &readKey, const master::QueryMetaInfoPb &queryMeta,

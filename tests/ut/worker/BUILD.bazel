@@ -266,6 +266,8 @@ ds_cc_test(
         "//src/datasystem/protos:ut_object_cc_proto",
         "//src/datasystem/worker:add_miss_libs_fixme",
         "//src/datasystem/worker:authenticate",
+        "//src/datasystem/worker:rpc_tenant_resolver",
+        "//src/datasystem/common/rpc:brpc_auth",
         "//tests/common/binmock",
         "//tests/ut:ut_common",
     ],

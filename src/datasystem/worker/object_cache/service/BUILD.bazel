@@ -95,6 +95,7 @@ ds_cc_library(
         "worker_query_and_get_impl.h",
     ],
     deps = [
+        "//src/datasystem/worker:rpc_tenant_resolver",
         ":worker_oc_service_get_impl_header",
         ":service_execution_policy",
         "//include/datasystem/object:object_headers",
