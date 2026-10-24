@@ -233,3 +233,47 @@ Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(Expire, const ExpireReqPb &req, Ex
     return expireProc_->DS_OC_WRITE_FORWARD(Expire, req, rsp);
 }
 #endif
+
+#ifdef DS_OC_WRITE_READ_INFO_BODY
+Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(GetObjMetaInfo, const GetObjMetaInfoReqPb &req, GetObjMetaInfoRspPb &resp)
+{
+    BthreadReadGuard noReconciliation;
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
+        ValidateWorkerState(noReconciliation, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
+        "validate worker state failed");
+    return getProc_->DS_OC_WRITE_FORWARD(GetObjMetaInfo, req, resp);
+}
+
+Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(QuerySize, const QuerySizeReqPb &req, QuerySizeRspPb &rsp)
+{
+    ScopedRequestContext ctx;
+    BthreadReadGuard noReconciliation;
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
+        ValidateWorkerState(noReconciliation, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
+        "validate worker state failed");
+    return getProc_->DS_OC_WRITE_FORWARD(QuerySize, req, rsp);
+}
+
+Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(Exist, const ExistReqPb &req, ExistRspPb &rsp)
+{
+    ScopedRequestContext ctx;
+    METRIC_TIMER(metrics::KvMetricId::WORKER_PROCESS_EXIST_LATENCY);
+    BthreadReadGuard noReconciliation;
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
+        ValidateWorkerState(noReconciliation, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
+        "validate worker state failed");
+    PerfPoint perfPoint(PerfKey::WORKER_EXIST);
+    return getProc_->DS_OC_WRITE_FORWARD(Exist, req, rsp);
+}
+#endif
+
+#ifdef DS_OC_WRITE_META_INFO_BODY
+Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(GetMetaInfo, const GetMetaInfoReqPb &req, GetMetaInfoRspPb &rsp)
+{
+    BthreadReadGuard noReconciliation;
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
+        ValidateWorkerState(noReconciliation, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
+        "validate worker state failed");
+    return getProc_->DS_OC_WRITE_FORWARD(GetMetaInfo, req, rsp);
+}
+#endif

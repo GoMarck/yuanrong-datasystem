@@ -962,6 +962,8 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status GetObjMetaInfo(const GetObjMetaInfoReqPb &req, GetObjMetaInfoRspPb &resp) override;
+    Status GetObjMetaInfoWithTenantResolver(
+        const GetObjMetaInfoReqPb &req, GetObjMetaInfoRspPb &resp, const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Get meta info of the input objects
@@ -970,6 +972,8 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status QuerySize(const QuerySizeReqPb &req, QuerySizeRspPb &rsp) override;
+    Status QuerySizeWithTenantResolver(
+        const QuerySizeReqPb &req, QuerySizeRspPb &rsp, const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Check whether the keys exist in the data system.
@@ -978,6 +982,8 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status Exist(const ExistReqPb &req, ExistRspPb &rsp) override;
+    Status ExistWithTenantResolver(
+        const ExistReqPb &req, ExistRspPb &rsp, const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Send request of set expiration time for metas.
@@ -997,6 +1003,8 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status GetMetaInfo(const GetMetaInfoReqPb &req, GetMetaInfoRspPb &rsp) override;
+    Status GetMetaInfoWithTenantResolver(
+        const GetMetaInfoReqPb &req, GetMetaInfoRspPb &rsp, const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Return the current cluster topology to the SDK for client-side routing.

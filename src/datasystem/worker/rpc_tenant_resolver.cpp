@@ -22,6 +22,11 @@
 namespace datasystem {
 namespace worker {
 
+Status RpcTenantResolver::Verify(AkSkManager &manager) const
+{
+    return VerifyRpcRequest(manager, &proof_);
+}
+
 Status RpcTenantResolver::Request(const std::shared_ptr<AkSkManager> &manager, const std::string &requestTenant,
                                    const std::string &token, std::string &tenant) const
 {

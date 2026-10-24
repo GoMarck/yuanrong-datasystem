@@ -95,7 +95,6 @@ namespace object_cache {
 
 static constexpr int DEBUG_LOG_LEVEL = 2;
 static constexpr int32_t GET_LOCATION_ROLLBACK_MAX_RETRY = 3;
-static constexpr double EXIST_LOCAL_CHECK_TIMEOUT_US = 50.0;
 static constexpr RemoveMetaReqPb::Cause GET_LOCATION_ROLLBACK_CAUSE = RemoveMetaReqPb::ROLLBACK_UNACK;
 static const char *const EXIST_REDIRECTS_FIELD = "exist_redirects";
 static const char *const EXIST_REDIRECT_ADDRESS_FIELD = "address";
@@ -2973,18 +2972,20 @@ void WorkerOcServiceGetImpl::FillGetObjMetaInfoRspPb(
     }
 }
 
-Status AuthenticateGetMetaUser(AkSkManager *akSkManager, const GetObjMetaInfoReqPb &req)
-{
-    if (akSkManager->SystemAuthEnabled()) {
-        RETURN_IF_NOT_OK_PRINT_ERROR_MSG(akSkManager->VerifySignatureAndTimestamp(req),
-                                         "AK/SK failed. Only the ak/sk client can check the meta info of objects.");
-    } else {
-        CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(
-            !FLAGS_authorization_enable, K_NOT_AUTHORIZED,
-            "Only the ak/sk client can check the meta info of objects if tenant authorization is enabled.");
-    }
-    return Status::OK();
-}
+#define DS_OC_READ_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_OC_READ_FORWARD(name, ...) name(__VA_ARGS__)
+#define DS_OC_READ_REQUEST_TENANT(manager, request, tenant) \
+    worker::AuthenticateRequest(manager, request, request.tenant_id(), tenant)
+#define DS_OC_READ_SESSION_TENANT(manager, request, tenant) worker::Authenticate(manager, request, tenant)
+#define DS_OC_READ_VERIFY(manager, request) manager->VerifySignatureAndTimestamp(request)
+#define DS_OC_READ_META_AUTH_BODY
+#include "datasystem/worker/object_cache/service/worker_oc_service_get_info.inc"
+#undef DS_OC_READ_META_AUTH_BODY
+#undef DS_OC_READ_VERIFY
+#undef DS_OC_READ_SESSION_TENANT
+#undef DS_OC_READ_REQUEST_TENANT
+#undef DS_OC_READ_FORWARD
+#undef DS_OC_READ_ENTRY
 
 static void MergeObjectLocations(master::GetObjectLocationsRspPb &masterRsp,
                                  std::unordered_map<std::string, ObjectLocationInfoPb> &result)
@@ -3203,66 +3204,20 @@ Status WorkerOcServiceGetImpl::FillLocalObjectLocations(
     return Status::OK();
 }
 
-Status WorkerOcServiceGetImpl::GetObjMetaInfo(const GetObjMetaInfoReqPb &req, GetObjMetaInfoRspPb &resp)
-{
-    ScopedRequestContext ctx;
-    INJECT_POINT("worker.GetObjMetaInfo");
-    RETURN_IF_NOT_OK(AuthenticateGetMetaUser(akSkManager_.get(), req));
-    // construct objectKey by the input tenantId
-    auto objectKeys = TenantAuthManager::ConstructNamespaceUriWithTenantId(req.tenantid(), req.object_keys());
-    Status lastRc;
-    std::unordered_map<std::string, ObjectLocationInfoPb> result;
-    auto rc = GetMapOfObjectKeys(objectKeys, result, lastRc);
-    if (rc.IsError()) {
-        RETURN_IF_NOT_OK_EXCEPT(rc, K_METADATA_OWNER_UNAVAILABLE);
-        std::vector<std::string> localMisses;
-        std::unordered_map<std::string, ObjectLocationInfoPb> localResult;
-        RETURN_IF_NOT_OK(FillLocalObjectLocations(objectKeys, localResult, localMisses));
-        if (!localMisses.empty()) {
-            return rc;
-        }
-        result = std::move(localResult);
-    }
-    FillGetObjMetaInfoRspPb(objectKeys, result, resp);
-    return Status::OK();
-}
-
-Status WorkerOcServiceGetImpl::QuerySize(const QuerySizeReqPb &req, QuerySizeRspPb &rsp)
-{
-    ScopedRequestContext ctx;
-    Timer timer;
-    auto clientId = ClientKey::Intern(req.client_id());
-    LOG(INFO) << "QuerySize start from client:" << clientId;
-    std::string tenantId;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(worker::Authenticate(akSkManager_, req, tenantId), "Authenticate failed.");
-    auto objectKeys = TenantAuthManager::ConstructNamespaceUriWithTenantId(tenantId, req.object_keys());
-    QueryMetadataFromMasterResult queryMetaResult;
-    std::vector<master::QueryMetaInfoPb> &queryMetas = queryMetaResult.queryMetas;
-    int64_t subTimeout = 0;
-    Status lastRc = QueryMetadataFromMaster(objectKeys, subTimeout, queryMetaResult);
-    std::unordered_map<std::string, uint64_t> result;
-    result.reserve(queryMetas.size());
-    for (auto queryIt = queryMetas.begin(); queryIt != queryMetas.end(); ++queryIt) {
-        const auto &queryMeta = *queryIt;
-        const auto &meta = queryMeta.meta();
-        const auto dataSize = meta.data_size();
-        const auto objectKey = meta.object_key();
-        result.emplace(objectKey, dataSize);
-    }
-
-    for (const auto &objectKey : objectKeys) {
-        auto it = result.find(objectKey);
-        if (it != result.end()) {
-            rsp.add_sizes(it->second);
-        } else {
-            rsp.add_sizes(0);
-        }
-    }
-
-    rsp.mutable_last_rc()->set_error_code(lastRc.GetCode());
-    rsp.mutable_last_rc()->set_error_msg(lastRc.GetMsg());
-    return Status::OK();
-}
+#define DS_OC_READ_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_OC_READ_FORWARD(name, ...) name(__VA_ARGS__)
+#define DS_OC_READ_REQUEST_TENANT(manager, request, tenant) \
+    worker::AuthenticateRequest(manager, request, request.tenant_id(), tenant)
+#define DS_OC_READ_SESSION_TENANT(manager, request, tenant) worker::Authenticate(manager, request, tenant)
+#define DS_OC_READ_VERIFY(manager, request) manager->VerifySignatureAndTimestamp(request)
+#define DS_OC_READ_OBJECT_INFO_BODY
+#include "datasystem/worker/object_cache/service/worker_oc_service_get_info.inc"
+#undef DS_OC_READ_OBJECT_INFO_BODY
+#undef DS_OC_READ_VERIFY
+#undef DS_OC_READ_SESSION_TENANT
+#undef DS_OC_READ_REQUEST_TENANT
+#undef DS_OC_READ_FORWARD
+#undef DS_OC_READ_ENTRY
 
 Status WorkerOcServiceGetImpl::QueryExistMetadataViaPureQueryMeta(const std::vector<std::string> &objectKeys,
                                                                   std::vector<master::QueryMetaInfoPb> &queryMetas)
@@ -3307,166 +3262,22 @@ bool WorkerOcServiceGetImpl::IsLocalObject(const std::string &key)
     return false;
 }
 
-Status WorkerOcServiceGetImpl::Exist(const ExistReqPb &req, ExistRspPb &rsp)
-{
-    ScopedRequestContext ctx;
-    Timer timer;
-    PerfPoint point(PerfKey::WORKER_EXIST_PRE_PROCESS);
-    auto config = GetServerLatencyTraceConfig();
-    const bool traceEnabled = ShouldCollectLatencyTrace(config);
-    if (traceEnabled) {
-        Trace::Instance().AddLatencyTick(LatencyTickKey::WORKER_EXIST_START);
-    }
-    auto access = AccessRecorder::Object(AccessRecorderKey::DS_POSIX_EXIST);
-    access.ObjectKeysRef(req.object_keys());
-    INJECT_POINT("Exist.Sleep");
-    auto clientId = ClientKey::Intern(req.client_id());
-    VLOG(1) << "Exist start from client:" << clientId;
-    std::string tenantId;
-    Status authRc = req.is_routed() ? worker::AuthenticateRequest(akSkManager_, req, req.tenant_id(), tenantId)
-                                    : worker::Authenticate(akSkManager_, req, tenantId);
-    if (authRc.IsError()) {
-        LOG(ERROR) << "Authenticate failed. Detail: " << authRc.ToString();
-        access.Result(authRc).Record();
-        return authRc;
-    }
-    if (!Validator::IsExistBatchSizeUnderLimit(req.object_keys_size())) {
-        LOG(ERROR) << "invalid object size";
-        Status rc(StatusCode::K_INVALID, __LINE__, __FILE__, "invalid object size");
-        access.Result(rc).Record();
-        return rc;
-    }
-    auto keys = TenantAuthManager::ConstructNamespaceUriWithTenantId(tenantId, req.object_keys());
+#define DS_OC_READ_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_OC_READ_FORWARD(name, ...) name(__VA_ARGS__)
+#define DS_OC_READ_REQUEST_TENANT(manager, request, tenant) \
+    worker::AuthenticateRequest(manager, request, request.tenant_id(), tenant)
+#define DS_OC_READ_SESSION_TENANT(manager, request, tenant) worker::Authenticate(manager, request, tenant)
+#define DS_OC_READ_VERIFY(manager, request) manager->VerifySignatureAndTimestamp(request)
+#define DS_OC_READ_EXIST_INFO_BODY
+#include "datasystem/worker/object_cache/service/worker_oc_service_get_info.inc"
+#undef DS_OC_READ_EXIST_INFO_BODY
+#undef DS_OC_READ_VERIFY
+#undef DS_OC_READ_SESSION_TENANT
+#undef DS_OC_READ_REQUEST_TENANT
+#undef DS_OC_READ_FORWARD
+#undef DS_OC_READ_ENTRY
 
-    point.RecordAndReset(PerfKey::WORKER_EXIST_LOCAL_CHECK);
-    std::unordered_set<std::string> existKeys;
-    std::vector<std::string> nonLocalKeys;
-    existKeys.reserve(keys.size());
-    nonLocalKeys.reserve(keys.size());
-    Timer localCheckTimer;
-    for (auto it = keys.begin(); it != keys.end(); ++it) {
-        if (localCheckTimer.ElapsedMicroSecond() >= EXIST_LOCAL_CHECK_TIMEOUT_US) {
-            nonLocalKeys.insert(nonLocalKeys.end(), it, keys.end());
-            break;
-        }
-        const auto &key = *it;
-        if (!IsLocalObject(key)) {
-            nonLocalKeys.emplace_back(key);
-            continue;
-        }
-        evictionManager_->Add(key);
-        existKeys.emplace(key);
-        INJECT_POINT("worker.Exist.after_local_check");
-    }
 
-    Status rc;
-    if (!req.is_local() && !nonLocalKeys.empty()) {
-        point.RecordAndReset(PerfKey::WORKER_EXIST_QUERY_MASTER);
-        if (traceEnabled) {
-            Trace::Instance().AddLatencyTick(LatencyTickKey::WORKER_EXIST_QUERYMETA_START);
-        }
-        std::vector<master::QueryMetaInfoPb> queryMetas;
-        INJECT_POINT("worker.before_query_meta");
-        rc = QueryExistMetadataViaPureQueryMeta(nonLocalKeys, queryMetas);
-        if (traceEnabled) {
-            Trace::Instance().AddLatencyTick(LatencyTickKey::WORKER_EXIST_QUERYMETA_END);
-        }
-        if (rc.IsError()) {
-            if (rc.GetCode() == K_NOT_OWNER) {
-                rsp.set_redirect_extra(rc.GetExtra());
-                access.Discard();
-            } else {
-                access.Result(rc).Record();
-            }
-            return rc;
-        }
-        const auto localAddress = localAddress_.ToString();
-        for (const auto &meta : queryMetas) {
-            const bool isLocalPrimaryCopy = meta.single_copy() && meta.meta().primary_address() == localAddress;
-            if (!meta.address().empty() || isLocalPrimaryCopy) {
-                existKeys.emplace(meta.meta().object_key());
-            }
-        }
-    }
-
-    point.RecordAndReset(PerfKey::WORKER_EXIST_BUILD_RSP);
-    for (const auto &key : keys) {
-        rsp.add_exists(existKeys.count(key));
-    }
-
-    if (traceEnabled) {
-        Trace::Instance().AddLatencyTick(LatencyTickKey::WORKER_EXIST_END);
-    }
-    const auto totalExistUs = static_cast<uint64_t>(timer.ElapsedMicroSecond());
-    if (ShouldPrintLatencySummary(totalExistUs, config)) {
-        auto result =
-            ComputePhaseDurations(Trace::Instance().GetLatencyTicks(), Trace::Instance().GetLatencyTickCount(),
-                                  Trace::Instance().GetLatencyTickDroppedCount());
-        auto &downstream = Trace::Instance().GetDownstreamPhases();
-        bool hasDownstream = downstream.count > 0;
-        if (hasDownstream) {
-            for (uint16_t di = 0; di < downstream.count; ++di) {
-                result.Add(downstream.entries[di].phase, downstream.entries[di].durationUs);
-            }
-            result.tickDroppedCount += downstream.tickDroppedCount;
-            result.phaseDroppedCount += downstream.phaseDroppedCount;
-        }
-        bool gateHit = CheckPhaseGate(result, config);
-        if (gateHit) {
-            Trace::Instance().SetLatencySummary(FormatLatencySummary(result));
-        }
-        bool shouldEncodeProto = gateHit || hasDownstream;
-        if (shouldEncodeProto) {
-            auto *phases = rsp.mutable_latency_phase_us();
-            for (uint16_t i = 0; i < result.count; ++i) {
-                phases->Add(static_cast<unsigned int>(result.entries[i].phase));
-                phases->Add(static_cast<unsigned int>(result.entries[i].durationUs));
-            }
-            if (result.droppedCount() > 0) {
-                rsp.set_latency_tick_dropped_count(static_cast<uint32_t>(result.droppedCount()));
-            }
-        }
-    }
-    access.Result(rc).Record();
-    const double totalExistMs = static_cast<double>(totalExistUs) / US_PER_MS;
-    GetWorkerTimeCost().Append("Total Exist", totalExistMs);
-    SLOW_LOG_IF_OR_VLOG(INFO, config.processSlowerThanUs > 0 && totalExistUs >= config.processSlowerThanUs, 1,
-                        FormatString("Exist done, cost: %.3fms, %s", totalExistMs, GetWorkerTimeCost().GetInfo()));
-    return rc;
-}
-
-Status WorkerOcServiceGetImpl::GetMetaInfo(const GetMetaInfoReqPb &req, GetMetaInfoRspPb &rsp)
-{
-    Timer timer;
-    auto clientId = ClientKey::Intern(req.client_id());
-    LOG(INFO) << "GetMetaInfo start from client:" << clientId;
-    std::string tenantId;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(worker::Authenticate(akSkManager_, req, tenantId), "Authenticate failed.");
-    auto objectKeys = TenantAuthManager::ConstructNamespaceUriWithTenantId(tenantId, req.object_keys());
-    if (!req.is_dev_key()) {
-        QueryMetadataFromMasterResult queryResult;
-        auto rc = QueryMetadataFromMaster(objectKeys, 0, queryResult, false);
-        std::vector<master::QueryMetaInfoPb> &queryMetas = queryResult.queryMetas;
-        std::map<std::string, const ::google::protobuf::RepeatedField<::uint64_t>> mp;
-        for (const auto &queryMeta : queryMetas) {
-            auto &meta = queryMeta.meta();
-            mp.insert({ meta.object_key(), std::move(meta.device_info().blob_sizes()) });
-        }
-        for (const auto &key : objectKeys) {
-            auto devMetaInfos = rsp.add_dev_meta_infos();
-            if (mp.find(key) != mp.end()) {
-                devMetaInfos->mutable_blob_sizes()->Add(mp[key].begin(), mp[key].end());
-            } else {
-                *(devMetaInfos->mutable_blob_sizes()) = {};
-            }
-        }
-        return Status::OK();
-    }
-    std::shared_ptr<WorkerMasterOCApi> workerMasterApi;
-    RETURN_IF_NOT_OK(workerMasterApiManager_->GetWorkerMasterApi(P2P_DEFAULT_MASTER, workerMasterApi));
-    auto reqCopy = req;
-    return workerMasterApi->GetMetaInfo(reqCopy, rsp);
-}
 Status WorkerOcServiceGetImpl::KeepObjectDataInMemory(ReadObjectKV &objectKV)
 {
     const auto &objectKey = objectKV.GetObjKey();

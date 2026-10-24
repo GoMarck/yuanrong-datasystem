@@ -174,6 +174,8 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status GetObjMetaInfo(const GetObjMetaInfoReqPb &req, GetObjMetaInfoRspPb &resp);
+    Status GetObjMetaInfoWithTenantResolver(
+        const GetObjMetaInfoReqPb &req, GetObjMetaInfoRspPb &resp, const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Get meta info of the input objects
@@ -182,6 +184,8 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status QuerySize(const QuerySizeReqPb &req, QuerySizeRspPb &rsp);
+    Status QuerySizeWithTenantResolver(
+        const QuerySizeReqPb &req, QuerySizeRspPb &rsp, const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Check whether the keys exist in the data system.
@@ -190,6 +194,8 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status Exist(const ExistReqPb &req, ExistRspPb &rsp);
+    Status ExistWithTenantResolver(
+        const ExistReqPb &req, ExistRspPb &rsp, const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Get device meta info of the keys.
@@ -198,6 +204,8 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status GetMetaInfo(const GetMetaInfoReqPb &req, GetMetaInfoRspPb &rsp);
+    Status GetMetaInfoWithTenantResolver(
+        const GetMetaInfoReqPb &req, GetMetaInfoRspPb &rsp, const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Get the hit info statistic data.

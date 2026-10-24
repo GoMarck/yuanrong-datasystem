@@ -80,6 +80,7 @@ using namespace datasystem::object_cache;
 
 DS_DECLARE_string(health_check_path);
 DS_DECLARE_bool(enable_distributed_master);
+DS_DECLARE_bool(authorization_enable);
 DS_DECLARE_bool(enable_leaving_intercept);
 DS_DECLARE_bool(enable_metadata_recovery);
 DS_DECLARE_bool(enable_reconciliation);
@@ -2574,6 +2575,18 @@ TEST_F(WorkerOcServiceImplTest, RpcWriteTenantAdmissionKeepsTheOriginalRecoveryG
         ExpireRspPb expired;
         expectMissing(expiration, expired, &WorkerOCServiceImpl::Expire,
                       &WorkerOCServiceImpl::ExpireWithTenantResolver);
+        QuerySizeReqPb sizes;
+        QuerySizeRspPb sized;
+        expectMissing(sizes, sized, &WorkerOCServiceImpl::QuerySize,
+                      &WorkerOCServiceImpl::QuerySizeWithTenantResolver);
+        ExistReqPb existence;
+        ExistRspPb exists;
+        expectMissing(existence, exists, &WorkerOCServiceImpl::Exist,
+                      &WorkerOCServiceImpl::ExistWithTenantResolver);
+        GetMetaInfoReqPb metadata;
+        GetMetaInfoRspPb meta;
+        expectMissing(metadata, meta, &WorkerOCServiceImpl::GetMetaInfo,
+                      &WorkerOCServiceImpl::GetMetaInfoWithTenantResolver);
         PublishReqPb single;
         PublishRspPb committed;
         single.set_client_id(request.client_id());
@@ -2584,7 +2597,7 @@ TEST_F(WorkerOcServiceImplTest, RpcWriteTenantAdmissionKeepsTheOriginalRecoveryG
         exclusive.Assign(&impl_->reconFlag_);
         EXPECT_TRUE(exclusive.TryLockIfUnlocked());
     }
-    EXPECT_EQ(authenticated, 20u);
+    EXPECT_EQ(authenticated, 26u);
     EXPECT_EQ(deviceDeletes, 2u);
 }
 
@@ -2638,6 +2651,19 @@ TEST_F(WorkerOcServiceImplTest, RpcCrudTenantResolutionPrecedesObjectAndRoutingW
     QueryGlobalRefNumRspCollectionPb queried;
     expectMissing(*gRefProc_, query, queried, &WorkerOcServiceGlobalReferenceImpl::QueryGlobalRefNum,
                   &WorkerOcServiceGlobalReferenceImpl::QueryGlobalRefNumWithTenantResolver);
+    WorkerOcServiceGetImpl get(param, nullptr, nullptr, nullptr, nullptr, localAddress_, nullptr);
+    QuerySizeReqPb sizes;
+    QuerySizeRspPb sized;
+    expectMissing(get, sizes, sized, &WorkerOcServiceGetImpl::QuerySize,
+                  &WorkerOcServiceGetImpl::QuerySizeWithTenantResolver);
+    ExistReqPb existence;
+    ExistRspPb exists;
+    expectMissing(get, existence, exists, &WorkerOcServiceGetImpl::Exist,
+                  &WorkerOcServiceGetImpl::ExistWithTenantResolver);
+    GetMetaInfoReqPb metadata;
+    GetMetaInfoRspPb meta;
+    expectMissing(get, metadata, meta, &WorkerOcServiceGetImpl::GetMetaInfo,
+                  &WorkerOcServiceGetImpl::GetMetaInfoWithTenantResolver);
     PublishReqPb request;
     PublishRspPb response;
     request.set_client_id(expiration.client_id());
@@ -2652,6 +2678,66 @@ TEST_F(WorkerOcServiceImplTest, RpcCrudTenantResolutionPrecedesObjectAndRoutingW
                     : publish.Publish(request, response, payloads);
         EXPECT_EQ(rc.GetCode(), K_INVALID);
         EXPECT_NE(rc.GetMsg().find("AK/SK manager has not been initialized"), std::string::npos);
+    }
+}
+
+TEST_F(WorkerOcServiceImplTest, RpcObjectMetadataPreservesTheSystemKeyAuthorizationGate)
+{
+    const bool authorization = FLAGS_authorization_enable;
+    Raii restore([authorization] { FLAGS_authorization_enable = authorization; });
+    BINEXPECT_CALL(&WorkerOCServiceImpl::ValidateWorkerState, (_, _))
+        .WillRepeatedly([this](BthreadReadGuard &guard, int) {
+            guard.Assign(&impl_->reconFlag_);
+            EXPECT_TRUE(guard.TryLockIfUnlocked());
+            return Status::OK();
+        });
+    ScopedRequestContext context;
+    Signature provider("test-only-meta-access", SensitiveValue("test-only-meta-secret"));
+    AkSkData key;
+    ASSERT_TRUE(provider.SnapshotClientKey(key).IsOk());
+    RpcRequestProof proof;
+    proof.captured = true;
+    proof.timestampUs = GetSystemClockTimeStampUs();
+    proof.accessKey = key.accessKey;
+    ASSERT_TRUE(Signature::GetSignatureFromDigest(key, proof.digest, proof.signature).IsOk());
+    const RpcRequestProof missing;
+    auto param = MakeCrudParam();
+    param.metadataRouteResolver = nullptr;
+    for (bool system : {false, true}) {
+        auto manager = std::make_shared<AkSkManager>();
+        if (system) {
+            ASSERT_TRUE(manager->SetServerAkSk(AkSkType::SYSTEM, key.accessKey, key.secretKey).IsOk());
+        }
+        auto get = std::make_shared<WorkerOcServiceGetImpl>(param, nullptr, nullptr, nullptr, manager,
+                                                            localAddress_, nullptr);
+        impl_->getProc_ = get;
+        for (bool tenantAuthorization : {false, true}) {
+            FLAGS_authorization_enable = tenantAuthorization;
+            for (bool valid : {false, true}) {
+                GetObjMetaInfoReqPb request;
+                if (valid) {
+                    ASSERT_TRUE(provider.GenerateSignature(request).IsOk());
+                }
+                GetObjMetaInfoRspPb response;
+                worker::RpcTenantResolver resolver(valid ? proof : missing);
+                const auto ordinary = get->GetObjMetaInfo(request, response);
+                const auto rpc = get->GetObjMetaInfoWithTenantResolver(request, response, resolver);
+                const auto outer = impl_->GetObjMetaInfo(request, response);
+                const auto outerRpc = impl_->GetObjMetaInfoWithTenantResolver(request, response, resolver);
+                const auto expected = system ? (valid ? K_NOT_READY : K_NOT_AUTHORIZED)
+                                             : (tenantAuthorization ? K_NOT_AUTHORIZED : K_NOT_READY);
+                EXPECT_EQ(ordinary.GetCode(), expected);
+                EXPECT_EQ(rpc.GetCode(), expected);
+                EXPECT_EQ(outer.GetCode(), expected);
+                EXPECT_EQ(outerRpc.GetCode(), expected);
+                BthreadWriteGuard exclusive;
+                exclusive.Assign(&impl_->reconFlag_);
+                EXPECT_TRUE(exclusive.TryLockIfUnlocked());
+                if (expected == K_NOT_READY) {
+                    EXPECT_NE(rpc.GetMsg().find("Metadata route resolver is unavailable"), std::string::npos);
+                }
+            }
+        }
     }
 }
 

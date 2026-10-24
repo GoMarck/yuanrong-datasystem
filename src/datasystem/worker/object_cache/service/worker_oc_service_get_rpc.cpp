@@ -31,8 +31,17 @@
 #include "datasystem/common/util/format.h"
 #include "datasystem/common/util/strings_util.h"
 #include "datasystem/common/util/validator.h"
+#include "datasystem/common/device/device_helper.h"
+#include "datasystem/common/iam/tenant_auth_manager.h"
+#include "datasystem/common/log/access_recorder.h"
+#include "datasystem/common/util/raii.h"
+#include "datasystem/worker/object_cache/worker_master_oc_api.h"
 #include "datasystem/worker/rpc_tenant_resolver.h"
 
+DS_DECLARE_bool(authorization_enable);
+
+using namespace datasystem::worker;
+using namespace datasystem::master;
 namespace datasystem {
 namespace object_cache {
 namespace {
@@ -46,5 +55,24 @@ Status WorkerOcServiceGetImpl::GetWithTenantResolver(
 #include "datasystem/worker/object_cache/service/worker_oc_service_get_body.inc"
 #undef DS_RESOLVE_GET_TENANT
 }
+#define DS_OC_READ_ENTRY(name, ...) \
+    name##WithTenantResolver(__VA_ARGS__, const worker::RpcTenantResolver &resolver)
+#define DS_OC_READ_FORWARD(name, ...) name##WithTenantResolver(__VA_ARGS__, resolver)
+#define DS_OC_READ_REQUEST_TENANT(manager, request, tenant) \
+    resolver.Request(manager, request.tenant_id(), request.token(), tenant)
+#define DS_OC_READ_SESSION_TENANT(manager, request, tenant) resolver.Resolve(manager, request, tenant)
+#define DS_OC_READ_VERIFY(manager, request) (static_cast<void>(request), resolver.Verify(*manager))
+#define DS_OC_READ_META_AUTH_BODY
+#define DS_OC_READ_OBJECT_INFO_BODY
+#define DS_OC_READ_EXIST_INFO_BODY
+#include "datasystem/worker/object_cache/service/worker_oc_service_get_info.inc"
+#undef DS_OC_READ_EXIST_INFO_BODY
+#undef DS_OC_READ_OBJECT_INFO_BODY
+#undef DS_OC_READ_META_AUTH_BODY
+#undef DS_OC_READ_VERIFY
+#undef DS_OC_READ_SESSION_TENANT
+#undef DS_OC_READ_REQUEST_TENANT
+#undef DS_OC_READ_FORWARD
+#undef DS_OC_READ_ENTRY
 }  // namespace object_cache
 }  // namespace datasystem

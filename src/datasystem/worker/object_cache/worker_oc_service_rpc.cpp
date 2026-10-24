@@ -38,7 +38,11 @@ namespace object_cache {
 #define DS_OC_WRITE_QUERY_REF_BODY
 #define DS_OC_WRITE_EXPIRE_BODY
 #define DS_OC_WRITE_CREATE_BODY
+#define DS_OC_WRITE_READ_INFO_BODY
+#define DS_OC_WRITE_META_INFO_BODY
 #include "datasystem/worker/object_cache/worker_oc_service_body.inc"
+#undef DS_OC_WRITE_META_INFO_BODY
+#undef DS_OC_WRITE_READ_INFO_BODY
 #undef DS_OC_WRITE_CREATE_BODY
 #undef DS_OC_WRITE_EXPIRE_BODY
 #undef DS_OC_WRITE_QUERY_REF_BODY

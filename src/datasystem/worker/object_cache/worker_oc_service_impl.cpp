@@ -3388,36 +3388,22 @@ Status WorkerOCServiceImpl::WaitInit()
     return initOkFuture_.get();
 }
 
-Status WorkerOCServiceImpl::GetObjMetaInfo(const GetObjMetaInfoReqPb &req, GetObjMetaInfoRspPb &resp)
-{
-    BthreadReadGuard noReconciliation;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
-        ValidateWorkerState(noReconciliation, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
-        "validate worker state failed");
-    return getProc_->GetObjMetaInfo(req, resp);
-}
+#define DS_OC_WRITE_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_FORWARD(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_REQUEST_TENANT(manager, request, tenant) \
+    worker::AuthenticateRequest(manager, request, request.tenant_id(), tenant)
+#define DS_OC_WRITE_SESSION_TENANT(manager, request, tenant) worker::Authenticate(manager, request, tenant)
+#define DS_OC_WRITE_READ_INFO_BODY
+#include "datasystem/worker/object_cache/worker_oc_service_body.inc"
+#undef DS_OC_WRITE_READ_INFO_BODY
+#undef DS_OC_WRITE_SESSION_TENANT
+#undef DS_OC_WRITE_REQUEST_TENANT
+#undef DS_OC_WRITE_FORWARD
+#undef DS_OC_WRITE_ENTRY
 
-Status WorkerOCServiceImpl::QuerySize(const QuerySizeReqPb &req, QuerySizeRspPb &rsp)
-{
-    ScopedRequestContext ctx;
-    BthreadReadGuard noReconciliation;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
-        ValidateWorkerState(noReconciliation, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
-        "validate worker state failed");
-    return getProc_->QuerySize(req, rsp);
-}
 
-Status WorkerOCServiceImpl::Exist(const ExistReqPb &req, ExistRspPb &rsp)
-{
-    ScopedRequestContext ctx;
-    METRIC_TIMER(metrics::KvMetricId::WORKER_PROCESS_EXIST_LATENCY);
-    BthreadReadGuard noReconciliation;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
-        ValidateWorkerState(noReconciliation, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
-        "validate worker state failed");
-    PerfPoint perfPoint(PerfKey::WORKER_EXIST);
-    return getProc_->Exist(req, rsp);
-}
+
+
 
 #define DS_OC_WRITE_ENTRY(name, ...) name(__VA_ARGS__)
 #define DS_OC_WRITE_FORWARD(name, ...) name(__VA_ARGS__)
@@ -3432,14 +3418,18 @@ Status WorkerOCServiceImpl::Exist(const ExistReqPb &req, ExistRspPb &rsp)
 #undef DS_OC_WRITE_FORWARD
 #undef DS_OC_WRITE_ENTRY
 
-Status WorkerOCServiceImpl::GetMetaInfo(const GetMetaInfoReqPb &req, GetMetaInfoRspPb &rsp)
-{
-    BthreadReadGuard noReconciliation;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
-        ValidateWorkerState(noReconciliation, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
-        "validate worker state failed");
-    return getProc_->GetMetaInfo(req, rsp);
-};
+#define DS_OC_WRITE_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_FORWARD(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_REQUEST_TENANT(manager, request, tenant) \
+    worker::AuthenticateRequest(manager, request, request.tenant_id(), tenant)
+#define DS_OC_WRITE_SESSION_TENANT(manager, request, tenant) worker::Authenticate(manager, request, tenant)
+#define DS_OC_WRITE_META_INFO_BODY
+#include "datasystem/worker/object_cache/worker_oc_service_body.inc"
+#undef DS_OC_WRITE_META_INFO_BODY
+#undef DS_OC_WRITE_SESSION_TENANT
+#undef DS_OC_WRITE_REQUEST_TENANT
+#undef DS_OC_WRITE_FORWARD
+#undef DS_OC_WRITE_ENTRY
 
 Status WorkerOCServiceImpl::GetHashRing(const GetHashRingReqPb &req, GetHashRingRspPb &rsp)
 {

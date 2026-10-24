@@ -37,6 +37,8 @@ public:
     RpcTenantResolver(const RpcTenantResolver &) = delete;
     RpcTenantResolver &operator=(const RpcTenantResolver &) = delete;
 
+    Status Verify(AkSkManager &manager) const;
+
     Status Request(const std::shared_ptr<AkSkManager> &manager, const std::string &requestTenant,
                     const std::string &token, std::string &tenant) const;
     Status Session(const std::shared_ptr<AkSkManager> &manager, const std::string &requestTenant,
