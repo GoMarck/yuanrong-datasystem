@@ -150,6 +150,22 @@ TEST_F(AuthenticateTest, RpcTenantResolverUsesOwnedProofAndPreservesTokenPriorit
     const RpcRequestProof missing;
     worker::RpcTenantResolver missingResolver(missing);
     EXPECT_EQ(missingResolver.Request(manager, "test-tenant", "", tenant).GetCode(), K_RUNTIME_ERROR);
+
+    auto tenantManager = std::make_shared<AkSkManager>();
+    ASSERT_TRUE(tenantManager->SetServerAkSk(AkSkType::TENANT, key.accessKey, key.secretKey).IsOk());
+    ASSERT_TRUE(TenantAuthManager::Instance()->Init(true, tenantManager).IsOk());
+    BINEXPECT_CALL(&TenantAuthManager::TenantAkAuth, (_, _, _))
+        .WillOnce([](const std::string &, const std::string &requested, std::string &resolved) {
+            resolved = requested;
+            return Status::OK();
+        })
+        .WillOnce([](const std::string &, const std::string &, std::string &resolved) {
+            resolved = "test-only-other-tenant";
+            return Status::OK();
+        });
+    ASSERT_TRUE(resolver.Request(tenantManager, "test-tenant", "", tenant).IsOk());
+    EXPECT_EQ(tenant, "test-tenant");
+    EXPECT_EQ(resolver.Request(tenantManager, "test-tenant", "", tenant).GetCode(), K_NOT_AUTHORIZED);
 }
 
 TEST_F(AuthenticateTest, RpcTenantResolverKeepsSkipAndSessionErrorOrder)
@@ -169,6 +185,18 @@ TEST_F(AuthenticateTest, RpcTenantResolverKeepsSkipAndSessionErrorOrder)
     EXPECT_EQ(tenant, "test-tenant");
     const std::string client = "test-only-missing-client";
     EXPECT_EQ(resolver.Session(nullptr, "", "", client, tenant).GetCode(), K_CLIENT_WORKER_DISCONNECT);
+    Raii releaseStubs([] { RELEASE_STUBS });
+    auto clientInfo = std::make_shared<worker::ClientInfo>(-1, ClientKey::Intern("test-only-session"), true,
+                                                         false, "test-session-tenant");
+    BINEXPECT_CALL(&worker::ClientManager::GetClientInfo, (_))
+        .WillOnce([clientInfo](const ClientKey &) { return clientInfo; })
+        .WillOnce([clientInfo](const ClientKey &) { return clientInfo; })
+        .WillOnce([clientInfo](const ClientKey &) { return clientInfo; });
+    ASSERT_TRUE(resolver.Session(manager, "", "", "test-only-session", tenant).IsOk());
+    EXPECT_EQ(tenant, "test-session-tenant");
+    ASSERT_TRUE(resolver.Session(manager, "test-request-tenant", "", "test-only-session", tenant).IsOk());
+    EXPECT_EQ(tenant, "test-request-tenant");
+    EXPECT_EQ(resolver.Session(nullptr, "", "", "test-only-session", tenant).GetCode(), K_INVALID);
     FLAGS_skip_authenticate = true;
     EXPECT_TRUE(resolver.Session(nullptr, "", "", client, tenant).IsOk());
     EXPECT_EQ(resolver.Session(nullptr, "test-tenant", "", client, tenant).GetCode(), K_INVALID);
