@@ -11,6 +11,7 @@
  * limitations under the License.
  */
 
+#ifdef DS_OC_WRITE_MULTIPUBLISH_BODY
 Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(MultiPublish, const MultiPublishReqPb &req, MultiPublishRspPb &resp,
                                          std::vector<RpcMessage> payloads)
 {
@@ -43,6 +44,9 @@ Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(MultiPublish, const MultiPublishRe
     return Status::OK();
 }
 
+#endif
+
+#ifdef DS_OC_WRITE_CREATE_BODY
 Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(Create, const CreateReqPb &req, CreateRspPb &resp)
 {
     ScopedRequestContext ctx;
@@ -103,3 +107,5 @@ Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(MultiCreate, const MultiCreateReqP
     }
     return returnStatus;
 }
+
+#endif

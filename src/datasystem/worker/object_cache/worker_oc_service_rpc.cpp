@@ -30,7 +30,11 @@ namespace object_cache {
 #define DS_OC_WRITE_REQUEST_TENANT(manager, request, tenant) \
     resolver.Request(manager, request.tenant_id(), request.token(), tenant)
 #define DS_OC_WRITE_SESSION_TENANT(manager, request, tenant) resolver.Resolve(manager, request, tenant)
+#define DS_OC_WRITE_MULTIPUBLISH_BODY
+#define DS_OC_WRITE_CREATE_BODY
 #include "datasystem/worker/object_cache/worker_oc_service_body.inc"
+#undef DS_OC_WRITE_CREATE_BODY
+#undef DS_OC_WRITE_MULTIPUBLISH_BODY
 #undef DS_OC_WRITE_SESSION_TENANT
 #undef DS_OC_WRITE_REQUEST_TENANT
 #undef DS_OC_WRITE_FORWARD

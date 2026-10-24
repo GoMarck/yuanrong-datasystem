@@ -969,7 +969,9 @@ Status WorkerOCServiceImpl::Publish(const PublishReqPb &req, PublishRspPb &resp,
 #define DS_OC_WRITE_REQUEST_TENANT(manager, request, tenant) \
     worker::AuthenticateRequest(manager, request, request.tenant_id(), tenant)
 #define DS_OC_WRITE_SESSION_TENANT(manager, request, tenant) worker::Authenticate(manager, request, tenant)
+#define DS_OC_WRITE_MULTIPUBLISH_BODY
 #include "datasystem/worker/object_cache/worker_oc_service_body.inc"
+#undef DS_OC_WRITE_MULTIPUBLISH_BODY
 #undef DS_OC_WRITE_SESSION_TENANT
 #undef DS_OC_WRITE_REQUEST_TENANT
 #undef DS_OC_WRITE_FORWARD
@@ -1767,6 +1769,19 @@ bool WorkerOCServiceImpl::IsStartupReconciling() const
 {
     return isRestart_ && !reconciliationReady_.load(std::memory_order_acquire);
 }
+
+#define DS_OC_WRITE_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_FORWARD(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_REQUEST_TENANT(manager, request, tenant) \
+    worker::AuthenticateRequest(manager, request, request.tenant_id(), tenant)
+#define DS_OC_WRITE_SESSION_TENANT(manager, request, tenant) worker::Authenticate(manager, request, tenant)
+#define DS_OC_WRITE_CREATE_BODY
+#include "datasystem/worker/object_cache/worker_oc_service_body.inc"
+#undef DS_OC_WRITE_CREATE_BODY
+#undef DS_OC_WRITE_SESSION_TENANT
+#undef DS_OC_WRITE_REQUEST_TENANT
+#undef DS_OC_WRITE_FORWARD
+#undef DS_OC_WRITE_ENTRY
 
 Status WorkerOCServiceImpl::PrepareRestartReconciliation(const PushMetaToWorkerReqPb &req)
 {
