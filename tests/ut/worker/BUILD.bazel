@@ -399,6 +399,7 @@ ds_cc_test(
 ds_cc_test(
     name = "worker_service_rpc_tenant_test",
     srcs = ["object_cache/worker_service_rpc_tenant_test.cpp"],
+    linkstatic = True,
     deps = [
         "//src/datasystem/cluster:cluster_topology",
         "//src/datasystem/common/ak_sk:ak_sk_manager",
