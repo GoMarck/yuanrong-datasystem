@@ -38,11 +38,14 @@ ds_cc_library(
 
 ds_cc_library(
     name = "master_oc_service_impl",
-    srcs = ["master_oc_service_impl.cpp"],
+    srcs = ["master_oc_service_impl.cpp", "master_oc_service_rpc.cpp"],
     hdrs = [
         "master_oc_service_impl.h",
+        "master_oc_service_body.inc",
+        "master_oc_rpc_dispatcher.h",
     ],
     deps = [
+        "//src/datasystem/common/rpc:brpc_auth",
         "//src/datasystem/cluster:cluster_topology",
         ":master_worker_oc_api",
         ":oc_metadata_manager",

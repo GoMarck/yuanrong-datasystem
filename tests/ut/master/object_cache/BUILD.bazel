@@ -178,6 +178,7 @@ ds_cc_test(
 test_suite(
     name = "all_master_oc_tests",
     tests = [
+        ":master_rpc_admission_test",
         "expired_object_manager_test",
         "master_dev_dead_lock_manager_test",
         "master_dev_oc_directory_test",
@@ -191,5 +192,23 @@ test_suite(
         "oc_metadata_manager_existence_opt_test",
         "oc_migrate_metadata_manager_test",
         "oc_notify_worker_manager_test",
+    ],
+)
+
+
+ds_cc_test(
+    name = "master_rpc_admission_test",
+    srcs = ["master_rpc_admission_test.cpp"],
+    linkstatic = True,
+    deps = [
+        "//src/datasystem/cluster:cluster_topology",
+        "//src/datasystem/common/ak_sk:ak_sk_manager",
+        "//src/datasystem/common/rpc:brpc_auth",
+        "//src/datasystem/common/rpc:brpc_server_unary_writer_reader",
+        "//src/datasystem/master:metadata_manager_holder",
+        "//src/datasystem/master/object_cache:master_oc_service_impl",
+        "//src/datasystem/worker:add_miss_libs_fixme",
+        "//tests/common/binmock:binmock",
+        "//tests/ut:ut_common",
     ],
 )

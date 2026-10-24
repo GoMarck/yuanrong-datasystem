@@ -1,6 +1,7 @@
 add_subdirectory(store)
 set(MASTER_OC_SRCS
         master_oc_service_impl.cpp
+        master_oc_service_rpc.cpp
         oc_metadata_manager.cpp
         delete_object_mediator.cpp
         master_worker_oc_api.cpp

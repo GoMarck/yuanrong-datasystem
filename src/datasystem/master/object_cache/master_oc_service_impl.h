@@ -41,6 +41,7 @@
 #include "datasystem/common/log/log.h"
 
 namespace datasystem {
+struct RpcRequestProof;
 namespace master {
 
 class MasterOCServiceImpl final : public MasterOCService, public IMasterOCService {
@@ -86,6 +87,10 @@ public:
      */
     Status CreateMeta(const CreateMetaReqPb &req, CreateMetaRspPb &rsp) override;
 
+    Status CreateMetaWithRpcAuth(
+        const CreateMetaReqPb &req, CreateMetaRspPb &rsp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Create object copy meta in cache and rocksdb.
      * @param[in] req The rpc req protobuf.
@@ -94,6 +99,10 @@ public:
      */
     Status CreateCopyMeta(const CreateCopyMetaReqPb &req, CreateCopyMetaRspPb &rsp) override;
 
+    Status CreateCopyMetaWithRpcAuth(
+        const CreateCopyMetaReqPb &req, CreateCopyMetaRspPb &rsp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Create multi object copy meta in cache and rocksdb.
      * @param[in] req The rpc req protobuf.
@@ -101,6 +110,10 @@ public:
      * @return Status of the call.
      */
     Status CreateMultiCopyMeta(const CreateMultiCopyMetaReqPb &req, CreateMultiCopyMetaRspPb &rsp) override;
+
+    Status CreateMultiCopyMetaWithRpcAuth(
+        const CreateMultiCopyMetaReqPb &req, CreateMultiCopyMetaRspPb &rsp,
+        const RpcRequestProof &proof);
 
     /**
      * @brief Query object meta from cache or rocksdb.
@@ -111,6 +124,10 @@ public:
      */
     Status QueryMeta(const QueryMetaReqPb &req, QueryMetaRspPb &rsp, std::vector<RpcMessage> &payloads) override;
 
+    Status QueryMetaWithRpcAuth(
+        const QueryMetaReqPb &req, QueryMetaRspPb &rsp, std::vector<RpcMessage> &payloads,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Get device meta info of the keys.
      * @param[in] req The rpc req protobuf.
@@ -118,6 +135,10 @@ public:
      * @return Status of the call.
      */
     Status GetMetaInfo(const GetMetaInfoReqPb &req, GetMetaInfoRspPb &rsp) override;
+
+    Status GetMetaInfoWithRpcAuth(
+        const GetMetaInfoReqPb &req, GetMetaInfoRspPb &rsp,
+        const RpcRequestProof &proof);
 
     /**
      * @brief Remove object meta in cache and rocksdb.
@@ -127,6 +148,10 @@ public:
      */
     Status RemoveMeta(const RemoveMetaReqPb &req, RemoveMetaRspPb &rsp) override;
 
+    Status RemoveMetaWithRpcAuth(
+        const RemoveMetaReqPb &req, RemoveMetaRspPb &rsp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Update object meta in cache and rocksdb.
      * @param[in] req The rpc req protobuf.
@@ -134,6 +159,10 @@ public:
      * @return Status of the call.
      */
     Status UpdateMeta(const UpdateMetaReqPb &req, UpdateMetaRspPb &rsp) override;
+
+    Status UpdateMetaWithRpcAuth(
+        const UpdateMetaReqPb &req, UpdateMetaRspPb &rsp,
+        const RpcRequestProof &proof);
 
     /**
      * @brief Get object locations from master.
@@ -143,6 +172,10 @@ public:
      */
     Status GetObjectLocations(const GetObjectLocationsReqPb &req, GetObjectLocationsRspPb &resp) override;
 
+    Status GetObjectLocationsWithRpcAuth(
+        const GetObjectLocationsReqPb &req, GetObjectLocationsRspPb &resp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Delete metadata and notify other workers to delete these objects.
      * @param[in] serverApi The ServerUnaryWriterReader object.
@@ -150,6 +183,10 @@ public:
      */
     Status DeleteAllCopyMeta(
         std::shared_ptr<ServerUnaryWriterReader<DeleteAllCopyMetaRspPb, DeleteAllCopyMetaReqPb>> serverApi) override;
+
+    Status DeleteAllCopyMetaWithRpcAuth(
+        std::shared_ptr<ServerUnaryWriterReader<DeleteAllCopyMetaRspPb, DeleteAllCopyMetaReqPb>> serverApi,
+        const RpcRequestProof &proof);
 
     /**
      * @brief Delete metadata and notify other workers to delete these objects.
@@ -159,6 +196,10 @@ public:
      */
     Status DeleteAllCopyMeta(const DeleteAllCopyMetaReqPb &req, DeleteAllCopyMetaRspPb &rsp);
 
+    Status DeleteAllCopyMetaWithRpcAuth(
+        const DeleteAllCopyMetaReqPb &req, DeleteAllCopyMetaRspPb &rsp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Increases nested object reference count.
      * @param[in] req The rpc req protobuf.
@@ -166,6 +207,10 @@ public:
      * @return Status of the call.
      */
     Status GIncNestedRef(const GIncNestedRefReqPb &req, GIncNestedRefRspPb &rsp) override;
+
+    Status GIncNestedRefWithRpcAuth(
+        const GIncNestedRefReqPb &req, GIncNestedRefRspPb &rsp,
+        const RpcRequestProof &proof);
 
     /**
      * @brief Decreases nested object reference count.
@@ -175,6 +220,10 @@ public:
      */
     Status GDecNestedRef(const GDecNestedRefReqPb &req, GDecNestedRefRspPb &rsp) override;
 
+    Status GDecNestedRefWithRpcAuth(
+        const GDecNestedRefReqPb &req, GDecNestedRefRspPb &rsp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief The rpc method used to increase the remote client id ref.
      * @param[in] req The rpc req protobuf.
@@ -182,6 +231,10 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status GIncreaseMasterAppRef(const GIncreaseReqPb &req, GIncreaseRspPb &resp) override;
+
+    Status GIncreaseMasterAppRefWithRpcAuth(
+        const GIncreaseReqPb &req, GIncreaseRspPb &resp,
+        const RpcRequestProof &proof);
 
     /**
      * @brief The rpc method used to increase the global reference count of object.
@@ -191,12 +244,20 @@ public:
      */
     Status GIncreaseRef(const GIncreaseReqPb &req, GIncreaseRspPb &resp) override;
 
+    Status GIncreaseRefWithRpcAuth(
+        const GIncreaseReqPb &req, GIncreaseRspPb &resp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief The rpc method used to decrease the global reference count of object.
      * @param[in] serverApi The ServerUnaryWriterReader object.
      * @return K_OK on success; the error code otherwise.
      */
     Status GDecreaseRef(std::shared_ptr<ServerUnaryWriterReader<GDecreaseRspPb, GDecreaseReqPb>> serverApi) override;
+
+    Status GDecreaseRefWithRpcAuth(
+        std::shared_ptr<ServerUnaryWriterReader<GDecreaseRspPb, GDecreaseReqPb>> serverApi,
+        const RpcRequestProof &proof);
 
     /**
      * @brief The rpc method used to decrease the global reference count of object.
@@ -206,6 +267,10 @@ public:
      */
     Status GDecreaseRef(const GDecreaseReqPb &req, GDecreaseRspPb &resp);
 
+    Status GDecreaseRefWithRpcAuth(
+        const GDecreaseReqPb &req, GDecreaseRspPb &resp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Process req from worker to decrease all the objects of remote client id.
      * @param[in] req The rpc req protobuf.
@@ -214,6 +279,10 @@ public:
      */
     Status ReleaseGRefs(const ReleaseGRefsReqPb &req, ReleaseGRefsRspPb &resp) override;
 
+    Status ReleaseGRefsWithRpcAuth(
+        const ReleaseGRefsReqPb &req, ReleaseGRefsRspPb &resp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Process req from master to decrease all the obj of remote client id.
      * @param[in] req The rpc req protobuf.
@@ -221,6 +290,10 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status ReleaseGRefsOfRemoteClientId(const ReleaseGRefsReqPb &req, ReleaseGRefsRspPb &resp) override;
+
+    Status ReleaseGRefsOfRemoteClientIdWithRpcAuth(
+        const ReleaseGRefsReqPb &req, ReleaseGRefsRspPb &resp,
+        const RpcRequestProof &proof);
 
     /**
      * @brief Helper function to send the rpc req for querying the target worker of objs' global references.
@@ -238,6 +311,10 @@ public:
      * @return Status of the call.
      */
     Status QueryGlobalRefNum(const QueryGlobalRefNumReqPb &req, QueryGlobalRefNumRspCollectionPb &rsp) override;
+
+    Status QueryGlobalRefNumWithRpcAuth(
+        const QueryGlobalRefNumReqPb &req, QueryGlobalRefNumRspCollectionPb &rsp,
+        const RpcRequestProof &proof);
 
     /**
      * @brief Helper function to generate Pbs of QueryGlobalRefNum.
@@ -278,6 +355,10 @@ public:
      */
     Status PushMetaToMaster(const PushMetaToMasterReqPb &req, PushMetaToMasterRspPb &rsp) override;
 
+    Status PushMetaToMasterWithRpcAuth(
+        const PushMetaToMasterReqPb &req, PushMetaToMasterRspPb &rsp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Rollback the seal req.
      * @param[in] req The rpc req protobuf.
@@ -285,6 +366,10 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status RollbackSeal(const RollbackSealReqPb &req, RollbackSealRspPb &rsp) override;
+
+    Status RollbackSealWithRpcAuth(
+        const RollbackSealReqPb &req, RollbackSealRspPb &rsp,
+        const RpcRequestProof &proof);
 
     /**
      * @brief Check if the asking worker needs reconciliaton. If so, trigger reconciliation.
@@ -294,6 +379,10 @@ public:
      */
     Status IfNeedTriggerReconciliationImpl(const ReconciliationQueryPb &req, ReconciliationRspPb &rsp);
 
+    Status IfNeedTriggerReconciliationImplWithRpcAuth(
+        const ReconciliationQueryPb &req, ReconciliationRspPb &rsp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Check if the asking worker needs reconciliaton. If so, trigger reconciliation.
      * @param[in] serverApi The ServerUnaryWriterReader object.
@@ -301,6 +390,10 @@ public:
      */
     Status ReconcileMembershipChange(
         std::shared_ptr<ServerUnaryWriterReader<ReconciliationRspPb, ReconciliationQueryPb>> serverApi) override;
+
+    Status ReconcileMembershipChangeWithRpcAuth(
+        std::shared_ptr<ServerUnaryWriterReader<ReconciliationRspPb, ReconciliationQueryPb>> serverApi,
+        const RpcRequestProof &proof);
 
     /**
      * @brief Takes a copy of the local MasterWorkerService to allow rpc bypass when the master and worker are
@@ -336,6 +429,10 @@ public:
      */
     Status MigrateMetadata(const MigrateMetadataReqPb &req, MigrateMetadataRspPb &rsp) override;
 
+    Status MigrateMetadataWithRpcAuth(
+        const MigrateMetadataReqPb &req, MigrateMetadataRspPb &rsp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Report the memory info.
      * @param[in] req The rpc req protobuf.
@@ -343,6 +440,10 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status ReportResource(const ResourceReportReqPb &req, ResourceReportRspPb &rsp) override;
+
+    Status ReportResourceWithRpcAuth(
+        const ResourceReportReqPb &req, ResourceReportRspPb &rsp,
+        const RpcRequestProof &proof);
 
     /**
      * @brief Report memory rebalance task result.
@@ -352,11 +453,20 @@ public:
      */
     Status ReportRebalanceResult(const ReportRebalanceResultReqPb &req, ReportRebalanceResultRspPb &rsp) override;
 
+    Status ReportRebalanceResultWithRpcAuth(
+        const ReportRebalanceResultReqPb &req, ReportRebalanceResultRspPb &rsp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Publish a controller-owned eviction policy rollout intent.
      */
     Status StartEvictionPolicyUpdate(const StartEvictionPolicyUpdateReqPb &req,
                                      StartEvictionPolicyUpdateRspPb &rsp) override;
+
+    Status StartEvictionPolicyUpdateWithRpcAuth(
+        const StartEvictionPolicyUpdateReqPb &req,
+                                     StartEvictionPolicyUpdateRspPb &rsp,
+        const RpcRequestProof &proof);
 
     /**
      * @brief Query worker acknowledgement and migration progress for the active rollout.
@@ -364,12 +474,21 @@ public:
     Status GetEvictionPolicyUpdateProgress(const GetEvictionPolicyUpdateProgressReqPb &req,
                                            GetEvictionPolicyUpdateProgressRspPb &rsp) override;
 
+    Status GetEvictionPolicyUpdateProgressWithRpcAuth(
+        const GetEvictionPolicyUpdateProgressReqPb &req,
+                                           GetEvictionPolicyUpdateProgressRspPb &rsp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Create multi meta.
      * @param[in] req The rpc request protobuf.
      * @param[out] rsp The rpc response protobuf.
      */
     Status CreateMultiMeta(const CreateMultiMetaReqPb &req, CreateMultiMetaRspPb &rsp) override;
+
+    Status CreateMultiMetaWithRpcAuth(
+        const CreateMultiMetaReqPb &req, CreateMultiMetaRspPb &rsp,
+        const RpcRequestProof &proof);
 
     /**
      * @brief Put p2p metadata from master.
@@ -379,6 +498,10 @@ public:
      */
     Status PutP2PMeta(const PutP2PMetaReqPb &req, PutP2PMetaRspPb &resp) override;
 
+    Status PutP2PMetaWithRpcAuth(
+        const PutP2PMetaReqPb &req, PutP2PMetaRspPb &resp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Replace objects primary copy location.
      * @param[in] The rpc req protobuf.
@@ -386,6 +509,10 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status ReplacePrimary(const ReplacePrimaryReqPb &req, ReplacePrimaryRspPb &rsp) override;
+
+    Status ReplacePrimaryWithRpcAuth(
+        const ReplacePrimaryReqPb &req, ReplacePrimaryRspPb &rsp,
+        const RpcRequestProof &proof);
 
     /**
      * @brief Pure query objects metadata.
@@ -395,6 +522,10 @@ public:
      */
     Status PureQueryMeta(const PureQueryMetaReqPb &req, PureQueryMetaRspPb &rsp) override;
 
+    Status PureQueryMetaWithRpcAuth(
+        const PureQueryMetaReqPb &req, PureQueryMetaRspPb &rsp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Check whether worker-local object data is still recorded in master metadata.
      * @param[in] The rpc req protobuf.
@@ -402,6 +533,10 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status CheckObjectDataLocation(const CheckObjectDataLocationReqPb &req, CheckObjectDataLocationRspPb &rsp) override;
+
+    Status CheckObjectDataLocationWithRpcAuth(
+        const CheckObjectDataLocationReqPb &req, CheckObjectDataLocationRspPb &rsp,
+        const RpcRequestProof &proof);
 
     /**
      * @brief Subscribe the p2p receiving event.
@@ -412,12 +547,20 @@ public:
         std::shared_ptr<ServerUnaryWriterReader<SubscribeReceiveEventRspPb, SubscribeReceiveEventReqPb>> serverApi)
         override;
 
+    Status SubscribeReceiveEventWithRpcAuth(
+        std::shared_ptr<ServerUnaryWriterReader<SubscribeReceiveEventRspPb, SubscribeReceiveEventReqPb>> serverApi,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Get p2p metadata from master.
      * @param[in] serverApi The unary writer reader.
      * @return K_OK on success; the error code otherwise.
      */
     Status GetP2PMeta(std::shared_ptr<ServerUnaryWriterReader<GetP2PMetaRspPb, GetP2PMetaReqPb>> serverApi) override;
+
+    Status GetP2PMetaWithRpcAuth(
+        std::shared_ptr<ServerUnaryWriterReader<GetP2PMetaRspPb, GetP2PMetaReqPb>> serverApi,
+        const RpcRequestProof &proof);
 
     /**
      * @brief Send root info to master.
@@ -427,6 +570,10 @@ public:
      */
     Status SendRootInfo(const SendRootInfoReqPb &req, SendRootInfoRspPb &resp) override;
 
+    Status SendRootInfoWithRpcAuth(
+        const SendRootInfoReqPb &req, SendRootInfoRspPb &resp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Receive root info from master.
      * @param[in] serverApi The unary writer reader.
@@ -434,6 +581,10 @@ public:
      */
     Status RecvRootInfo(
         std::shared_ptr<ServerUnaryWriterReader<RecvRootInfoRspPb, RecvRootInfoReqPb>> serverApi) override;
+
+    Status RecvRootInfoWithRpcAuth(
+        std::shared_ptr<ServerUnaryWriterReader<RecvRootInfoRspPb, RecvRootInfoReqPb>> serverApi,
+        const RpcRequestProof &proof);
 
     std::string GetWorkerId();
 
@@ -444,6 +595,10 @@ public:
      */
     Status GetDataInfo(std::shared_ptr<ServerUnaryWriterReader<GetDataInfoRspPb, GetDataInfoReqPb>> serverApi) override;
 
+    Status GetDataInfoWithRpcAuth(
+        std::shared_ptr<ServerUnaryWriterReader<GetDataInfoRspPb, GetDataInfoReqPb>> serverApi,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Acknowledging data receiving finished.
      * @param[in] req The rpc req protobuf.
@@ -451,6 +606,10 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status AckRecvFinish(const AckRecvFinishReqPb &req, AckRecvFinishRspPb &resp) override;
+
+    Status AckRecvFinishWithRpcAuth(
+        const AckRecvFinishReqPb &req, AckRecvFinishRspPb &resp,
+        const RpcRequestProof &proof);
 
     /**
      * @brief Remove data location in object directory.
@@ -460,6 +619,10 @@ public:
      */
     Status RemoveP2PLocation(const RemoveP2PLocationReqPb &req, RemoveP2PLocationRspPb &resp) override;
 
+    Status RemoveP2PLocationWithRpcAuth(
+        const RemoveP2PLocationReqPb &req, RemoveP2PLocationRspPb &resp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Remove metadata in directory.
      * @param[in] req The rpc req protobuf.
@@ -467,6 +630,10 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status ReleaseMetaData(const ReleaseMetaDataReqPb &req, ReleaseMetaDataRspPb &resp) override;
+
+    Status ReleaseMetaDataWithRpcAuth(
+        const ReleaseMetaDataReqPb &req, ReleaseMetaDataRspPb &resp,
+        const RpcRequestProof &proof);
 
     /**
      * @brief Rollback metadata in directory.
@@ -476,6 +643,10 @@ public:
      */
     Status RollbackMultiMeta(const RollbackMultiMetaReqPb &req, RollbackMultiMetaRspPb &rsp) override;
 
+    Status RollbackMultiMetaWithRpcAuth(
+        const RollbackMultiMetaReqPb &req, RollbackMultiMetaRspPb &rsp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Expire metadata in directory.
      * @param[in] req The rpc req protobuf.
@@ -483,6 +654,10 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status Expire(const ExpireReqPb &req, ExpireRspPb &rsp) override;
+
+    Status ExpireWithRpcAuth(
+        const ExpireReqPb &req, ExpireRspPb &rsp,
+        const RpcRequestProof &proof);
 
     /**
      * @brief Liveness check.
@@ -492,9 +667,21 @@ public:
      */
     Status LivenessCheck(const LivenessCheckReqPb &req, LivenessCheckRspPb &rsp) override;
 
+    Status LivenessCheckWithRpcAuth(
+        const LivenessCheckReqPb &req, LivenessCheckRspPb &rsp,
+        const RpcRequestProof &proof);
+
 private:
     Status CreateMultiCopyMetaImpl(const CreateMultiCopyMetaReqPb &req, CreateMultiCopyMetaRspPb &rsp);
+
+    Status CreateMultiCopyMetaImplWithRpcAuth(
+        const CreateMultiCopyMetaReqPb &req, CreateMultiCopyMetaRspPb &rsp,
+        const RpcRequestProof &proof);
     Status RemoveMetaImpl(const RemoveMetaReqPb &req, RemoveMetaRspPb &rsp);
+
+    Status RemoveMetaImplWithRpcAuth(
+        const RemoveMetaReqPb &req, RemoveMetaRspPb &rsp,
+        const RpcRequestProof &proof);
 
     HostPort masterAddress_;
     std::shared_ptr<PersistenceApi> persistenceApi_;
