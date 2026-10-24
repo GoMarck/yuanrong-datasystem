@@ -167,6 +167,7 @@ ds_cc_test(
         "object_cache/worker_oc_service_impl_test.cpp",
     ],
     deps = [
+        "//src/datasystem/worker/object_cache:master_worker_oc_service_impl",
         "//src/datasystem/worker/object_cache:worker_worker_transport_service_impl",
         "//src/datasystem/common/rpc:brpc_auth",
         "//src/datasystem/common/rpc:brpc_server_unary_writer_reader",

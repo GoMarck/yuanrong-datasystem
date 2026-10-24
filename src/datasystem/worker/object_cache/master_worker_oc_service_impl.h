@@ -29,6 +29,9 @@
 #include "datasystem/protos/worker_object.brpc.pb.h"
 
 namespace datasystem {
+namespace worker {
+class RpcTenantResolver;
+}
 namespace object_cache {
 class MasterWorkerOCServiceImpl : public MasterWorkerOCService, public IMasterWorkerOCService {
 public:
@@ -62,6 +65,10 @@ public:
      */
     Status UpdateNotification(const UpdateObjectReqPb &req, UpdateObjectRspPb &rsp) override;
 
+    Status UpdateNotificationWithTenantResolver(
+        const UpdateObjectReqPb &req, UpdateObjectRspPb &rsp,
+        const worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Process delete notification from master.
      * @param[in] req The rpc request protobuf.
@@ -69,6 +76,10 @@ public:
      * @return Status of the call.
      */
     Status DeleteNotification(const DeleteObjectReqPb &req, DeleteObjectRspPb &rsp) override;
+
+    Status DeleteNotificationWithTenantResolver(
+        const DeleteObjectReqPb &req, DeleteObjectRspPb &rsp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Process L2-persistence-only delete request from master.
@@ -78,6 +89,10 @@ public:
      */
     Status DeletePersistenceObject(const DeletePersistenceObjectReqPb &req, DeletePersistenceObjectRspPb &rsp) override;
 
+    Status DeletePersistenceObjectWithTenantResolver(
+        const DeletePersistenceObjectReqPb &req, DeletePersistenceObjectRspPb &rsp,
+        const worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Publish already sealed object meta from master to worker.
      * @param[in] req The rpc request protobuf.
@@ -85,6 +100,10 @@ public:
      * @return Status of the call.
      */
     Status PublishMeta(const PublishMetaReqPb &req, PublishMetaRspPb &resp) override;
+
+    Status PublishMetaWithTenantResolver(
+        const PublishMetaReqPb &req, PublishMetaRspPb &resp,
+        const worker::RpcTenantResolver &resolver);
 
     // Deprecated
     Status MetaChange(const MetaChangeReqPb &req, MetaChangeRspPb &rsp) override;
@@ -97,6 +116,10 @@ public:
      */
     Status QueryGlobalRefNumOnWorker(const QueryGlobalRefNumReqPb &req, QueryGlobalRefNumRspPb &rsp) override;
 
+    Status QueryGlobalRefNumOnWorkerWithTenantResolver(
+        const QueryGlobalRefNumReqPb &req, QueryGlobalRefNumRspPb &rsp,
+        const worker::RpcTenantResolver &resolver);
+
     /**
      * @brief The master pushes metadata to the worker for reconciliation.
      * @param[in] req The rpc request protobuf.
@@ -104,6 +127,10 @@ public:
      * @return Status of the call.
      */
     Status PushMetaToWorker(const PushMetaToWorkerReqPb &req, PushMetaToWorkerRspPb &rsp) override;
+
+    Status PushMetaToWorkerWithTenantResolver(
+        const PushMetaToWorkerReqPb &req, PushMetaToWorkerRspPb &rsp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Clear data without meta.
@@ -130,6 +157,10 @@ public:
      */
     Status RequestMetaFromWorker(const RequestMetaFromWorkerReqPb &req, RequestMetaFromWorkerRspPb &rsp) override;
 
+    Status RequestMetaFromWorkerWithTenantResolver(
+        const RequestMetaFromWorkerReqPb &req, RequestMetaFromWorkerRspPb &rsp,
+        const worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Process change primary copy message.
      * @param[in] req The rpc request protobuf.
@@ -137,6 +168,10 @@ public:
      * @return Status of the call.
      */
     Status ChangePrimaryCopy(const ChangePrimaryCopyReqPb &req, ChangePrimaryCopyRspPb &rsp) override;
+
+    Status ChangePrimaryCopyWithTenantResolver(
+        const ChangePrimaryCopyReqPb &req, ChangePrimaryCopyRspPb &rsp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Forward nested object reference increase calls to multiple masters based on objectKeys
@@ -146,6 +181,10 @@ public:
      */
     Status NotifyMasterIncNestedRefs(const NotifyMasterIncNestedReqPb &req, NotifyMasterIncNestedResPb &rsp) override;
 
+    Status NotifyMasterIncNestedRefsWithTenantResolver(
+        const NotifyMasterIncNestedReqPb &req, NotifyMasterIncNestedResPb &rsp,
+        const worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Forward nested object reference decrease calls to multiple masters based on objectKeys
      * @param[in] req The rpc request protobuf.
@@ -153,6 +192,10 @@ public:
      * @return Status of the call.
      */
     Status NotifyMasterDecNestedRefs(const NotifyMasterDecNestedReqPb &req, NotifyMasterDecNestedResPb &rsp) override;
+
+    Status NotifyMasterDecNestedRefsWithTenantResolver(
+        const NotifyMasterDecNestedReqPb &req, NotifyMasterDecNestedResPb &rsp,
+        const worker::RpcTenantResolver &resolver);
 
 private:
     /**

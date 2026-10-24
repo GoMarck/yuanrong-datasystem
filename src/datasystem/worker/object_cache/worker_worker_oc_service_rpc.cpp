@@ -45,7 +45,7 @@ namespace {
 #define DS_WW_RPC_ENTRY(name, ...) \
     name##WithTenantResolver(__VA_ARGS__, const worker::RpcTenantResolver &resolver)
 #define DS_WW_RPC_FORWARD(name, ...) name##WithTenantResolver(__VA_ARGS__, resolver)
-#define DS_WW_RPC_VERIFY(manager, request) resolver.Verify(*manager)
+#define DS_WW_RPC_VERIFY(manager, request) (static_cast<void>(request), resolver.Verify(*manager))
 #define DS_WW_RPC_GET
 #define DS_WW_RPC_POLICY
 #define DS_WW_RPC_BATCH

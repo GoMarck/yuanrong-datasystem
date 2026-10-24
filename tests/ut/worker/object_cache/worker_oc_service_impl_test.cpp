@@ -79,6 +79,7 @@
 #include "datasystem/worker/object_cache/worker_worker_oc_service_impl.h"
 #include "datasystem/worker/object_cache/worker_worker_transport_service_impl.h"
 #undef private
+#include "datasystem/worker/object_cache/master_worker_oc_rpc_dispatcher.h"
 #include "datasystem/worker/object_cache/worker_oc_service_rpc_dispatcher.h"
 #include "datasystem/worker/object_cache/worker_peer_rpc_dispatcher.h"
 
@@ -3074,6 +3075,77 @@ TEST_F(WorkerOcServiceImplTest, RpcPeerAdmissionKeepsAuthenticationBeforeBackend
     BatchGetObjectRemoteRspPb batched;
     read(batch, batched, &WorkerWorkerOCServiceImpl::BatchGetObjectRemote,
          &WorkerWorkerOCServiceImpl::BatchGetObjectRemoteWithTenantResolver);
+}
+
+TEST_F(WorkerOcServiceImplTest, RpcMasterNotificationsRejectBeforeMutationAndKeepPublishDeadline)
+{
+    auto manager = std::make_shared<AkSkManager>();
+    Signature provider("test-only-notify-access", SensitiveValue("test-only-notify-secret"));
+    AkSkData key;
+    ASSERT_TRUE(provider.SnapshotClientKey(key).IsOk());
+    ASSERT_TRUE(manager->SetServerAkSk(AkSkType::SYSTEM, key.accessKey, key.secretKey).IsOk());
+    MasterWorkerOCServiceImpl service(nullptr, manager);
+    MasterWorkerOCServiceRpcDispatcher dispatcher(service);
+    MasterWorkerOCServiceBrpcAuthAdapter<MasterWorkerOCServiceRpcDispatcher> adapter(dispatcher);
+    EXPECT_EQ(adapter.GetDescriptor()->method_count(), 12);
+    const RpcRequestProof missing;
+    worker::RpcTenantResolver rejected(missing);
+    auto reject = [&](auto &request, auto &response, auto ordinary, auto authenticated) {
+        EXPECT_EQ((service.*ordinary)(request, response).GetCode(), K_NOT_AUTHORIZED);
+        EXPECT_EQ((service.*authenticated)(request, response, rejected).GetCode(), K_NOT_AUTHORIZED);
+    };
+    UpdateObjectReqPb update;
+    UpdateObjectRspPb updated;
+    reject(update, updated, &MasterWorkerOCServiceImpl::UpdateNotification,
+           &MasterWorkerOCServiceImpl::UpdateNotificationWithTenantResolver);
+    DeleteObjectReqPb erase;
+    DeleteObjectRspPb erased;
+    reject(erase, erased, &MasterWorkerOCServiceImpl::DeleteNotification,
+           &MasterWorkerOCServiceImpl::DeleteNotificationWithTenantResolver);
+    DeletePersistenceObjectReqPb persistence;
+    DeletePersistenceObjectRspPb persisted;
+    reject(persistence, persisted, &MasterWorkerOCServiceImpl::DeletePersistenceObject,
+           &MasterWorkerOCServiceImpl::DeletePersistenceObjectWithTenantResolver);
+    QueryGlobalRefNumReqPb reference;
+    QueryGlobalRefNumRspPb referenced;
+    reject(reference, referenced, &MasterWorkerOCServiceImpl::QueryGlobalRefNumOnWorker,
+           &MasterWorkerOCServiceImpl::QueryGlobalRefNumOnWorkerWithTenantResolver);
+    PushMetaToWorkerReqPb push;
+    PushMetaToWorkerRspPb pushed;
+    reject(push, pushed, &MasterWorkerOCServiceImpl::PushMetaToWorker,
+           &MasterWorkerOCServiceImpl::PushMetaToWorkerWithTenantResolver);
+    RequestMetaFromWorkerReqPb query;
+    RequestMetaFromWorkerRspPb queried;
+    reject(query, queried, &MasterWorkerOCServiceImpl::RequestMetaFromWorker,
+           &MasterWorkerOCServiceImpl::RequestMetaFromWorkerWithTenantResolver);
+    ChangePrimaryCopyReqPb change;
+    ChangePrimaryCopyRspPb changed;
+    reject(change, changed, &MasterWorkerOCServiceImpl::ChangePrimaryCopy,
+           &MasterWorkerOCServiceImpl::ChangePrimaryCopyWithTenantResolver);
+    NotifyMasterIncNestedReqPb increase;
+    NotifyMasterIncNestedResPb increased;
+    reject(increase, increased, &MasterWorkerOCServiceImpl::NotifyMasterIncNestedRefs,
+           &MasterWorkerOCServiceImpl::NotifyMasterIncNestedRefsWithTenantResolver);
+    NotifyMasterDecNestedReqPb decrease;
+    NotifyMasterDecNestedResPb decreased;
+    reject(decrease, decreased, &MasterWorkerOCServiceImpl::NotifyMasterDecNestedRefs,
+           &MasterWorkerOCServiceImpl::NotifyMasterDecNestedRefsWithTenantResolver);
+    PublishMetaReqPb publish;
+    PublishMetaRspPb published;
+    reject(publish, published, &MasterWorkerOCServiceImpl::PublishMeta,
+           &MasterWorkerOCServiceImpl::PublishMetaWithTenantResolver);
+    ASSERT_TRUE(provider.GenerateSignature(publish).IsOk());
+    RpcRequestProof proof;
+    proof.captured = true;
+    proof.timestampUs = GetSystemClockTimeStampUs();
+    proof.accessKey = key.accessKey;
+    ASSERT_TRUE(Signature::GetSignatureFromDigest(key, proof.digest, proof.signature).IsOk());
+    worker::RpcTenantResolver accepted(proof);
+    EXPECT_EQ(service.PublishMeta(publish, published).GetCode(), K_RPC_DEADLINE_EXCEEDED);
+    EXPECT_EQ(service.PublishMetaWithTenantResolver(publish, published, accepted).GetCode(), K_RPC_DEADLINE_EXCEEDED);
+    ASSERT_TRUE(provider.GenerateSignature(update).IsOk());
+    EXPECT_TRUE(service.UpdateNotification(update, updated).IsOk());
+    EXPECT_TRUE(service.UpdateNotificationWithTenantResolver(update, updated, accepted).IsOk());
 }
 
 TEST_F(WorkerOcServiceImplTest, RpcGeneratedAdapterBindsUnarySocketProofToTheOriginalTenantPoint)

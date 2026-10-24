@@ -622,11 +622,15 @@ ds_cc_library(
     name = "master_worker_oc_service_impl",
     srcs = [
         "master_worker_oc_service_impl.cpp",
+        "master_worker_oc_service_rpc.cpp",
     ],
     hdrs = [
         "master_worker_oc_service_impl.h",
+        "master_worker_oc_service_body.inc",
+        "master_worker_oc_rpc_dispatcher.h",
     ],
     deps = [
+        "//src/datasystem/worker:rpc_tenant_resolver",
         "//src/datasystem/common/ak_sk:ak_sk_manager",
         "//src/datasystem/common/iam:common_iam",
         "//src/datasystem/common/inject:common_inject",
