@@ -402,4 +402,3 @@ Status WorkerWorkerOCServiceImpl::DS_WW_RPC_ENTRY(ProcessBatchGetObjectRemoteRpc
 }
 
 #endif
-

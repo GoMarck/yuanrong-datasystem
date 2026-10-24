@@ -20,4 +20,3 @@ Status WorkerWorkerTransportServiceImpl::DS_WWT_RPC_ENTRY(QueryUbPortHealth, con
     RETURN_RUNTIME_ERROR_IF_NULL(ocClientWorkerSvc_);
     return ocClientWorkerSvc_->QuerySelfUbPortHealth(req, rsp);
 }
-
