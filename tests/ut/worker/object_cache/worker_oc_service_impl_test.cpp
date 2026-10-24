@@ -45,6 +45,8 @@
 #include "datasystem/common/parallel/parallel_for.h"
 #include "datasystem/common/rdma/fast_transport_manager_wrapper.h"
 #include "datasystem/common/rpc/rpc_message.h"
+#include "datasystem/common/rpc/brpc_auth.h"
+#include "datasystem/common/rpc/brpc_server_unary_writer_reader.h"
 #include "datasystem/common/shared_memory/allocator.h"
 #include "datasystem/common/shared_memory/delayed_release_shm_manager.h"
 #include "datasystem/common/util/raii.h"
@@ -54,6 +56,7 @@
 #include "datasystem/protos/master_object.pb.h"
 #include "datasystem/protos/worker_object.pb.h"
 #include "datasystem/worker/authenticate.h"
+#include "datasystem/worker/rpc_tenant_resolver.h"
 #include "datasystem/worker/client_manager/client_manager.h"
 #include "datasystem/worker/cluster_event_type.h"
 #include "datasystem/worker/object_cache/device/worker_device_oc_manager.h"
@@ -2343,6 +2346,53 @@ TEST_F(WorkerOcServiceImplTest, GetLocationCleanupUsesNormalCause)
     auto requests = api->RemoveMetaRequests();
     ASSERT_EQ(requests.size(), 1U);
     EXPECT_EQ(requests.front().cause(), master::RemoveMetaReqPb::NORMAL);
+}
+
+TEST_F(WorkerOcServiceImplTest, GetRpcTenantResolutionKeepsReadSessionAndTimeoutOrder)
+{
+    const bool skip = FLAGS_skip_authenticate;
+    Raii restore([skip] {
+        FLAGS_skip_authenticate = skip;
+        (void)inject::Clear("WorkerOCServiceImpl.Get.Timeout");
+    });
+    WorkerOcServiceCrudParam param = MakeCrudParam();
+    WorkerOcServiceGetImpl getImpl(param, nullptr, nullptr, nullptr, nullptr, localAddress_, nullptr);
+    const RpcRequestProof missing;
+    worker::RpcTenantResolver resolver(missing);
+    class Done final : public google::protobuf::Closure {
+    public:
+        void Run() override { ++calls; }
+        int calls = 0;
+    };
+    for (bool useRpc : {false, true}) {
+        for (unsigned phase : {0U, 1U, 2U, 3U}) {
+            ScopedRequestContext context;
+            GetRequestContext()->reqTimeoutDuration.Init(1000);
+            FLAGS_skip_authenticate = phase >= 2;
+            ASSERT_TRUE(inject::Set("WorkerOCServiceImpl.Get.Timeout", phase == 3 ? "call(1000000)" : "call(0)").IsOk());
+            brpc::Controller controller;
+            GetReqPb request;
+            request.set_client_id("test-only-missing-get-client");
+            request.set_sub_timeout(-1);
+            GetRspPb response;
+            Done done;
+            {
+                std::shared_ptr<ServerUnaryWriterReader<GetRspPb, GetReqPb>> api =
+                    std::make_shared<BrpcServerUnaryWriterReader<GetRspPb, GetReqPb>>(
+                        &controller, phase == 0 ? nullptr : &request, &response, &done, "Get");
+                const auto status = useRpc ? getImpl.GetWithTenantResolver(api, resolver) : getImpl.Get(api);
+                const StatusCode expected[] = {K_RUNTIME_ERROR, K_CLIENT_WORKER_DISCONNECT,
+                                               K_RPC_DEADLINE_EXCEEDED, K_RUNTIME_ERROR};
+                EXPECT_EQ(status.GetCode(), expected[phase]) << status.ToString();
+                if (phase == 0) {
+                    EXPECT_NE(status.GetMsg().find("Request protobuf is null"), std::string::npos);
+                } else if (phase == 3) {
+                    EXPECT_NE(status.GetMsg().find("SubTimeout is out of range"), std::string::npos);
+                }
+            }
+            EXPECT_EQ(done.calls, 1);
+        }
+    }
 }
 
 TEST_F(WorkerOcServiceImplTest, DeviceRemoteGetReservesCleanupBudgetBeforeRetry)
