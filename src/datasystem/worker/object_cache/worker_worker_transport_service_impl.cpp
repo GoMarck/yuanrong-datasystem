@@ -156,7 +156,7 @@ Status WorkerWorkerTransportServiceImpl::ProbeProviderUbRecovery(const ProviderU
 
 #define DS_WWT_RPC_ENTRY(name, ...) name(__VA_ARGS__)
 #define DS_WWT_RPC_VERIFY(manager, request) manager->VerifySignatureAndTimestamp(request)
-#include "datasystem/worker/object_cache/worker_worker_transport_body.inc"
+#include "datasystem/worker/object_cache/worker_worker_transport_service_body.inc"
 #undef DS_WWT_RPC_VERIFY
 #undef DS_WWT_RPC_ENTRY
 

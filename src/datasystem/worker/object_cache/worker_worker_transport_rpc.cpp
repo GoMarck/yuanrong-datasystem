@@ -20,7 +20,7 @@ namespace object_cache {
 #define DS_WWT_RPC_ENTRY(name, ...) \
     name##WithTenantResolver(__VA_ARGS__, const worker::RpcTenantResolver &resolver)
 #define DS_WWT_RPC_VERIFY(manager, request) resolver.Verify(*manager)
-#include "datasystem/worker/object_cache/worker_worker_transport_body.inc"
+#include "datasystem/worker/object_cache/worker_worker_transport_service_body.inc"
 #undef DS_WWT_RPC_VERIFY
 #undef DS_WWT_RPC_ENTRY
 }  // namespace object_cache

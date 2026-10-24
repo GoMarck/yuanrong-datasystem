@@ -768,7 +768,7 @@ ds_cc_library(
     hdrs = [
         "worker_worker_transport_service_impl.h",
         "worker_peer_rpc_dispatcher.h",
-        "worker_worker_transport_body.inc",
+        "worker_worker_transport_service_body.inc",
     ],
     deps = [
         "//src/datasystem/worker:rpc_tenant_resolver",
