@@ -795,6 +795,9 @@ private:
      *        result is retryable (caller continues the backoff loop), false otherwise (caller stops).
      */
     bool LogUrmaHandshakeRetryResult(const Status &status);
+
+protected:
+    std::shared_ptr<Signature> rpcSignatureOwner_;
 };
 }  // namespace client
 }  // namespace datasystem

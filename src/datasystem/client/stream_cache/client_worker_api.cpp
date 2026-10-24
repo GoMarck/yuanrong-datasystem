@@ -49,6 +49,13 @@ ClientWorkerApi::ClientWorkerApi(const HostPort &hostPort, SensitiveValue token,
 {
 }
 
+ClientWorkerApi::ClientWorkerApi(const HostPort &hostPort, SensitiveValue token,
+                                 std::shared_ptr<Signature> signature, std::string tenantId)
+    : ClientWorkerApi(hostPort, std::move(token), signature.get(), std::move(tenantId))
+{
+    rpcSignatureOwner_ = std::move(signature);
+}
+
 ClientWorkerApi::~ClientWorkerApi() = default;
 
 Status ClientWorkerApi::Init(int32_t requestTimeoutMs, int32_t connectTimeoutMs, uint64_t fastTransportSize,

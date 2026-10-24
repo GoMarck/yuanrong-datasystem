@@ -679,6 +679,10 @@ WorkerFailover::StandbySwitchAttemptResult WorkerFailover::TrySwitchToStandbyWor
         currentApi->CloneWith(standbyWorker, currentApi->heartbeatType_, owner_.token_, owner_.signature_.get(),
                               owner_.tenantId_,
                               owner_.enableCrossNodeConnection_, owner_.embeddedClientWorkerApi_, owner_.worker_);
+    if (candidateWorkerApi == nullptr) {
+        LOG(ERROR) << "[Switch] Failed to clone worker API.";
+        return StandbySwitchAttemptResult::CONTINUE;
+    }
     candidateWorkerApi->SetMayAccessNonBoundWorker(
         ClientMayAccessNonBoundWorker(owner_.enableLocalCache_, owner_.enableCrossNodeConnection_));
     candidateWorkerApi->isUseStandbyWorker_ = true;
@@ -948,7 +952,7 @@ Status WorkerFailover::PreparePreferredLocalWorker(const HostPort &localAddress,
                                                    std::shared_ptr<client::ListenWorker> &localListenWorker)
 {
     localWorkerApi =
-        std::make_shared<ClientWorkerRemoteApi>(localAddress, heartbeatType, owner_.token_, owner_.signature_.get(),
+        std::make_shared<ClientWorkerRemoteApi>(localAddress, heartbeatType, owner_.token_, owner_.signature_,
                                            owner_.tenantId_,
                                                 owner_.enableCrossNodeConnection_, owner_.deviceId_);
     localWorkerApi->SetMayAccessNonBoundWorker(

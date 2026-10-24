@@ -494,7 +494,7 @@ ObjectClientImpl::ObjectClientImpl(const ConnectOptions &connectOptions1)
     token_ = connectOptions.token;
     transportToken_ = std::make_shared<const SensitiveValue>(connectOptions.token);
     tenantId_ = connectOptions.tenantId;
-    signature_ = std::make_unique<Signature>(connectOptions.accessKey, connectOptions.secretKey);
+    signature_ = std::make_shared<Signature>(connectOptions.accessKey, connectOptions.secretKey);
     enableCrossNodeConnection_ = connectOptions.enableCrossNodeConnection;
     enableLocalCache_ = connectOptions.enableLocalCache;
     dataPlacementPolicy_ = static_cast<client::DataPlacementPolicy>(connectOptions.dataPlacementPolicy);
@@ -924,7 +924,7 @@ Status ObjectClientImpl::InitClientWorkerConnectAt(WorkerNode node, const HostPo
     workerApi_.resize(STANDBY2_WORKER + 1);
     if (!initWithWorker) {
         workerApi_[node] =
-            std::make_shared<ClientWorkerRemoteApi>(address, heartbeatType, token_, signature_.get(), tenantId_,
+            std::make_shared<ClientWorkerRemoteApi>(address, heartbeatType, token_, signature_, tenantId_,
                                                     enableCrossNodeConnection_, deviceId_);
     } else {
         workerApi_[node] = std::make_shared<ClientWorkerLocalApi>(address, embeddedClientWorkerApi_, worker_,

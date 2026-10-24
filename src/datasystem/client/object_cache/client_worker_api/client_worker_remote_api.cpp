@@ -201,6 +201,15 @@ ClientWorkerRemoteApi::ClientWorkerRemoteApi(HostPort hostPort, HeartbeatType he
 {
 }
 
+ClientWorkerRemoteApi::ClientWorkerRemoteApi(
+    HostPort hostPort, HeartbeatType heartbeatType, SensitiveValue token, std::shared_ptr<Signature> signature,
+    std::string tenantId, bool enableCrossNodeConnection, std::string deviceId)
+    : ClientWorkerRemoteApi(std::move(hostPort), heartbeatType, std::move(token), signature.get(),
+                            std::move(tenantId), enableCrossNodeConnection, std::move(deviceId))
+{
+    rpcSignatureOwner_ = std::move(signature);
+}
+
 ClientWorkerRemoteApi::~ClientWorkerRemoteApi() = default;
 
 Status ClientWorkerRemoteApi::Init(int32_t requestTimeoutMs, int32_t connectTimeoutMs, uint64_t fastTransportSize,

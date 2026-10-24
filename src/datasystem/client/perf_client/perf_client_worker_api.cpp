@@ -26,7 +26,7 @@ namespace datasystem {
 PerfClientWorkerApi::PerfClientWorkerApi(const ConnectOptions &connectOptions)
 {
     hostPort_ = HostPort(connectOptions.host, connectOptions.port);
-    signature_ = std::make_unique<Signature>(connectOptions.accessKey, connectOptions.secretKey);
+    signature_ = std::make_shared<Signature>(connectOptions.accessKey, connectOptions.secretKey);
     (void)authKeys_.SetClientPublicKey(connectOptions.clientPublicKey);
     (void)authKeys_.SetClientPrivateKey(connectOptions.clientPrivateKey);
     LOG_IF_ERROR(authKeys_.SetServerKey(WORKER_SERVER_NAME, connectOptions.serverPublicKey),

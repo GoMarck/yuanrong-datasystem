@@ -448,9 +448,9 @@ protected:
         port_ = GetFreeTcpPort();
         ASSERT_GT(port_, 0);
         ASSERT_TRUE(StartFakeWorker().IsOk());
-        signature_ = std::make_unique<Signature>();
+        signature_ = std::make_shared<Signature>();
         auto api = std::make_shared<object_cache::ClientWorkerRemoteApi>(
-            HostPort("127.0.0.1", port_), HeartbeatType::NO_HEARTBEAT, "", signature_.get());
+            HostPort("127.0.0.1", port_), HeartbeatType::NO_HEARTBEAT, "", signature_);
         ASSERT_TRUE(api->Init(kRequestTimeoutMs, kConnectTimeoutMs).IsOk());
         api_ = std::move(api);
     }
@@ -524,7 +524,7 @@ protected:
     static constexpr int32_t kRequestTimeoutMs = 5000;
     static constexpr int32_t kConnectTimeoutMs = 3000;
 
-    std::unique_ptr<Signature> signature_;
+    std::shared_ptr<Signature> signature_;
     int port_ = 0;
     std::unique_ptr<FakeWorkerOcService> ocService_;
     std::unique_ptr<FakeWorkerService> workerService_;
@@ -611,6 +611,33 @@ TEST_F(ClientWorkerRemoteApiReconnectTest, ReconnectWorkerRebuildsOcSession)
     EXPECT_TRUE(rc.IsOk()) << rc.ToString();
     EXPECT_EQ(workerService_->registerCount_.load(), 1u);
     EXPECT_EQ(ocService_->publishCount_.load(), 1u);
+}
+class ClientRpcCredentialOwnershipTest : public CommonTest {};
+
+TEST_F(ClientRpcCredentialOwnershipTest, CloneRetainsTheSameProviderAfterOriginalOwnerIsReleased)
+{
+    auto provider = std::make_shared<Signature>("test-only-access", SensitiveValue("test-only-secret"));
+    const std::weak_ptr<Signature> weak = provider;
+    auto *raw = provider.get();
+    auto original = std::make_shared<object_cache::ClientWorkerRemoteApi>(
+        HostPort("127.0.0.1", 1), HeartbeatType::NO_HEARTBEAT, "", provider);
+    auto clone = original->CloneWith(HostPort("127.0.0.1", 2), HeartbeatType::NO_HEARTBEAT, "", raw);
+    ASSERT_NE(clone, nullptr);
+    EXPECT_EQ(clone->signature_, raw);
+    Signature different("test-only-other-access", SensitiveValue("test-only-other-secret"));
+    EXPECT_EQ(original->CloneWith(HostPort("127.0.0.1", 2), HeartbeatType::NO_HEARTBEAT, "", &different), nullptr);
+    auto inherited = original->CloneWith(HostPort("127.0.0.1", 2));
+    ASSERT_NE(inherited, nullptr);
+    EXPECT_EQ(inherited->signature_, raw);
+    inherited.reset();
+    provider.reset();
+    original.reset();
+    ASSERT_FALSE(weak.expired());
+    AkSkData snapshot;
+    ASSERT_TRUE(clone->signature_->SnapshotClientKey(snapshot).IsOk());
+    EXPECT_EQ(snapshot.accessKey, "test-only-access");
+    clone.reset();
+    EXPECT_TRUE(weak.expired());
 }
 }  // namespace
 }  // namespace ut
