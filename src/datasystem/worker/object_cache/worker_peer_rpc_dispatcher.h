@@ -1,0 +1,81 @@
+/**
+ * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#ifndef DATASYSTEM_WORKER_OBJECT_CACHE_WORKER_PEER_RPC_DISPATCHER_H
+#define DATASYSTEM_WORKER_OBJECT_CACHE_WORKER_PEER_RPC_DISPATCHER_H
+
+#include <utility>
+
+#include "datasystem/worker/object_cache/worker_worker_oc_service_impl.h"
+#include "datasystem/worker/object_cache/worker_worker_transport_service_impl.h"
+#include "datasystem/worker/rpc_tenant_resolver.h"
+
+namespace datasystem {
+namespace object_cache {
+#define DS_PEER_RPC_AUTH_METHOD(name) \
+    template <typename... Args> \
+    Status name(const RpcRequestProof &proof, Args &&...args) \
+    { \
+        const worker::RpcTenantResolver resolver(proof); \
+        return service_.name##WithTenantResolver(std::forward<Args>(args)..., resolver); \
+    }
+#define DS_PEER_RPC_DIRECT_METHOD(name) \
+    template <typename... Args> \
+    Status name(const RpcRequestProof &, Args &&...args) \
+    { \
+        return service_.name(std::forward<Args>(args)...); \
+    }
+
+class WorkerWorkerOCServiceRpcDispatcher final {
+public:
+    explicit WorkerWorkerOCServiceRpcDispatcher(WorkerWorkerOCServiceImpl &service) : service_(service) {}
+    ~WorkerWorkerOCServiceRpcDispatcher() = default;
+    WorkerWorkerOCServiceRpcDispatcher(const WorkerWorkerOCServiceRpcDispatcher &) = delete;
+    WorkerWorkerOCServiceRpcDispatcher &operator=(const WorkerWorkerOCServiceRpcDispatcher &) = delete;
+
+    DS_PEER_RPC_AUTH_METHOD(GetObjectRemote)
+    DS_PEER_RPC_AUTH_METHOD(CheckCoordinatorState)
+    DS_PEER_RPC_AUTH_METHOD(MigrateData)
+    DS_PEER_RPC_AUTH_METHOD(GetClusterState)
+    DS_PEER_RPC_AUTH_METHOD(BatchGetObjectRemote)
+    DS_PEER_RPC_AUTH_METHOD(MigrateDataDirect)
+    DS_PEER_RPC_DIRECT_METHOD(NotifyRemoteGet)
+    DS_PEER_RPC_AUTH_METHOD(GetPeerHashRing)
+    DS_PEER_RPC_AUTH_METHOD(QueryUbPortHealth)
+
+private:
+    WorkerWorkerOCServiceImpl &service_;
+};
+
+class WorkerWorkerTransportServiceRpcDispatcher final {
+public:
+    explicit WorkerWorkerTransportServiceRpcDispatcher(WorkerWorkerTransportServiceImpl &service) : service_(service) {}
+    ~WorkerWorkerTransportServiceRpcDispatcher() = default;
+    WorkerWorkerTransportServiceRpcDispatcher(const WorkerWorkerTransportServiceRpcDispatcher &) = delete;
+    WorkerWorkerTransportServiceRpcDispatcher &operator=(const WorkerWorkerTransportServiceRpcDispatcher &) = delete;
+
+    DS_PEER_RPC_DIRECT_METHOD(WorkerWorkerExchangeUrmaConnectInfo)
+    DS_PEER_RPC_DIRECT_METHOD(ProbeProviderUbRecovery)
+    DS_PEER_RPC_AUTH_METHOD(QueryUbPortHealth)
+
+private:
+    WorkerWorkerTransportServiceImpl &service_;
+};
+#undef DS_PEER_RPC_DIRECT_METHOD
+#undef DS_PEER_RPC_AUTH_METHOD
+}  // namespace object_cache
+}  // namespace datasystem
+#endif  // DATASYSTEM_WORKER_OBJECT_CACHE_WORKER_PEER_RPC_DISPATCHER_H

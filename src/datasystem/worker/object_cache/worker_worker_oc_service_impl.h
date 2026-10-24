@@ -34,6 +34,9 @@
 #include "datasystem/common/object_cache/shm_guard.h"
 
 namespace datasystem {
+namespace worker {
+class RpcTenantResolver;
+}
 namespace object_cache {
 class WorkerOCServiceImpl;
 
@@ -73,6 +76,10 @@ public:
         std::shared_ptr<::datasystem::ServerUnaryWriterReader<GetObjectRemoteRspPb, GetObjectRemoteReqPb>> serverApi)
         override;
 
+    Status GetObjectRemoteWithTenantResolver(
+        std::shared_ptr<::datasystem::ServerUnaryWriterReader<GetObjectRemoteRspPb, GetObjectRemoteReqPb>> serverApi,
+        const worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Get object data from remote worker and load data from disk if necessary.
      * @param[in] req Remote get request.
@@ -90,6 +97,9 @@ public:
      */
     Status CheckCoordinatorState(const CheckCoordinatorStateReqPb &req, CheckCoordinatorStateRspPb &rsp) override;
 
+    Status CheckCoordinatorStateWithTenantResolver(const CheckCoordinatorStateReqPb &req, CheckCoordinatorStateRspPb &rsp,
+        const worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Get cluster state.
      * @param[in] req Get cluster state request.
@@ -97,6 +107,9 @@ public:
      * @return Status of the call.
      */
     Status GetClusterState(const GetClusterStateReqPb &req, GetClusterStateRspPb &rsp) override;
+
+    Status GetClusterStateWithTenantResolver(const GetClusterStateReqPb &req, GetClusterStateRspPb &rsp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Get peer-observed hash ring from the local worker service.
@@ -106,7 +119,13 @@ public:
      */
     Status GetPeerHashRing(const GetHashRingReqPb &req, GetHashRingRspPb &rsp) override;
 
+    Status GetPeerHashRingWithTenantResolver(const GetHashRingReqPb &req, GetHashRingRspPb &rsp,
+        const worker::RpcTenantResolver &resolver);
+
     Status QueryUbPortHealth(const QueryUbPortHealthReqPb &req, QueryUbPortHealthRspPb &rsp) override;
+
+    Status QueryUbPortHealthWithTenantResolver(const QueryUbPortHealthReqPb &req, QueryUbPortHealthRspPb &rsp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Migrate data when scale down happen.
@@ -118,6 +137,10 @@ public:
     Status MigrateData(const MigrateDataReqPb &req, MigrateDataRspPb &rsp,
                        std::vector<::datasystem::RpcMessage> payloads) override;
 
+    Status MigrateDataWithTenantResolver(const MigrateDataReqPb &req, MigrateDataRspPb &rsp,
+                       std::vector<::datasystem::RpcMessage> payloads,
+        const worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Migrate data directly.
      * @param[in] req Migrate data direct request.
@@ -125,6 +148,9 @@ public:
      * @return Status of the call.
      */
     Status MigrateDataDirect(const MigrateDataDirectReqPb &req, MigrateDataDirectRspPb &rsp) override;
+
+    Status MigrateDataDirectWithTenantResolver(const MigrateDataDirectReqPb &req, MigrateDataDirectRspPb &rsp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Get batch of object data from remote worker and load data from disk if necessary.
@@ -134,6 +160,11 @@ public:
     Status BatchGetObjectRemote(
         std::shared_ptr<::datasystem::ServerUnaryWriterReader<BatchGetObjectRemoteRspPb, BatchGetObjectRemoteReqPb>>
             serverApi) override;
+
+    Status BatchGetObjectRemoteWithTenantResolver(
+        std::shared_ptr<::datasystem::ServerUnaryWriterReader<BatchGetObjectRemoteRspPb, BatchGetObjectRemoteReqPb>>
+            serverApi,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Migrate data by triggering remote get during voluntary scale down.
@@ -214,6 +245,10 @@ private:
     Status ProcessSingleGetObjectRemote(GetObjectRemoteReqPb &req, GetObjectRemoteRspPb &rsp,
                                         std::vector<RpcMessage> &payload, BatchRh2dContext *transportContext);
 
+    Status ProcessSingleGetObjectRemoteWithTenantResolver(GetObjectRemoteReqPb &req, GetObjectRemoteRspPb &rsp,
+                                        std::vector<RpcMessage> &payload, BatchRh2dContext *transportContext,
+        const worker::RpcTenantResolver &resolver);
+
     struct RemoteGetRpcExecutionContext {
         Timer &timer;
         PerfPoint &point;
@@ -226,11 +261,25 @@ private:
         GetObjectRemoteReqPb &req, GetObjectRemoteRspPb &rsp, std::vector<RpcMessage> &payload,
         RemoteGetRpcExecutionContext &executionContext);
 
+    Status ProcessGetObjectRemoteRpcWithTenantResolver(
+        const std::shared_ptr<::datasystem::ServerUnaryWriterReader<GetObjectRemoteRspPb, GetObjectRemoteReqPb>>
+            &serverApi,
+        GetObjectRemoteReqPb &req, GetObjectRemoteRspPb &rsp, std::vector<RpcMessage> &payload,
+        RemoteGetRpcExecutionContext &executionContext,
+        const worker::RpcTenantResolver &resolver);
+
     Status ProcessBatchGetObjectRemoteRpc(
         const std::shared_ptr<
             ::datasystem::ServerUnaryWriterReader<BatchGetObjectRemoteRspPb, BatchGetObjectRemoteReqPb>> &serverApi,
         BatchGetObjectRemoteReqPb &req, BatchGetObjectRemoteRspPb &rsp, std::vector<RpcMessage> &payload,
         RemoteGetRpcExecutionContext &executionContext);
+
+    Status ProcessBatchGetObjectRemoteRpcWithTenantResolver(
+        const std::shared_ptr<
+            ::datasystem::ServerUnaryWriterReader<BatchGetObjectRemoteRspPb, BatchGetObjectRemoteReqPb>> &serverApi,
+        BatchGetObjectRemoteReqPb &req, BatchGetObjectRemoteRspPb &rsp, std::vector<RpcMessage> &payload,
+        RemoteGetRpcExecutionContext &executionContext,
+        const worker::RpcTenantResolver &resolver);
 
     Status PrepareSingleGetObjectRemoteReq(const GetObjectRemoteReqPb &req,
                                            BatchRh2dContext &transportContext);

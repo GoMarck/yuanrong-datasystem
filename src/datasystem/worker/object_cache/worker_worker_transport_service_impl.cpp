@@ -154,14 +154,11 @@ Status WorkerWorkerTransportServiceImpl::ProbeProviderUbRecovery(const ProviderU
 #endif
 }
 
-Status WorkerWorkerTransportServiceImpl::QueryUbPortHealth(const QueryUbPortHealthReqPb &req,
-                                                           QueryUbPortHealthRspPb &rsp)
-{
-    RETURN_RUNTIME_ERROR_IF_NULL(akSkManager_);
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(akSkManager_->VerifySignatureAndTimestamp(req), "AK/SK failed.");
-    RETURN_RUNTIME_ERROR_IF_NULL(ocClientWorkerSvc_);
-    return ocClientWorkerSvc_->QuerySelfUbPortHealth(req, rsp);
-}
+#define DS_WWT_RPC_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_WWT_RPC_VERIFY(manager, request) manager->VerifySignatureAndTimestamp(request)
+#include "datasystem/worker/object_cache/worker_worker_transport_body.inc"
+#undef DS_WWT_RPC_VERIFY
+#undef DS_WWT_RPC_ENTRY
 
 Status WorkerWorkerTransportServiceImpl::ResolveWorkerIncarnation(std::string &incarnation) const
 {

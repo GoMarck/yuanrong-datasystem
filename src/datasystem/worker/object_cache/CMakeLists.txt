@@ -10,7 +10,9 @@ set(WORKER_OC_SRCS
         worker_request_manager.cpp
         worker_worker_oc_gather_layout.cpp
         worker_worker_oc_service_impl.cpp
+        worker_worker_oc_service_rpc.cpp
         worker_worker_transport_service_impl.cpp
+        worker_worker_transport_rpc.cpp
         master_worker_oc_service_impl.cpp
         worker_oc_eviction_manager.cpp
         worker_oc_eviction_policy.cpp

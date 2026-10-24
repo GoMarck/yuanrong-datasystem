@@ -61,6 +61,7 @@
 #include "datasystem/worker/authenticate.h"
 #include "datasystem/worker/rpc_tenant_resolver.h"
 #include "datasystem/protos/object_posix.brpc.auth.pb.h"
+#include "datasystem/protos/worker_object.brpc.auth.pb.h"
 #include "datasystem/worker/client_manager/client_manager.h"
 #include "datasystem/worker/cluster_event_type.h"
 #include "datasystem/worker/object_cache/device/worker_device_oc_manager.h"
@@ -76,8 +77,10 @@
 #include "datasystem/worker/object_cache/data_migrator/data_migrator.h"
 #include "datasystem/worker/object_cache/worker_oc_service_impl.h"
 #include "datasystem/worker/object_cache/worker_worker_oc_service_impl.h"
+#include "datasystem/worker/object_cache/worker_worker_transport_service_impl.h"
 #undef private
 #include "datasystem/worker/object_cache/worker_oc_service_rpc_dispatcher.h"
+#include "datasystem/worker/object_cache/worker_peer_rpc_dispatcher.h"
 
 using namespace ::testing;
 
@@ -2977,6 +2980,100 @@ TEST_F(WorkerOcServiceImplTest, RpcDeviceAdmissionKeepsReadShapeAndExplicitClien
     EXPECT_EQ(impl_->PublishDeviceObjectWithTenantResolver(publish, published, {}, resolver).GetCode(),
               K_CLIENT_WORKER_DISCONNECT);
     EXPECT_EQ(lookups, 18u);
+}
+
+TEST_F(WorkerOcServiceImplTest, RpcPeerAdmissionKeepsAuthenticationBeforeBackendAndObjectWork)
+{
+    auto manager = std::make_shared<AkSkManager>();
+    Signature provider("test-only-peer-access", SensitiveValue("test-only-peer-secret"));
+    AkSkData key;
+    ASSERT_TRUE(provider.SnapshotClientKey(key).IsOk());
+    ASSERT_TRUE(manager->SetServerAkSk(AkSkType::SYSTEM, key.accessKey, key.secretKey).IsOk());
+    RpcRequestProof proof;
+    proof.captured = true;
+    proof.timestampUs = GetSystemClockTimeStampUs();
+    proof.accessKey = key.accessKey;
+    ASSERT_TRUE(Signature::GetSignatureFromDigest(key, proof.digest, proof.signature).IsOk());
+    const RpcRequestProof missing;
+    worker::RpcTenantResolver accepted(proof);
+    worker::RpcTenantResolver rejected(missing);
+    WorkerWorkerOCServiceImpl peer(nullptr, manager, topologyRuntime_.Engine()->Membership(), {}, {});
+    WorkerWorkerTransportServiceImpl transport(nullptr, localAddress_, topologyRuntime_.Engine()->Membership(), manager);
+    WorkerWorkerOCServiceRpcDispatcher peerDispatcher(peer);
+    WorkerWorkerTransportServiceRpcDispatcher transportDispatcher(transport);
+    WorkerWorkerOCServiceBrpcAuthAdapter<WorkerWorkerOCServiceRpcDispatcher> peerAdapter(peerDispatcher);
+    WorkerWorkerTransportServiceBrpcAuthAdapter<WorkerWorkerTransportServiceRpcDispatcher> transportAdapter(
+        transportDispatcher);
+    EXPECT_EQ(peerAdapter.GetDescriptor()->method_count(), 9);
+    EXPECT_EQ(transportAdapter.GetDescriptor()->method_count(), 3);
+    auto policy = [&](auto &request, auto &response, auto ordinary, auto authenticated) {
+        for (bool valid : {false, true}) {
+            request.clear_signature();
+            request.clear_access_key();
+            request.clear_timestamp();
+            if (valid) {
+                ASSERT_TRUE(provider.GenerateSignature(request).IsOk());
+            }
+            const auto native = (peer.*ordinary)(request, response);
+            const auto rpc = (peer.*authenticated)(request, response, valid ? accepted : rejected);
+            EXPECT_EQ(native.GetCode(), valid ? K_NOT_READY : K_NOT_AUTHORIZED) << native.ToString();
+            EXPECT_EQ(rpc.GetCode(), native.GetCode()) << rpc.ToString();
+        }
+    };
+    CheckCoordinatorStateReqPb coordination;
+    CheckCoordinatorStateRspPb coordinated;
+    policy(coordination, coordinated, &WorkerWorkerOCServiceImpl::CheckCoordinatorState,
+           &WorkerWorkerOCServiceImpl::CheckCoordinatorStateWithTenantResolver);
+    GetClusterStateReqPb cluster;
+    GetClusterStateRspPb clustered;
+    policy(cluster, clustered, &WorkerWorkerOCServiceImpl::GetClusterState,
+           &WorkerWorkerOCServiceImpl::GetClusterStateWithTenantResolver);
+    QueryUbPortHealthReqPb health;
+    QueryUbPortHealthRspPb healthy;
+    EXPECT_EQ(peer.QueryUbPortHealth(health, healthy).GetCode(), K_NOT_AUTHORIZED);
+    EXPECT_EQ(peer.QueryUbPortHealthWithTenantResolver(health, healthy, rejected).GetCode(), K_NOT_AUTHORIZED);
+    EXPECT_EQ(transport.QueryUbPortHealth(health, healthy).GetCode(), K_NOT_AUTHORIZED);
+    EXPECT_EQ(transport.QueryUbPortHealthWithTenantResolver(health, healthy, rejected).GetCode(), K_NOT_AUTHORIZED);
+    ASSERT_TRUE(provider.GenerateSignature(health).IsOk());
+    EXPECT_EQ(peer.QueryUbPortHealth(health, healthy).GetCode(), K_RUNTIME_ERROR);
+    EXPECT_EQ(peer.QueryUbPortHealthWithTenantResolver(health, healthy, accepted).GetCode(), K_RUNTIME_ERROR);
+    EXPECT_EQ(transport.QueryUbPortHealth(health, healthy).GetCode(), K_RUNTIME_ERROR);
+    EXPECT_EQ(transport.QueryUbPortHealthWithTenantResolver(health, healthy, accepted).GetCode(), K_RUNTIME_ERROR);
+    peer.akSkManager_.reset();
+    transport.akSkManager_.reset();
+    EXPECT_EQ(peer.QueryUbPortHealthWithTenantResolver(health, healthy, rejected).GetCode(), K_RUNTIME_ERROR);
+    EXPECT_EQ(transport.QueryUbPortHealthWithTenantResolver(health, healthy, rejected).GetCode(), K_RUNTIME_ERROR);
+
+    WorkerWorkerOCServiceImpl reads(impl_, manager, topologyRuntime_.Engine()->Membership(), {}, {});
+    ScopedRequestContext context;
+    GetRequestContext()->reqTimeoutDuration.Init(1000);
+    auto read = [&](auto &request, auto &response, auto ordinary, auto authenticated) {
+        using Request = std::decay_t<decltype(request)>;
+        using Response = std::decay_t<decltype(response)>;
+        for (bool supplied : {false, true}) {
+            for (bool useRpc : {false, true}) {
+                brpc::Controller controller;
+                std::shared_ptr<ServerUnaryWriterReader<Response, Request>> api =
+                    std::make_shared<BrpcServerUnaryWriterReader<Response, Request>>(
+                        &controller, supplied ? &request : nullptr, &response, nullptr, "PeerAdmission");
+                const auto rc = useRpc ? (reads.*authenticated)(api, rejected) : (reads.*ordinary)(api);
+                EXPECT_EQ(rc.GetCode(), supplied ? K_NOT_AUTHORIZED : K_RUNTIME_ERROR) << rc.ToString();
+                if (!supplied) {
+                    EXPECT_NE(rc.GetMsg().find("Request protobuf is null"), std::string::npos);
+                }
+            }
+        }
+    };
+    GetObjectRemoteReqPb get;
+    GetObjectRemoteRspPb got;
+    using Get = Status (WorkerWorkerOCServiceImpl::*)(std::shared_ptr<
+        ServerUnaryWriterReader<GetObjectRemoteRspPb, GetObjectRemoteReqPb>>);
+    read(get, got, static_cast<Get>(&WorkerWorkerOCServiceImpl::GetObjectRemote),
+         &WorkerWorkerOCServiceImpl::GetObjectRemoteWithTenantResolver);
+    BatchGetObjectRemoteReqPb batch;
+    BatchGetObjectRemoteRspPb batched;
+    read(batch, batched, &WorkerWorkerOCServiceImpl::BatchGetObjectRemote,
+         &WorkerWorkerOCServiceImpl::BatchGetObjectRemoteWithTenantResolver);
 }
 
 TEST_F(WorkerOcServiceImplTest, RpcGeneratedAdapterBindsUnarySocketProofToTheOriginalTenantPoint)

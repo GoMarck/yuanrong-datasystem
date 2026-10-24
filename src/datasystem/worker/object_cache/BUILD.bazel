@@ -701,8 +701,11 @@ ds_cc_library(
     name = "worker_worker_oc_service_impl",
     srcs = [
         "worker_worker_oc_service_impl.cpp",
+        "worker_worker_oc_service_rpc.cpp",
     ],
+    hdrs = ["worker_worker_oc_service_body.inc"],
     deps = [
+        "//src/datasystem/worker:rpc_tenant_resolver",
         ":worker_oc_service_impl",
         ":worker_worker_oc_gather_layout",
         ":worker_worker_oc_service_impl_header",
@@ -756,12 +759,17 @@ ds_cc_library(
     name = "worker_worker_transport_service_impl",
     srcs = [
         "worker_worker_transport_service_impl.cpp",
+        "worker_worker_transport_rpc.cpp",
     ],
     hdrs = [
         "worker_worker_transport_service_impl.h",
+        "worker_peer_rpc_dispatcher.h",
+        "worker_worker_transport_body.inc",
     ],
     deps = [
+        "//src/datasystem/worker:rpc_tenant_resolver",
         ":worker_oc_service_impl",
+        ":worker_worker_oc_service_impl_header",
         "//include/datasystem/utils:utils_headers",
         "//src/datasystem/cluster:cluster_topology",
         "//src/datasystem/common/ak_sk:ak_sk_manager",

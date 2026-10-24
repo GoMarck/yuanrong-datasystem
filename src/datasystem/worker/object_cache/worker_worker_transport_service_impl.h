@@ -31,6 +31,9 @@
 #include "datasystem/protos/meta_transport.pb.h"
 
 namespace datasystem {
+namespace worker {
+class RpcTenantResolver;
+}
 namespace object_cache {
 class WorkerWorkerTransportServiceImpl : public WorkerWorkerTransportService, public IWorkerWorkerTransportService {
 public:
@@ -64,6 +67,9 @@ public:
                                    ProviderUbRecoveryProbeRspPb &rsp) override;
 
     Status QueryUbPortHealth(const QueryUbPortHealthReqPb &req, QueryUbPortHealthRspPb &rsp) override;
+
+    Status QueryUbPortHealthWithTenantResolver(const QueryUbPortHealthReqPb &req, QueryUbPortHealthRspPb &rsp,
+        const worker::RpcTenantResolver &resolver);
 
 private:
     Status ResolveWorkerIncarnation(std::string &incarnation) const;
