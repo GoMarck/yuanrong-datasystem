@@ -2547,6 +2547,14 @@ TEST_F(WorkerOcServiceImplTest, RpcWriteTenantAdmissionKeepsTheOriginalRecoveryG
             exclusive.Assign(&impl_->reconFlag_);
             EXPECT_TRUE(exclusive.TryLockIfUnlocked());
         };
+        HealthCheckRequestPb health;
+        HealthCheckReplyPb healthy;
+        expectMissing(health, healthy, &WorkerOCServiceImpl::HealthCheck,
+                      &WorkerOCServiceImpl::HealthCheckWithTenantResolver);
+        InvalidateBufferReqPb invalidation;
+        InvalidateBufferRspPb invalidated;
+        expectMissing(invalidation, invalidated, &WorkerOCServiceImpl::InvalidateBuffer,
+                      &WorkerOCServiceImpl::InvalidateBufferWithTenantResolver);
         DeleteAllCopyReqPb deletion;
         DeleteAllCopyRspPb deleted;
         expectMissing(deletion, deleted, &WorkerOCServiceImpl::DeleteAllCopy,
@@ -2597,7 +2605,7 @@ TEST_F(WorkerOcServiceImplTest, RpcWriteTenantAdmissionKeepsTheOriginalRecoveryG
         exclusive.Assign(&impl_->reconFlag_);
         EXPECT_TRUE(exclusive.TryLockIfUnlocked());
     }
-    EXPECT_EQ(authenticated, 26u);
+    EXPECT_EQ(authenticated, 30u);
     EXPECT_EQ(deviceDeletes, 2u);
 }
 
@@ -2651,6 +2659,10 @@ TEST_F(WorkerOcServiceImplTest, RpcCrudTenantResolutionPrecedesObjectAndRoutingW
     QueryGlobalRefNumRspCollectionPb queried;
     expectMissing(*gRefProc_, query, queried, &WorkerOcServiceGlobalReferenceImpl::QueryGlobalRefNum,
                   &WorkerOcServiceGlobalReferenceImpl::QueryGlobalRefNumWithTenantResolver);
+    DecreaseReferenceRequest releaseShm;
+    DecreaseReferenceResponse releasedShm;
+    expectMissing(*impl_, releaseShm, releasedShm, &WorkerOCServiceImpl::DecreaseReference,
+                  &WorkerOCServiceImpl::DecreaseReferenceWithTenantResolver);
     WorkerOcServiceGetImpl get(param, nullptr, nullptr, nullptr, nullptr, localAddress_, nullptr);
     QuerySizeReqPb sizes;
     QuerySizeRspPb sized;
@@ -2738,6 +2750,82 @@ TEST_F(WorkerOcServiceImplTest, RpcObjectMetadataPreservesTheSystemKeyAuthorizat
                 }
             }
         }
+    }
+}
+
+TEST_F(WorkerOcServiceImplTest, RpcPolicyEntriesKeepPublicHealthAndSessionPreconditions)
+{
+    const bool skip = FLAGS_skip_authenticate;
+    const bool exiting = exitRequested_.load();
+    FLAGS_skip_authenticate = false;
+    Raii restore([this, skip, exiting] {
+        FLAGS_skip_authenticate = skip;
+        exitRequested_.store(exiting);
+    });
+    auto manager = std::make_shared<AkSkManager>();
+    ASSERT_TRUE(manager->SetServerAkSk(AkSkType::SYSTEM, "test-only-policy-access",
+                                       SensitiveValue("test-only-policy-secret")).IsOk());
+    impl_->akSkManager_ = manager;
+    const RpcRequestProof missing;
+    worker::RpcTenantResolver resolver(missing);
+    size_t states = 0;
+    bool ready = false;
+    BINEXPECT_CALL(&WorkerOCServiceImpl::ValidateWorkerState, (_, _))
+        .WillRepeatedly([this, &states, &ready](BthreadReadGuard &guard, int) {
+            ++states;
+            if (!ready) {
+                return Status(K_NOT_READY, "test-only-state-check");
+            }
+            guard.Assign(&impl_->reconFlag_);
+            EXPECT_TRUE(guard.TryLockIfUnlocked());
+            return Status::OK();
+        });
+    Raii releaseStubs([] { RELEASE_STUBS });
+    ScopedRequestContext context;
+    GetRequestContext()->reqTimeoutDuration.Init(1000);
+    for (bool useRpc : {false, true}) {
+        auto call = [this, &resolver, useRpc](auto &request, auto &response, auto ordinary, auto authenticated) {
+            return useRpc ? (impl_.get()->*authenticated)(request, response, resolver)
+                          : (impl_.get()->*ordinary)(request, response);
+        };
+        ready = false;
+        exitRequested_.store(false);
+        HealthCheckRequestPb health;
+        HealthCheckReplyPb reply;
+        auto healthCall = [&] {
+            return call(health, reply, &WorkerOCServiceImpl::HealthCheck,
+                        &WorkerOCServiceImpl::HealthCheckWithTenantResolver);
+        };
+        EXPECT_EQ(healthCall().GetCode(), K_NOT_READY);
+        const auto beforeReconcile = states;
+        ReconcileShmRefReqPb reconcile;
+        reconcile.set_client_id("test-only-missing-policy-client");
+        ReconcileShmRefRspPb reconciled;
+        EXPECT_EQ(call(reconcile, reconciled, &WorkerOCServiceImpl::ReconcileShmRef,
+                       &WorkerOCServiceImpl::ReconcileShmRefWithTenantResolver).GetCode(), K_INVALID);
+        EXPECT_EQ(states, beforeReconcile);
+        ready = true;
+        EXPECT_TRUE(healthCall().IsOk());
+        exitRequested_.store(true);
+        EXPECT_EQ(healthCall().GetCode(), K_SCALE_DOWN);
+        health.set_client_id(reconcile.client_id());
+        EXPECT_EQ(healthCall().GetCode(), K_CLIENT_WORKER_DISCONNECT);
+        GetHashRingReqPb ring;
+        GetHashRingRspPb topology;
+        EXPECT_EQ(call(ring, topology, &WorkerOCServiceImpl::GetHashRing,
+                       &WorkerOCServiceImpl::GetHashRingWithTenantResolver).GetCode(), K_NOT_AUTHORIZED);
+        MigrateDataDirectReqPb migration;
+        MigrateDataDirectRspPb migrated;
+        EXPECT_EQ(call(migration, migrated, &WorkerOCServiceImpl::MigrateDataDirect,
+                       &WorkerOCServiceImpl::MigrateDataDirectWithTenantResolver).GetCode(), K_NOT_AUTHORIZED);
+        MigrateDataReqPb transfer;
+        MigrateDataRspPb transferred;
+        const auto rc = useRpc ? impl_->MigrateDataWithTenantResolver(transfer, transferred, {}, resolver)
+                               : impl_->MigrateData(transfer, transferred, {});
+        EXPECT_EQ(rc.GetCode(), K_NOT_AUTHORIZED);
+        BthreadWriteGuard exclusive;
+        exclusive.Assign(&impl_->reconFlag_);
+        EXPECT_TRUE(exclusive.TryLockIfUnlocked());
     }
 }
 

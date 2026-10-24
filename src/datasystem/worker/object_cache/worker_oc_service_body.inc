@@ -277,3 +277,157 @@ Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(GetMetaInfo, const GetMetaInfoReqP
     return getProc_->DS_OC_WRITE_FORWARD(GetMetaInfo, req, rsp);
 }
 #endif
+
+#ifdef DS_OC_WRITE_HEALTH_BODY
+Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(HealthCheck, const HealthCheckRequestPb &req, HealthCheckReplyPb &resp)
+{
+    INJECT_POINT("worker.HealthCheck.begin");
+    BthreadReadGuard noRecon;
+    auto rc = ValidateWorkerState(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime());
+    if (rc.IsError()) {
+        LOG(WARNING) << rc;
+        return rc;
+    }
+    if (not req.client_id().empty()) {
+        std::string tenantId;
+        RETURN_IF_NOT_OK_PRINT_ERROR_MSG(DS_OC_WRITE_SESSION_TENANT(akSkManager_, req, tenantId), "Authenticate failed.");
+    }
+    (void)resp;
+    const bool exitRequested = exitRequested_ != nullptr && exitRequested_->load(std::memory_order_acquire);
+    if (exitRequested || shutdownRequested_.load(std::memory_order_acquire)) {
+        constexpr int logInterval = 60;
+        LOG_EVERY_T(INFO, logInterval) << "[HealthCheck] Worker is exiting now";
+        RETURN_STATUS(StatusCode::K_SCALE_DOWN, "Worker is exiting now");
+    }
+    return Status::OK();
+}
+#endif
+
+#ifdef DS_OC_WRITE_MIGRATION_BODY
+Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(MigrateData, const MigrateDataReqPb &req, MigrateDataRspPb &rsp,
+                                        std::vector<RpcMessage> payloads)
+{
+    ScopedRequestContext ctx;
+    Raii attachHealth([this, &rsp] { AttachPublishedSelfUbHealth(*this, rsp); });
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(DS_OC_WRITE_VERIFY(akSkManager_, req), "AK/SK failed.");
+    return gMigrateProc_->MigrateData(req, rsp, std::move(payloads));
+}
+
+Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(MigrateDataDirect, const MigrateDataDirectReqPb &req, MigrateDataDirectRspPb &rsp)
+{
+    ScopedRequestContext ctx;
+    Raii attachHealth([this, &rsp] { AttachPublishedSelfUbHealth(*this, rsp); });
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(DS_OC_WRITE_VERIFY(akSkManager_, req), "AK/SK failed.");
+    return gMigrateProc_->MigrateDataDirect(req, rsp);
+}
+#endif
+
+#ifdef DS_OC_WRITE_SHM_REFERENCE_BODY
+Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(DecreaseReference, const DecreaseReferenceRequest &req, DecreaseReferenceResponse &resp)
+{
+    ScopedRequestContext ctx;
+    Timer timer;
+    std::string tenantId;
+    Status authRc = req.is_routed() ? DS_OC_WRITE_REQUEST_TENANT(akSkManager_, req, tenantId)
+                                    : DS_OC_WRITE_SESSION_TENANT(akSkManager_, req, tenantId);
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(authRc, "Authenticate failed.");
+    if (req.object_keys_size() > 0) {
+        VLOG(1) << FormatString("[shmId %s] [client: %s] DoDecrease", req.object_keys(0), req.client_id());
+    }
+    std::vector<ShmKey> shmIds;
+    // Although the field in pb is called object key, its content is actually shmId, which is very misleading.
+    shmIds.reserve(req.object_keys().size());
+    std::transform(req.object_keys().begin(), req.object_keys().end(), std::back_inserter(shmIds),
+                   [](const auto &key) { return ShmKey::Intern(key); });
+    auto rc = DecreaseMemoryRef(ClientKey::Intern(req.client_id()), shmIds, req.delay_release());
+    if (rc.IsError()) {
+        resp.mutable_error()->set_error_code(rc.GetCode());
+        resp.mutable_error()->set_error_msg(rc.GetMsg());
+    }
+    CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(resp.error().error_code() == 0,
+                                         static_cast<StatusCode>(resp.error().error_code()),
+                                         "Decrease reference failed");
+    GetWorkerTimeCost().Append("DecreaseReference", timer.ElapsedMilliSecond());
+    VLOG(1) << FormatString("[Ref] DecreaseReference finish. The operations of worker DecreaseReference %s",
+                            GetWorkerTimeCost().GetInfo());
+    return Status::OK();
+}
+
+Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(ReconcileShmRef, const ReconcileShmRefReqPb &req, ReconcileShmRefRspPb &resp)
+{
+    ScopedRequestContext ctx;
+    Timer timer;
+    std::string tenantId;
+    bool exist;
+    auto clientId = ClientKey::Intern(req.client_id());
+    std::string authTenantId = worker::ClientManager::Instance().GetAuthTenantIdByClientId(clientId, exist);
+    CHECK_FAIL_RETURN_STATUS(exist, K_INVALID, FormatString("Client %s not found", req.client_id()));
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(DS_OC_WRITE_KNOWN_TENANT(akSkManager_, req, authTenantId, tenantId),
+                                     "Authenticate failed");
+    BthreadReadGuard noRecon;
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
+        ValidateWorkerState(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
+        "validate worker state failed");
+
+    std::vector<ShmKey> confirmedExpiredShmIds;
+    confirmedExpiredShmIds.reserve(req.confirmed_expired_shm_ids_size());
+    std::transform(req.confirmed_expired_shm_ids().begin(), req.confirmed_expired_shm_ids().end(),
+                   std::back_inserter(confirmedExpiredShmIds), [](const auto &shmId) { return ShmKey::Intern(shmId); });
+    std::vector<ShmKey> maybeExpiredShmIds;
+    memoryRefTable_->ReconcileClientShmRefs(clientId, confirmedExpiredShmIds, maybeExpiredShmIds);
+    for (const auto &shmId : maybeExpiredShmIds) {
+        resp.add_maybe_expired_shm_ids(shmId);
+    }
+    GetWorkerTimeCost().Append("ReconcileShmRef", timer.ElapsedMilliSecond());
+    return Status::OK();
+}
+#endif
+
+#ifdef DS_OC_WRITE_INVALIDATE_BODY
+Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(InvalidateBuffer, const InvalidateBufferReqPb &req, InvalidateBufferRspPb &rsp)
+{
+    ScopedRequestContext ctx;
+    Timer timer;
+    BthreadReadGuard noRecon;
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
+        ValidateWorkerState(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
+        "validate worker state failed");
+    std::string tenantId;
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(DS_OC_WRITE_SESSION_TENANT(akSkManager_, req, tenantId), "Authenticate failed.");
+    LOG(INFO) << FormatString("InvalidateBuffer begin, cliendId: %s, objectKey: %s", req.client_id(), req.object_key());
+    (void)rsp;
+    std::string namespaceUri = TenantAuthManager::ConstructNamespaceUriWithTenantId(tenantId, req.object_key());
+
+    std::shared_ptr<SafeObjType> entry;
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(objectTable_->Get(namespaceUri, entry), "worker objecttable get entry failed");
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(entry->WLock(true), "entry wlock failed");
+    Raii unlock([&entry]() { entry->WUnlock(); });
+    if (entry->Get() == nullptr) {
+        LOG(WARNING) << FormatString("The memory of object %s has been removed, cannot invalidate.", namespaceUri);
+        return Status::OK();
+    }
+    entry->Get()->stateInfo.SetCacheInvalid(true);
+    if (entry->Get()->stateInfo.IsPrimaryCopy()) {
+        std::list<std::string> objectKeysRemove{ namespaceUri };
+        RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
+            RemoveMetaFromMaster(objectKeysRemove, master::RemoveMetaReqPb::INVALID_BUFFER), "remove meta failed");
+    }
+    GetWorkerTimeCost().Append("Total InvalidateBuffer", timer.ElapsedMilliSecond());
+    LOG(INFO) << FormatString("InvalidateBuffer end, clientId: %s. The operations of worker InvalidateBuffer %s",
+                              req.client_id(), GetWorkerTimeCost().GetInfo());
+    return Status::OK();
+}
+#endif
+
+#ifdef DS_OC_WRITE_HASH_RING_BODY
+Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(GetHashRing, const GetHashRingReqPb &req, GetHashRingRspPb &rsp)
+{
+    ScopedRequestContext ctx;
+    RETURN_RUNTIME_ERROR_IF_NULL(akSkManager_);
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(DS_OC_WRITE_VERIFY(akSkManager_, req), "AK/SK failed.");
+    RETURN_RUNTIME_ERROR_IF_NULL(topologyEngine_);
+    std::shared_ptr<const cluster::TopologySnapshot> snapshot;
+    RETURN_IF_NOT_OK(membership_.GetSnapshot(snapshot));
+    return BuildGetHashRingResponse(*snapshot, req.version(), FLAGS_master_address, rsp, req.host_ids_digest());
+}
+#endif

@@ -253,6 +253,9 @@ public:
      * @return Status of the call
      */
     Status HealthCheck(const HealthCheckRequestPb &req, HealthCheckReplyPb &resp) override;
+    Status HealthCheckWithTenantResolver(
+        const HealthCheckRequestPb &req, HealthCheckReplyPb &resp,
+        const worker::RpcTenantResolver &resolver);
 
     void RequestShutdown()
     {
@@ -340,6 +343,9 @@ public:
      * @return Status of the call.
      */
     Status MigrateData(const MigrateDataReqPb &req, MigrateDataRspPb &rsp, std::vector<RpcMessage> payloads);
+    Status MigrateDataWithTenantResolver(
+        const MigrateDataReqPb &req, MigrateDataRspPb &rsp, std::vector<RpcMessage> payloads,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Migrate data directly.
@@ -348,6 +354,9 @@ public:
      * @return Status of the call.
      */
     Status MigrateDataDirect(const MigrateDataDirectReqPb &req, MigrateDataDirectRspPb &rsp);
+    Status MigrateDataDirectWithTenantResolver(
+        const MigrateDataDirectReqPb &req, MigrateDataDirectRspPb &rsp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Close incoming object migration admission and wait for admitted requests until deadline.
@@ -450,6 +459,9 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status DecreaseReference(const DecreaseReferenceRequest &req, DecreaseReferenceResponse &resp) override;
+    Status DecreaseReferenceWithTenantResolver(
+        const DecreaseReferenceRequest &req, DecreaseReferenceResponse &resp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Reconcile maybe expired shm references with client.
@@ -458,6 +470,9 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status ReconcileShmRef(const ReconcileShmRefReqPb &req, ReconcileShmRefRspPb &resp) override;
+    Status ReconcileShmRefWithTenantResolver(
+        const ReconcileShmRefReqPb &req, ReconcileShmRefRspPb &resp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Send request to master to decrease all objects of remote client id.
@@ -539,6 +554,9 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status InvalidateBuffer(const InvalidateBufferReqPb &req, InvalidateBufferRspPb &rsp) override;
+    Status InvalidateBufferWithTenantResolver(
+        const InvalidateBufferReqPb &req, InvalidateBufferRspPb &rsp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Bypass the request of query all objs global references in the cluster to master.
@@ -1013,6 +1031,9 @@ public:
      * @return K_OK on success; K_NOT_READY before the first legal topology publish.
      */
     Status GetHashRing(const GetHashRingReqPb &req, GetHashRingRspPb &rsp) override;
+    Status GetHashRingWithTenantResolver(
+        const GetHashRingReqPb &req, GetHashRingRspPb &rsp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Remove write back before shuhtdown
