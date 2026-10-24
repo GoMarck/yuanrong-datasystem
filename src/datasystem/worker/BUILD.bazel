@@ -92,14 +92,22 @@ ds_cc_library(
     name = "worker_service_impl",
     srcs = [
         "worker_service_impl.cpp",
+        "worker_service_rpc.cpp",
     ],
     hdrs = [
         "worker_service_impl.h",
+        "worker_service_get_client_fd_body.inc",
+        "worker_service_disconnect_client_body.inc",
+        "worker_service_register_client_body.inc",
+        "worker_service_validate_register_client_body.inc",
+        "worker_service_heartbeat_body.inc",
+        "worker_service_get_socket_path_body.inc",
     ],
     defines = [
         "DATASYSTEM_VERSION=\\\"{}\\\"".format(DATASYSTEM_VERSION),
     ],
     deps = [
+        ":rpc_tenant_resolver",
         "//src/datasystem/c_api:status_definition",
         "//src/datasystem/common/ak_sk:ak_sk_manager",
         "//src/datasystem/common/eventloop:common_event_loop",

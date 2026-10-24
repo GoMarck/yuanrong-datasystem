@@ -44,6 +44,7 @@
 
 namespace datasystem {
 namespace worker {
+class RpcTenantResolver;
 class WorkerServiceImpl : public WorkerService, public IWorkerService, public Callable {
 public:
 
@@ -64,6 +65,17 @@ public:
                       const std::atomic<bool> &localExiting);
 
     ~WorkerServiceImpl() override;
+
+    Status GetClientFdWithTenantResolver(const GetClientFdReqPb &req, GetClientFdRspPb &rsp,
+                                         const RpcTenantResolver &resolver);
+    Status DisconnectClientWithTenantResolver(const DisconnectClientReqPb &req, DisconnectClientRspPb &rsp,
+                                              const RpcTenantResolver &resolver);
+    Status RegisterClientWithTenantResolver(const RegisterClientReqPb &req, RegisterClientRspPb &rsp,
+                                            const RpcTenantResolver &resolver);
+    Status HeartbeatWithTenantResolver(const HeartbeatReqPb &req, HeartbeatRspPb &rsp,
+                                       const RpcTenantResolver &resolver);
+    Status GetSocketPathWithTenantResolver(const GetSocketPathReqPb &req, GetSocketPathRspPb &rsp,
+                                           const RpcTenantResolver &resolver);
 
     /**
      * @brief Initialize the WorkerFCServiceImpl Object.
@@ -151,6 +163,9 @@ public:
     void SetUbHealthSummaryProvider(UbHealthSummaryProvider provider);
 
 private:
+    Status ValidateRegisterClientRequestWithTenantResolver(const RegisterClientReqPb &req, std::string &tenantId,
+                                                           const RpcTenantResolver &resolver) const;
+
     void PopulateUbHealthSummary(HeartbeatRspPb &rsp) const;
     Status ValidateRegisterClientRequest(const RegisterClientReqPb &req, std::string &tenantId) const;
     Status ConsumeRegisterClientFd(const RegisterClientReqPb &req);

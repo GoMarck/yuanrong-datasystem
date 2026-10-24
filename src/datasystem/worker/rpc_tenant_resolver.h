@@ -31,6 +31,7 @@ namespace worker {
 class RpcTenantResolver {
 public:
     explicit RpcTenantResolver(const RpcRequestProof &proof) : proof_(proof) {}
+    ~RpcTenantResolver() = default;
     RpcTenantResolver(RpcRequestProof &&) = delete;
     RpcTenantResolver(const RpcRequestProof &&) = delete;
     RpcTenantResolver(const RpcTenantResolver &) = delete;

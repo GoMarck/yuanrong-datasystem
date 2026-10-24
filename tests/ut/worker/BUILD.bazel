@@ -397,6 +397,24 @@ ds_cc_test(
 )
 
 ds_cc_test(
+    name = "worker_service_rpc_tenant_test",
+    srcs = ["object_cache/worker_service_rpc_tenant_test.cpp"],
+    deps = [
+        "//src/datasystem/cluster:cluster_topology",
+        "//src/datasystem/common/ak_sk:ak_sk_manager",
+        "//src/datasystem/common/iam:common_iam",
+        "//src/datasystem/common/rpc:brpc_auth",
+        "//src/datasystem/common/util:raii",
+        "//src/datasystem/common/util:timer",
+        "//src/datasystem/worker:authenticate",
+        "//src/datasystem/worker:rpc_tenant_resolver",
+        "//src/datasystem/worker:worker_service_impl",
+        "//tests/common/binmock",
+        "//tests/ut:ut_common",
+    ],
+)
+
+ds_cc_test(
     name = "worker_service_ub_health_test",
     srcs = ["object_cache/worker_service_ub_health_test.cpp"],
     deps = [

@@ -29,6 +29,7 @@ set(WORKER_SRCS
         rpc_tenant_resolver.cpp
         rebalance_executor.cpp
         worker_service_impl.cpp
+        worker_service_rpc.cpp
         worker_service_accessor.cpp
         worker_oc_server.cpp
         worker_topology_phase_callbacks.cpp
