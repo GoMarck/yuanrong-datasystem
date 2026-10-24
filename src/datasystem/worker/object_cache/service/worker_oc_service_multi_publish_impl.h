@@ -33,6 +33,9 @@
 #include "datasystem/worker/object_cache/worker_master_oc_api.h"
 
 namespace datasystem {
+namespace worker {
+class RpcTenantResolver;
+}
 namespace object_cache {
 
 class WorkerOcServiceMultiPublishImpl : public WorkerOcServiceCrudCommonApi {
@@ -61,6 +64,9 @@ public:
      */
     Status MultiPublish(const MultiPublishReqPb &req, MultiPublishRspPb &resp, std::vector<RpcMessage> &payloads,
                         const ClientKey &clientId);
+    Status MultiPublishWithTenantResolver(
+        const MultiPublishReqPb &req, MultiPublishRspPb &resp, std::vector<RpcMessage> &payloads,
+                        const ClientKey &clientId, const worker::RpcTenantResolver &resolver);
 
 #ifdef WITH_TESTS
     void UpdateObjectAfterCreatingMetaForTest(const std::vector<std::string> &objectKeys,
@@ -103,6 +109,9 @@ private:
      */
     Status MultiPublishImpl(const MultiPublishReqPb &req, MultiPublishRspPb &resp, std::vector<RpcMessage> &payloads,
                             const ClientKey &clientId);
+    Status MultiPublishImplWithTenantResolver(
+        const MultiPublishReqPb &req, MultiPublishRspPb &resp, std::vector<RpcMessage> &payloads,
+                            const ClientKey &clientId, const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Handle NTX multiply set request from the client.

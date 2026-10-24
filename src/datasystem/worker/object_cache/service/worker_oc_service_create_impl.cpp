@@ -43,7 +43,6 @@ DS_DECLARE_uint64(oc_shm_transfer_threshold_kb);
 namespace datasystem {
 namespace object_cache {
 
-
 static constexpr double US_PER_MS = 1000.0;
 
 static bool IsHexDigit(char value)
@@ -164,63 +163,16 @@ Status WorkerOcServiceCreateImpl::FillCreateResponse(const ClientKey &clientId,
     return Status::OK();
 }
 
-Status WorkerOcServiceCreateImpl::AuthenticateCreateRequest(const CreateReqPb &req, std::string &tenantId)
-{
-    CHECK_FAIL_RETURN_STATUS(metadataRouteResolver_ != nullptr, StatusCode::K_NOT_READY,
-                             "ETCD cluster manager is not provided.");
-    Status rc = req.is_routed() ? worker::AuthenticateRequest(akSkManager_, req, req.tenant_id(), tenantId)
-                                : worker::Authenticate(akSkManager_, req, tenantId);
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(rc, "Authenticate failed.");
-    return Status::OK();
-}
-
-Status WorkerOcServiceCreateImpl::Create(const CreateReqPb &req, CreateRspPb &resp)
-{
-    INJECT_POINT("worker.Create.begin");
-    ScopedRequestContext ctx;
-    Timer timer;
-    PerfPoint point(PerfKey::WORKER_CREATE_OBJECT);
-    auto config = GetServerLatencyTraceConfig();
-    const bool traceEnabled = ShouldCollectLatencyTrace(config);
-    if (traceEnabled) {
-        Trace::Instance().AddLatencyTick(LatencyTickKey::WORKER_CREATE_START);
-    }
-    auto access = AccessRecorder::Object(AccessRecorderKey::DS_POSIX_CREATE);
-    access.ObjectKeyProvider([&req]() -> std::string { return req.object_key(); }).DataSize(req.data_size());
-    VLOG(1) << FormatString("Receive create meta request, clientId: %s, objectKey: %s, size: %zu", req.client_id(),
-                            req.object_key(), req.data_size());
-    int64_t remainingTimeMs = GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTime();
-    INJECT_POINT_NO_RETURN("WorkerOcServiceCreateImpl.Create.timeoutMs",
-                           [&remainingTimeMs]() { remainingTimeMs = -1; });
-    if (remainingTimeMs <= 0) {
-        const auto totalUs = static_cast<uint64_t>(timer.ElapsedMicroSecond());
-        FinalizeWorkerLatencyTrace(LatencyTickKey::WORKER_CREATE_END, config, traceEnabled, totalUs, false, resp);
-        Status rc = Status(StatusCode::K_RPC_DEADLINE_EXCEEDED,
-            FormatString("The create request process time has exceeded the request timeout time (remaining: %lld ms)",
-                         remainingTimeMs));
-        access.Result(rc).Record();
-        return rc;
-    }
-    std::string tenantId;
-    Status authRc = AuthenticateCreateRequest(req, tenantId);
-    if (authRc.IsError()) {
-        access.Result(authRc).Record();
-        return authRc;
-    }
-    Status rc = CreateImpl(tenantId, ClientKey::Intern(req.client_id()), req.object_key(), req.data_size(),
-                           req.request_timeout(), req.allocation_id(), resp,
-                           static_cast<CacheType>(req.cache_type()));
-    const auto totalUs = static_cast<uint64_t>(timer.ElapsedMicroSecond());
-    FinalizeWorkerLatencyTrace(LatencyTickKey::WORKER_CREATE_END, config, traceEnabled, totalUs, true, resp);
-    access.Result(rc).Record();
-    point.Record();
-    const double totalMs = static_cast<double>(totalUs) / US_PER_MS;
-    GetWorkerTimeCost().Append("Total Create", totalMs);
-    INJECT_POINT("worker.Create.end");
-    SLOW_LOG_IF_OR_VLOG(INFO, config.processSlowerThanUs > 0 && totalUs >= config.processSlowerThanUs, 1,
-                        FormatString("Create done, cost: %.3fms, %s", totalMs, GetWorkerTimeCost().GetInfo()));
-    return rc;
-}
+#define DS_OC_PROC_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_OC_PROC_FORWARD(name, ...) name(__VA_ARGS__)
+#define DS_OC_REQUEST_TENANT(manager, request, tenant) \
+    worker::AuthenticateRequest(manager, request, request.tenant_id(), tenant)
+#define DS_OC_SESSION_TENANT(manager, request, tenant) worker::Authenticate(manager, request, tenant)
+#include "datasystem/worker/object_cache/service/worker_oc_service_create_body.inc"
+#undef DS_OC_SESSION_TENANT
+#undef DS_OC_REQUEST_TENANT
+#undef DS_OC_PROC_FORWARD
+#undef DS_OC_PROC_ENTRY
 
 Status WorkerOcServiceCreateImpl::CreateImpl(const std::string &tenantId, const ClientKey &clientId,
                                              const std::string &rawObjectKey, size_t dataSize,
@@ -414,30 +366,5 @@ void WorkerOcServiceCreateImpl::CheckExistence(const MultiCreateReqPb &req, cons
     }
 }
 
-Status WorkerOcServiceCreateImpl::MultiCreate(const MultiCreateReqPb &req, MultiCreateRspPb &resp)
-{
-    PerfPoint pointAll(PerfKey::WORKER_MULTI_CREATE_TOTAL);
-    PerfPoint point(PerfKey::WORKER_MULTI_CREATE_INPUT_CHECK);
-    CHECK_FAIL_RETURN_STATUS(metadataRouteResolver_ != nullptr, StatusCode::K_NOT_READY,
-                             "ETCD cluster manager is not provided.");
-    std::string tenantId;
-    Status authRc = req.is_routed() ? worker::AuthenticateRequest(akSkManager_, req, req.tenant_id(), tenantId)
-                                    : worker::Authenticate(akSkManager_, req, tenantId);
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(authRc, "Authenticate failed.");
-    CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(Validator::IsBatchSizeUnderLimit(req.object_key_size()),
-                                         StatusCode::K_INVALID, "invalid object size");
-    CHECK_FAIL_RETURN_STATUS(req.object_key_size() == req.data_size_size(), K_INVALID,
-                             FormatString("object key count %zu not match with data size count %zu",
-                                          req.object_key_size(), req.data_size_size()));
-    if (!req.skip_check_existence()) {
-        CheckExistence(req, tenantId, resp);
-    }
-    point.RecordAndReset(PerfKey::WORKER_MULTI_CREATE_IMPL);
-    Status rc = MultiCreateImpl(req, tenantId, resp);
-    if (rc.IsError()) {
-        resp.Clear();
-    }
-    return rc;
-}
 }  // namespace object_cache
 }  // namespace datasystem

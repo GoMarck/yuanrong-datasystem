@@ -33,6 +33,9 @@
 #include "datasystem/worker/object_cache/service/worker_oc_service_crud_common_api.h"
 
 namespace datasystem {
+namespace worker {
+class RpcTenantResolver;
+}
 namespace object_cache {
 
 class WorkerOcServiceCreateImpl : public WorkerOcServiceCrudCommonApi {
@@ -48,6 +51,8 @@ public:
      * K_DUPLICATED: the object already exists, no need to create.
      */
     Status Create(const CreateReqPb &req, CreateRspPb &resp);
+    Status CreateWithTenantResolver(
+        const CreateReqPb &req, CreateRspPb &resp, const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Create multiple objects
@@ -56,6 +61,8 @@ public:
      * @return Status of the call
      */
     Status MultiCreate(const MultiCreateReqPb &req, MultiCreateRspPb &resp);
+    Status MultiCreateWithTenantResolver(
+        const MultiCreateReqPb &req, MultiCreateRspPb &resp, const worker::RpcTenantResolver &resolver);
 
 private:
     // This table is a short-lived concurrent set. The interned UUID carries a precomputed hash, and
@@ -75,6 +82,8 @@ private:
                               size_t metadataSize, CreateRspPb &resp);
 
     Status AuthenticateCreateRequest(const CreateReqPb &req, std::string &tenantId);
+    Status AuthenticateCreateRequestWithTenantResolver(
+        const CreateReqPb &req, std::string &tenantId, const worker::RpcTenantResolver &resolver);
 
     bool IsMultiCreateObjectExisting(const MultiCreateReqPb &req, int index, const std::string &objectKey,
                                      MultiCreateRspPb &resp);

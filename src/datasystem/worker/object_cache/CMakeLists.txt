@@ -45,8 +45,10 @@ set(WORKER_OC_SRCS
         limiter/data_limiter.cpp
         service/worker_oc_service_crud_common_api.cpp
         service/worker_oc_service_create_impl.cpp
+        service/worker_oc_service_create_rpc.cpp
         service/worker_oc_service_publish_impl.cpp
         service/worker_oc_service_multi_publish_impl.cpp
+        service/worker_oc_service_multi_publish_rpc.cpp
         service/worker_oc_service_get_impl.cpp
         service/worker_oc_service_get_rpc.cpp
         service/worker_query_and_get_impl.cpp

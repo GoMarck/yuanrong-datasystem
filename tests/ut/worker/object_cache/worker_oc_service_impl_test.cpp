@@ -2395,6 +2395,75 @@ TEST_F(WorkerOcServiceImplTest, GetRpcTenantResolutionKeepsReadSessionAndTimeout
     }
 }
 
+TEST_F(WorkerOcServiceImplTest, CreateAndMultiPublishRpcTenantsKeepPreconditionsBeforeAuthentication)
+{
+    const bool skip = FLAGS_skip_authenticate;
+    FLAGS_skip_authenticate = false;
+    Raii restore([skip] {
+        FLAGS_skip_authenticate = skip;
+        (void)inject::Clear("WorkerOcServiceCreateImpl.Create.timeoutMs");
+    });
+    const RpcRequestProof missing;
+    worker::RpcTenantResolver resolver(missing);
+    auto noRoute = MakeCrudParam();
+    noRoute.metadataRouteResolver = nullptr;
+    WorkerOcServiceCreateImpl unavailable(noRoute, nullptr, localAddress_);
+    auto ready = MakeCrudParam();
+    WorkerOcServiceCreateImpl create(ready, nullptr, localAddress_);
+    WorkerOcServiceMultiPublishImpl publish(ready, nullptr, nullptr, nullptr, localAddress_);
+    for (bool useRpc : {false, true}) {
+        ScopedRequestContext context;
+        GetRequestContext()->reqTimeoutDuration.Init(1000);
+        CreateReqPb request;
+        request.set_client_id("test-only-missing-create-client");
+        CreateRspPb response;
+        ASSERT_TRUE(inject::Set("WorkerOcServiceCreateImpl.Create.timeoutMs", "call").IsOk());
+        auto rc = useRpc ? unavailable.CreateWithTenantResolver(request, response, resolver)
+                         : unavailable.Create(request, response);
+        EXPECT_EQ(rc.GetCode(), K_RPC_DEADLINE_EXCEEDED);
+        ASSERT_TRUE(inject::Clear("WorkerOcServiceCreateImpl.Create.timeoutMs").IsOk());
+        rc = useRpc ? unavailable.CreateWithTenantResolver(request, response, resolver)
+                    : unavailable.Create(request, response);
+        EXPECT_EQ(rc.GetCode(), K_NOT_READY);
+        request.set_is_routed(true);
+        rc = useRpc ? create.CreateWithTenantResolver(request, response, resolver) : create.Create(request, response);
+        EXPECT_EQ(rc.GetCode(), K_INVALID);
+        EXPECT_NE(rc.GetMsg().find("AK/SK manager has not been initialized"), std::string::npos);
+        request.set_is_routed(false);
+        rc = useRpc ? create.CreateWithTenantResolver(request, response, resolver) : create.Create(request, response);
+        EXPECT_EQ(rc.GetCode(), K_CLIENT_WORKER_DISCONNECT);
+        MultiCreateReqPb batch;
+        MultiCreateRspPb created;
+        batch.add_data_size(1);
+        batch.set_is_routed(true);
+        rc = useRpc ? unavailable.MultiCreateWithTenantResolver(batch, created, resolver)
+                    : unavailable.MultiCreate(batch, created);
+        EXPECT_EQ(rc.GetCode(), K_NOT_READY);
+        rc = useRpc ? create.MultiCreateWithTenantResolver(batch, created, resolver) : create.MultiCreate(batch, created);
+        EXPECT_EQ(rc.GetCode(), K_INVALID);
+        EXPECT_NE(rc.GetMsg().find("AK/SK manager has not been initialized"), std::string::npos);
+        MultiPublishReqPb multi;
+        MultiPublishRspPb published;
+        std::vector<RpcMessage> payloads;
+        const auto client = ClientKey::Intern("test-only-missing-publish-client");
+        rc = useRpc ? publish.MultiPublishWithTenantResolver(multi, published, payloads, client, resolver)
+                    : publish.MultiPublish(multi, published, payloads, client);
+        EXPECT_EQ(rc.GetCode(), K_INVALID);
+        EXPECT_NE(rc.GetMsg().find("The list of object info is empty"), std::string::npos);
+        multi.set_client_id(client.ToString());
+        multi.add_object_info()->set_object_key("test-only-publish-key");
+        multi.set_is_routed(true);
+        rc = useRpc ? publish.MultiPublishWithTenantResolver(multi, published, payloads, client, resolver)
+                    : publish.MultiPublish(multi, published, payloads, client);
+        EXPECT_EQ(rc.GetCode(), K_INVALID);
+        EXPECT_NE(rc.GetMsg().find("AK/SK manager has not been initialized"), std::string::npos);
+        multi.set_is_routed(false);
+        rc = useRpc ? publish.MultiPublishWithTenantResolver(multi, published, payloads, client, resolver)
+                    : publish.MultiPublish(multi, published, payloads, client);
+        EXPECT_EQ(rc.GetCode(), K_CLIENT_WORKER_DISCONNECT);
+    }
+}
+
 TEST_F(WorkerOcServiceImplTest, DeviceRemoteGetReservesCleanupBudgetBeforeRetry)
 {
     constexpr uint64_t queryMetaVersion = 61;

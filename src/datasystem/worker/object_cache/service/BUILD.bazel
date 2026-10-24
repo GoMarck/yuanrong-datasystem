@@ -35,11 +35,14 @@ ds_cc_library(
     name = "worker_oc_service_multi_publish_impl",
     srcs = [
         "worker_oc_service_multi_publish_impl.cpp",
+        "worker_oc_service_multi_publish_rpc.cpp",
     ],
     hdrs = [
+        "worker_oc_service_multi_publish_body.inc",
         "worker_oc_service_multi_publish_impl.h",
     ],
     deps = [
+        "//src/datasystem/worker:rpc_tenant_resolver",
         ":worker_oc_service_multi_publish_impl_header",
         "//include/datasystem/utils:utils_headers",
         ":service_execution_policy",
@@ -177,11 +180,14 @@ ds_cc_library(
     name = "worker_oc_service_create_impl",
     srcs = [
         "worker_oc_service_create_impl.cpp",
+        "worker_oc_service_create_rpc.cpp",
     ],
     hdrs = [
+        "worker_oc_service_create_body.inc",
         "worker_oc_service_create_impl.h",
     ],
     deps = [
+        "//src/datasystem/worker:rpc_tenant_resolver",
         "//include/datasystem/object:object_headers",
         "//include/datasystem/utils:utils_headers",
         "//src/datasystem/common/iam:common_iam",
