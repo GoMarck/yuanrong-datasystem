@@ -20,6 +20,7 @@
 #include <memory>
 #include <string>
 
+#include "datasystem/common/string_intern/string_ref.h"
 #include "datasystem/utils/status.h"
 
 namespace datasystem {
@@ -44,13 +45,25 @@ public:
     Status Session(const std::shared_ptr<AkSkManager> &manager, const std::string &requestTenant,
                     const std::string &token, const std::string &clientId, std::string &tenant) const;
 
+    Status SessionForClient(const std::shared_ptr<AkSkManager> &manager, const std::string &requestTenant,
+                             const std::string &token, const ClientKey &client, std::string &tenant) const;
+
     template <typename Request>
     Status Resolve(const std::shared_ptr<AkSkManager> &manager, const Request &request, std::string &tenant) const
     {
         return Session(manager, request.tenant_id(), request.token(), request.client_id(), tenant);
     }
 
+    template <typename Request>
+    Status Resolve(const std::shared_ptr<AkSkManager> &manager, const Request &request, std::string &tenant,
+                    const ClientKey &client) const
+    {
+        return SessionForClient(manager, request.tenant_id(), request.token(), client, tenant);
+    }
+
 private:
+    Status LookupSession(const std::shared_ptr<AkSkManager> &manager, const std::string &requestTenant,
+                          const std::string &token, const ClientKey &client, std::string &tenant) const;
     const RpcRequestProof &proof_;
 };
 }  // namespace worker

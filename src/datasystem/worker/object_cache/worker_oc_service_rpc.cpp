@@ -15,19 +15,27 @@
 
 #include <algorithm>
 #include <iterator>
+#include <sstream>
 
+#include "datasystem/common/device/device_helper.h"
 #include "datasystem/common/flags/common_flags.h"
 #include "datasystem/common/inject/inject_point.h"
 #include "datasystem/common/log/access_recorder.h"
+#include "datasystem/common/log/trace.h"
 #include "datasystem/common/metrics/kv_metrics.h"
 #include "datasystem/common/perf/perf_manager.h"
+#include "datasystem/common/rpc/api_deadline.h"
 #include "datasystem/common/util/format.h"
 #include "datasystem/common/util/raii.h"
 #include "datasystem/common/util/request_context.h"
 #include "datasystem/common/util/strings_util.h"
 #include "datasystem/common/util/timer.h"
+#include "datasystem/common/util/thread_pool.h"
+#include "datasystem/common/util/validator.h"
 #include "datasystem/worker/client_manager/client_manager.h"
+#include "datasystem/worker/object_cache/device/worker_device_oc_manager.h"
 #include "datasystem/worker/object_cache/get_hash_ring_response.h"
+#include "datasystem/worker/object_cache/worker_master_oc_api.h"
 #include "datasystem/worker/object_cache/service/worker_oc_service_crud_common_api.h"
 #include "datasystem/worker/object_cache/worker_oc_service_rpc_helpers.h"
 #include "datasystem/worker/rpc_tenant_resolver.h"
@@ -36,6 +44,7 @@ DS_DECLARE_string(master_address);
 
 namespace datasystem {
 namespace object_cache {
+using worker::WorkerMasterOCApi;
 #define DS_OC_WRITE_ENTRY(name, ...) \
     name##WithTenantResolver(__VA_ARGS__, const worker::RpcTenantResolver &resolver)
 #define DS_OC_WRITE_FORWARD(name, ...) name##WithTenantResolver(__VA_ARGS__, resolver)
@@ -45,7 +54,12 @@ namespace object_cache {
 #define DS_OC_WRITE_VERIFY(manager, request) resolver.Verify(*manager)
 #define DS_OC_WRITE_KNOWN_TENANT(manager, request, knownTenant, tenant) \
     resolver.Request(manager, knownTenant, request.token(), tenant)
+#define DS_OC_WRITE_CLIENT_TENANT(manager, request, tenant, client) \
+    resolver.Resolve(manager, request, tenant, client)
+#define DS_OC_WRITE_QUERY_GET_BODY
 #define DS_OC_WRITE_MULTIPUBLISH_BODY
+#define DS_OC_WRITE_DEVICE_P2P_BODY
+#define DS_OC_WRITE_DATA_INFO_BODY
 #define DS_OC_WRITE_HEALTH_BODY
 #define DS_OC_WRITE_MIGRATION_BODY
 #define DS_OC_WRITE_SHM_REFERENCE_BODY
@@ -60,6 +74,9 @@ namespace object_cache {
 #define DS_OC_WRITE_READ_INFO_BODY
 #define DS_OC_WRITE_META_INFO_BODY
 #include "datasystem/worker/object_cache/worker_oc_service_body.inc"
+#undef DS_OC_WRITE_QUERY_GET_BODY
+#undef DS_OC_WRITE_DATA_INFO_BODY
+#undef DS_OC_WRITE_DEVICE_P2P_BODY
 #undef DS_OC_WRITE_HASH_RING_BODY
 #undef DS_OC_WRITE_INVALIDATE_BODY
 #undef DS_OC_WRITE_SHM_REFERENCE_BODY
@@ -74,6 +91,7 @@ namespace object_cache {
 #undef DS_OC_WRITE_GREF_BODY
 #undef DS_OC_WRITE_PUBLISH_BODY
 #undef DS_OC_WRITE_MULTIPUBLISH_BODY
+#undef DS_OC_WRITE_CLIENT_TENANT
 #undef DS_OC_WRITE_KNOWN_TENANT
 #undef DS_OC_WRITE_VERIFY
 #undef DS_OC_WRITE_SESSION_TENANT

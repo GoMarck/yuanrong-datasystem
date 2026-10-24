@@ -185,20 +185,29 @@ TEST_F(AuthenticateTest, RpcTenantResolverKeepsSkipAndSessionErrorOrder)
     EXPECT_EQ(tenant, "test-tenant");
     const std::string client = "test-only-missing-client";
     EXPECT_EQ(resolver.Session(nullptr, "", "", client, tenant).GetCode(), K_CLIENT_WORKER_DISCONNECT);
+    const auto explicitClient = ClientKey::Intern(client);
+    EXPECT_EQ(resolver.SessionForClient(nullptr, "", "", explicitClient, tenant).GetCode(), K_CLIENT_WORKER_DISCONNECT);
     Raii releaseStubs([] { RELEASE_STUBS });
     auto clientInfo = std::make_shared<worker::ClientInfo>(-1, ClientKey::Intern("test-only-session"), true,
                                                          false, "test-session-tenant");
     BINEXPECT_CALL(&worker::ClientManager::GetClientInfo, (_))
         .WillOnce([clientInfo](const ClientKey &) { return clientInfo; })
         .WillOnce([clientInfo](const ClientKey &) { return clientInfo; })
-        .WillOnce([clientInfo](const ClientKey &) { return clientInfo; });
+        .WillOnce([clientInfo](const ClientKey &) { return clientInfo; })
+        .WillOnce([clientInfo](const ClientKey &client) {
+            EXPECT_EQ(client, ClientKey::Intern("test-only-session"));
+            return clientInfo;
+        });
     ASSERT_TRUE(resolver.Session(manager, "", "", "test-only-session", tenant).IsOk());
     EXPECT_EQ(tenant, "test-session-tenant");
     ASSERT_TRUE(resolver.Session(manager, "test-request-tenant", "", "test-only-session", tenant).IsOk());
     EXPECT_EQ(tenant, "test-request-tenant");
     EXPECT_EQ(resolver.Session(nullptr, "", "", "test-only-session", tenant).GetCode(), K_INVALID);
+    ASSERT_TRUE(resolver.SessionForClient(manager, "", "", ClientKey::Intern("test-only-session"), tenant).IsOk());
+    EXPECT_EQ(tenant, "test-session-tenant");
     FLAGS_skip_authenticate = true;
     EXPECT_TRUE(resolver.Session(nullptr, "", "", client, tenant).IsOk());
+    EXPECT_TRUE(resolver.SessionForClient(nullptr, "", "", explicitClient, tenant).IsOk());
     EXPECT_EQ(resolver.Session(nullptr, "test-tenant", "", client, tenant).GetCode(), K_INVALID);
 }
 

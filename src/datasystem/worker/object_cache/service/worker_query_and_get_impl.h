@@ -35,6 +35,9 @@
 #include "datasystem/worker/object_cache/service/worker_oc_service_get_impl.h"
 
 namespace datasystem {
+namespace worker {
+class RpcTenantResolver;
+}
 namespace object_cache {
 
 /** @brief Reads resident Worker objects inline and returns metadata-only locations for misses. */
@@ -65,6 +68,9 @@ public:
      */
     Status QueryAndGet(
         std::shared_ptr<ServerUnaryWriterReader<QueryAndGetRspPb, QueryAndGetReqPb>> &serverApi);
+    Status QueryAndGetWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<QueryAndGetRspPb, QueryAndGetReqPb>> &serverApi,
+        const worker::RpcTenantResolver &resolver);
 
     void SetUbHealthSummaryProvider(UbHealthSummaryProvider provider)
     {
@@ -99,6 +105,9 @@ private:
     Status ReadAndAuthenticate(
         const std::shared_ptr<ServerUnaryWriterReader<QueryAndGetRspPb, QueryAndGetReqPb>> &serverApi,
         QueryAndGetReqPb &request) const;
+    Status ReadAndAuthenticateWithTenantResolver(
+        const std::shared_ptr<ServerUnaryWriterReader<QueryAndGetRspPb, QueryAndGetReqPb>> &serverApi, QueryAndGetReqPb &request,
+        const worker::RpcTenantResolver &resolver) const;
     Status ProcessAndDeliver(
         const std::shared_ptr<ServerUnaryWriterReader<QueryAndGetRspPb, QueryAndGetReqPb>> &serverApi,
         RequestState &state);

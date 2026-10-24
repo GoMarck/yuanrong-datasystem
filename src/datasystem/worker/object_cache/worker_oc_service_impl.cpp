@@ -1325,8 +1325,6 @@ Status WorkerOCServiceImpl::RemoveWriteBackIdsLocation()
 #undef DS_OC_WRITE_FORWARD
 #undef DS_OC_WRITE_ENTRY
 
-
-
 Status WorkerOCServiceImpl::CloseIncomingMigrationAdmissionAndWait(std::chrono::steady_clock::time_point deadline)
 {
     RETURN_OK_IF_TRUE(gMigrateProc_ == nullptr);
@@ -1954,17 +1952,23 @@ Status WorkerOCServiceImpl::GetWithTenantResolver(
     return getProc_->GetWithTenantResolver(serverApi, resolver);
 }
 
-Status WorkerOCServiceImpl::QueryAndGet(
-    std::shared_ptr<ServerUnaryWriterReader<QueryAndGetRspPb, QueryAndGetReqPb>> serverApi)
-{
-    ScopedRequestContext ctx;
-    BthreadReadGuard noRecon;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
-        ValidateWorkerStateForRequest(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
-        "validate worker state failed");
-    RETURN_RUNTIME_ERROR_IF_NULL(queryAndGetProc_);
-    return queryAndGetProc_->QueryAndGet(serverApi);
-}
+#define DS_OC_WRITE_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_FORWARD(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_REQUEST_TENANT(manager, request, tenant) \
+    worker::AuthenticateRequest(manager, request, request.tenant_id(), tenant)
+#define DS_OC_WRITE_SESSION_TENANT(manager, request, tenant) worker::Authenticate(manager, request, tenant)
+#define DS_OC_WRITE_VERIFY(manager, request) manager->VerifySignatureAndTimestamp(request)
+#define DS_OC_WRITE_KNOWN_TENANT(manager, request, knownTenant, tenant) \
+    AuthenticateRequest(manager, request, knownTenant, tenant)
+#define DS_OC_WRITE_QUERY_GET_BODY
+#include "datasystem/worker/object_cache/worker_oc_service_body.inc"
+#undef DS_OC_WRITE_QUERY_GET_BODY
+#undef DS_OC_WRITE_KNOWN_TENANT
+#undef DS_OC_WRITE_VERIFY
+#undef DS_OC_WRITE_SESSION_TENANT
+#undef DS_OC_WRITE_REQUEST_TENANT
+#undef DS_OC_WRITE_FORWARD
+#undef DS_OC_WRITE_ENTRY
 
 Status WorkerOCServiceImpl::RefreshMeta(const ClientKey &clientId)
 {
@@ -2376,8 +2380,6 @@ Status WorkerOCServiceImpl::DecreaseMemoryRef(const ClientKey &clientId, const s
 #undef DS_OC_WRITE_REQUEST_TENANT
 #undef DS_OC_WRITE_FORWARD
 #undef DS_OC_WRITE_ENTRY
-
-
 
 #define DS_OC_WRITE_ENTRY(name, ...) name(__VA_ARGS__)
 #define DS_OC_WRITE_FORWARD(name, ...) name(__VA_ARGS__)
@@ -3028,255 +3030,26 @@ Status WorkerOCServiceImpl::CheckGiveUpReconciliationAfterLock(int64_t waitMs, s
     return Status::OK();
 }
 
-Status WorkerOCServiceImpl::PublishDeviceObject(const PublishDeviceObjectReqPb &req, PublishDeviceObjectRspPb &resp,
-                                                std::vector<RpcMessage> payloads)
-{
-    ScopedRequestContext ctx;
-    std::string tenantId;
-    auto clientId = ClientKey::Intern(req.client_id());
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(worker::Authenticate(akSkManager_, req, tenantId), "Authenticate failed.");
-    std::vector<ShmKey> shmUnits = { ShmKey::Intern(req.shm_id()) };
-    RETURN_IF_NOT_OK(
-        WorkerOcServiceCrudCommonApi::CheckShmUnitByTenantId(tenantId, clientId, shmUnits, memoryRefTable_));
-    PerfPoint point(PerfKey::WORKER_SEAL_OBJECT);
-    BthreadReadGuard noRecon;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
-        ValidateWorkerState(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
-        "validate worker state failed");
-    const std::string &objectKey = req.dev_object_key();
-    std::string namespaceUri = TenantAuthManager::ConstructNamespaceUriWithTenantId(tenantId, objectKey);
-
-    LOG(INFO) << FormatString("DeviceObj[%s, Sz: %zu] is being publishing by client[%s]", objectKey, req.data_size(),
-                              clientId);
-    (void)resp;
-    return workerDevOcManager_->PublishDeviceObject(namespaceUri, req, payloads);
-}
-
-Status WorkerOCServiceImpl::GetDeviceObject(
-    std::shared_ptr<ServerUnaryWriterReader<GetDeviceObjectRspPb, GetDeviceObjectReqPb>> serverApi)
-{
-    ScopedRequestContext ctx;
-    BthreadReadGuard noRecon;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
-        ValidateWorkerState(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
-        "validate worker state failed");
-    GetDeviceObjectReqPb req;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(serverApi->Read(req), "serverApi read request failed");
-    std::string tenantId;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(worker::Authenticate(akSkManager_, req, tenantId), "Authenticate failed.");
-    CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(Validator::IsBatchSizeUnderLimit(req.device_object_keys_size()),
-                                         StatusCode::K_INVALID, "invalid object size");
-
-    auto clientId = ClientKey::Intern(req.client_id());
-    auto objectKeys = TenantAuthManager::ConstructNamespaceUriWithTenantId(tenantId, req.device_object_keys());
-    LOG(INFO) << "GetDeviceObject start from client:" << clientId << ", objects: " << VectorToString(objectKeys);
-    int64_t subTimeout = req.sub_timeout();
-    CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(Validator::IsInNonNegativeInt32(subTimeout), K_RUNTIME_ERROR,
-                                         "SubTimeout is out of range.");
-
-    int64_t remainingUs = GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTimeUs();
-    CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(
-        remainingUs > 0, K_RPC_DEADLINE_EXCEEDED,
-        FormatString("RPC deadline exceeded before dispatch, remaining %ld us.", remainingUs));
-    std::string traceID = Trace::Instance().GetTraceID();
-    auto dispatchTime = std::chrono::steady_clock::now();
-    threadPool_->Execute([objectKeys, serverApi, subTimeout, clientId, remainingUs, dispatchTime, this,
-                          traceID]() mutable {
-        TraceGuard traceGuard = Trace::Instance().SetTraceNewID(traceID);
-        LOG(INFO) << "Processing GetDeviceObject, threads Statistics: " << threadPool_->GetStatistics();
-        auto initRc = InitTimeoutsFromDispatch(remainingUs, dispatchTime);
-        if (initRc.IsError()) {
-            LOG(ERROR) << initRc.GetMsg();
-            LOG_IF_ERROR(serverApi->SendStatus(initRc), "Send status failed");
-            return;
-        }
-        workerDevOcManager_->ProcessGetDeviceObjectRequest(objectKeys, serverApi, subTimeout, clientId);
-        LOG(INFO) << "Process GetDeviceObject done, threads Statistics: " << threadPool_->GetStatistics();
-    });
-    return Status::OK();
-}
-
-Status WorkerOCServiceImpl::PutP2PMeta(const PutP2PMetaReqPb &req, PutP2PMetaRspPb &resp)
-{
-    ScopedRequestContext ctx;
-    PerfPoint point(PerfKey::WORKER_PUT_P2PMETA);
-    std::string tenantId;
-    CHECK_FAIL_RETURN_STATUS(req.dev_obj_meta_size() > 0 && req.dev_obj_meta(0).locations_size() > 0, K_INVALID,
-                             "The device meta and locations cannot be empty.");
-    const auto clientId = ClientKey::Intern(req.dev_obj_meta(0).locations().begin()->client_id());
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(worker::Authenticate(akSkManager_, req, tenantId, clientId),
-                                     "Authenticate failed.");
-    std::shared_ptr<WorkerMasterOCApi> workerMasterApi;
-    RETURN_IF_NOT_OK(workerMasterApiManager_->GetWorkerMasterApi(P2P_DEFAULT_MASTER, workerMasterApi));
-    PutP2PMetaReqPb reqCopy = req;
-    reqCopy.set_worker_address(localAddress_.ToString());
-
-    // Time complexity O(n), because in putp2pmeta, each obj_meta has only one location
-    for (auto &dev_obj_meta : *reqCopy.mutable_dev_obj_meta()) {
-        for (auto &location : *dev_obj_meta.mutable_locations()) {
-            location.set_worker_ip(localAddress_.Host());
-        }
-    }
-    return workerMasterApi->PutP2PMeta(reqCopy, resp);
-}
-
-Status WorkerOCServiceImpl::SubscribeReceiveEvent(
-    std::shared_ptr<ServerUnaryWriterReader<SubscribeReceiveEventRspPb, SubscribeReceiveEventReqPb>> serverApi)
-{
-    ScopedRequestContext ctx;
-    PerfPoint point(PerfKey::WORKER_SUBSCRIBE_EVENT);
-    BthreadReadGuard noRecon;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
-        ValidateWorkerState(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
-        "validate worker state failed");
-    SubscribeReceiveEventReqPb req;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(serverApi->Read(req), "serverApi read request failed");
-    std::string tenantId;
-    auto clientId = ClientKey::Intern(req.src_client_id());
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(worker::Authenticate(akSkManager_, req, tenantId, clientId),
-                                     "Authenticate failed.");
-    int64_t remainingUs = GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTimeUs();
-    CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(
-        remainingUs > 0, K_RPC_DEADLINE_EXCEEDED,
-        FormatString("RPC deadline exceeded before dispatch, remaining %ld us.", remainingUs));
-    std::string traceID = Trace::Instance().GetTraceID();
-    auto dispatchTime = std::chrono::steady_clock::now();
-    devThreadPool_->Execute([=]() mutable {
-        TraceGuard traceGuard = Trace::Instance().SetTraceNewID(traceID);
-        LOG(INFO) << "Worker processes SubscribeReceiveEvent from srcClientId: " << req.src_client_id()
-                  << ", src_device_id: " << req.src_device_id()
-                  << ", threads Statistics: " << devThreadPool_->GetStatistics();
-        auto initRc = InitTimeoutsFromDispatch(remainingUs, dispatchTime);
-        if (initRc.IsError()) {
-            LOG(ERROR) << initRc.GetMsg();
-            LOG_IF_ERROR(serverApi->SendStatus(initRc), "Send status failed");
-            return;
-        }
-        req.set_worker_ip(localAddress_.Host());
-        LOG_IF_ERROR(workerDevOcManager_->ProcessSubscribeReceiveEventRequest(req, serverApi),
-                     "Process SubscribeReceiveEvent failed");
-        LOG(INFO) << "Process SubscribeReceiveEvent done";
-    });
-    return Status::OK();
-}
-
-Status WorkerOCServiceImpl::GetP2PMeta(
-    std::shared_ptr<ServerUnaryWriterReader<GetP2PMetaRspPb, GetP2PMetaReqPb>> serverApi)
-{
-    ScopedRequestContext ctx;
-    PerfPoint point(PerfKey::WORKER_GET_P2PMEATA);
-    BthreadReadGuard noRecon;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
-        ValidateWorkerState(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
-        "validate worker state failed");
-    GetP2PMetaReqPb req;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(serverApi->Read(req), "serverApi read request failed");
-    std::string tenantId;
-    CHECK_FAIL_RETURN_STATUS(req.dev_obj_meta_size() > 0 && req.dev_obj_meta(0).locations_size() > 0, K_INVALID,
-                             "The device meta and locations cannot be empty.");
-    const auto clientId = ClientKey::Intern(req.dev_obj_meta(0).locations().begin()->client_id());
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(worker::Authenticate(akSkManager_, req, tenantId, clientId),
-                                     "Authenticate failed.");
-    int64_t remainingUs = GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTimeUs();
-    CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(
-        remainingUs > 0, K_RPC_DEADLINE_EXCEEDED,
-        FormatString("RPC deadline exceeded before dispatch, remaining %ld us.", remainingUs));
-    std::string traceID = Trace::Instance().GetTraceID();
-    auto dispatchTime = std::chrono::steady_clock::now();
-    devThreadPool_->Execute([=]() mutable {
-        TraceGuard traceGuard = Trace::Instance().SetTraceNewID(traceID);
-        std::stringstream allKeys;
-        bool first = true;
-        for (const auto &dev_obj_meta : *req.mutable_dev_obj_meta()) {
-            if (!first) {
-                allKeys << ", ";
-            }
-            allKeys << dev_obj_meta.object_key();
-            first = false;
-        }
-        LOG(INFO) << FormatString("Worker processes GetP2PMeta from client: %s, allKeys: [%s], threads Statistics: %s",
-                                  clientId, allKeys.str(), devThreadPool_->GetStatistics());
-        auto initRc = InitTimeoutsFromDispatch(remainingUs, dispatchTime);
-        if (initRc.IsError()) {
-            LOG(ERROR) << initRc.GetMsg();
-            LOG_IF_ERROR(serverApi->SendStatus(initRc), "Send status failed");
-            return;
-        }
-        for (auto &dev_obj_meta : *req.mutable_dev_obj_meta()) {
-            for (auto &location : *dev_obj_meta.mutable_locations()) {
-                location.set_worker_ip(localAddress_.Host());
-            }
-        }
-        req.set_worker_address(localAddress_.ToString());
-        LOG_IF_ERROR(workerDevOcManager_->ProcessGetP2PMetaRequest(req, serverApi), "Process GetP2PMeta failed");
-        LOG(INFO) << "Process GetP2PMeta done";
-    });
-    return Status::OK();
-}
-
-Status WorkerOCServiceImpl::SendRootInfo(const SendRootInfoReqPb &req, SendRootInfoRspPb &resp)
-{
-    ScopedRequestContext ctx;
-    std::string tenantId;
-    auto clientId = ClientKey::Intern(req.dst_client_id());
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(worker::Authenticate(akSkManager_, req, tenantId, clientId),
-                                     "Authenticate failed.");
-    std::shared_ptr<WorkerMasterOCApi> workerMasterApi;
-    RETURN_IF_NOT_OK(workerMasterApiManager_->GetWorkerMasterApi(P2P_DEFAULT_MASTER, workerMasterApi));
-    SendRootInfoReqPb reqCopy = req;
-    return workerMasterApi->SendRootInfo(reqCopy, resp);
-}
-
-Status WorkerOCServiceImpl::RecvRootInfo(
-    std::shared_ptr<ServerUnaryWriterReader<RecvRootInfoRspPb, RecvRootInfoReqPb>> serverApi)
-{
-    ScopedRequestContext ctx;
-    BthreadReadGuard noRecon;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
-        ValidateWorkerState(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
-        "validate worker state failed");
-    RecvRootInfoReqPb req;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(serverApi->Read(req), "serverApi read request failed");
-    std::string tenantId;
-    auto clientId = ClientKey::Intern(req.src_client_id());
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(worker::Authenticate(akSkManager_, req, tenantId, clientId),
-                                     "Authenticate failed.");
-    int64_t remainingUs = GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTimeUs();
-    CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(
-        remainingUs > 0, K_RPC_DEADLINE_EXCEEDED,
-        FormatString("RPC deadline exceeded before dispatch, remaining %ld us.", remainingUs));
-    std::string traceID = Trace::Instance().GetTraceID();
-    auto dispatchTime = std::chrono::steady_clock::now();
-    devThreadPool_->Execute([=]() mutable {
-        TraceGuard traceGuard = Trace::Instance().SetTraceNewID(traceID);
-        LOG(INFO) << "Worker processes RecvRootInfo from srcClientId: " << req.src_device_id()
-                  << ", src_device_id: " << req.src_device_id()
-                  << ", threads Statistics: " << devThreadPool_->GetStatistics();
-        auto initRc = InitTimeoutsFromDispatch(remainingUs, dispatchTime);
-        if (initRc.IsError()) {
-            LOG(ERROR) << initRc.GetMsg();
-            LOG_IF_ERROR(serverApi->SendStatus(initRc), "Send status failed");
-            return;
-        }
-        LOG_IF_ERROR(workerDevOcManager_->ProcessRecvRootInfoRequest(req, serverApi),
-                     "Process RecvRootInfo failed");
-        LOG(INFO) << "Process RecvRootInfo done";
-    });
-    return Status::OK();
-}
-
-Status WorkerOCServiceImpl::AckRecvFinish(const AckRecvFinishReqPb &req, AckRecvFinishRspPb &resp)
-{
-    ScopedRequestContext ctx;
-    std::string tenantId;
-    auto clientId = ClientKey::Intern(req.dst_client_id());
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(worker::Authenticate(akSkManager_, req, tenantId, clientId),
-                                     "Authenticate failed.");
-    std::shared_ptr<WorkerMasterOCApi> workerMasterApi;
-    RETURN_IF_NOT_OK(workerMasterApiManager_->GetWorkerMasterApi(P2P_DEFAULT_MASTER, workerMasterApi));
-    AckRecvFinishReqPb reqCopy = req;
-    return workerMasterApi->AckRecvFinish(reqCopy, resp);
-}
+#define DS_OC_WRITE_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_FORWARD(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_REQUEST_TENANT(manager, request, tenant) \
+    worker::AuthenticateRequest(manager, request, request.tenant_id(), tenant)
+#define DS_OC_WRITE_SESSION_TENANT(manager, request, tenant) worker::Authenticate(manager, request, tenant)
+#define DS_OC_WRITE_VERIFY(manager, request) manager->VerifySignatureAndTimestamp(request)
+#define DS_OC_WRITE_KNOWN_TENANT(manager, request, knownTenant, tenant) \
+    AuthenticateRequest(manager, request, knownTenant, tenant)
+#define DS_OC_WRITE_CLIENT_TENANT(manager, request, tenant, client) \
+    worker::Authenticate(manager, request, tenant, client)
+#define DS_OC_WRITE_DEVICE_P2P_BODY
+#include "datasystem/worker/object_cache/worker_oc_service_body.inc"
+#undef DS_OC_WRITE_DEVICE_P2P_BODY
+#undef DS_OC_WRITE_KNOWN_TENANT
+#undef DS_OC_WRITE_VERIFY
+#undef DS_OC_WRITE_CLIENT_TENANT
+#undef DS_OC_WRITE_SESSION_TENANT
+#undef DS_OC_WRITE_REQUEST_TENANT
+#undef DS_OC_WRITE_FORWARD
+#undef DS_OC_WRITE_ENTRY
 
 Status WorkerOCServiceImpl::RemoveP2PLocation(const RemoveP2PLocationReqPb &req, RemoveP2PLocationRspPb &resp)
 {
@@ -3287,44 +3060,26 @@ Status WorkerOCServiceImpl::RemoveP2PLocation(const RemoveP2PLocationReqPb &req,
     return workerMasterApi->RemoveP2PLocation(reqCopy, resp);
 }
 
-Status WorkerOCServiceImpl::GetDataInfo(
-    std::shared_ptr<ServerUnaryWriterReader<GetDataInfoRspPb, GetDataInfoReqPb>> serverApi)
-{
-    ScopedRequestContext ctx;
-    BthreadReadGuard noReconciliation;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
-        ValidateWorkerState(noReconciliation, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
-        "validate worker state failed");
-    GetDataInfoReqPb req;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(serverApi->Read(req), "serverApi read request failed");
-    std::string tenantId;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(worker::Authenticate(akSkManager_, req, tenantId), "Authenticate failed.");
-    auto objectKey = req.object_key();
-    int64_t subTimeout = req.sub_timeout();
-    CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(Validator::IsInNonNegativeInt32(subTimeout), K_RUNTIME_ERROR,
-                                         "SubTimeout is out of range.");
-    int64_t remainingUs = GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTimeUs();
-    CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(
-        remainingUs > 0, K_RPC_DEADLINE_EXCEEDED,
-        FormatString("RPC deadline exceeded before dispatch, remaining %ld us.", remainingUs));
-    std::string traceID = Trace::Instance().GetTraceID();
-    auto dispatchTime = std::chrono::steady_clock::now();
-    devThreadPool_->Execute([=]() mutable {
-        TraceGuard traceGuard = Trace::Instance().SetTraceNewID(traceID);
-        LOG(INFO) << "Worker processes GetDataInfo from object: " << objectKey
-                  << ", threads Statistics: " << devThreadPool_->GetStatistics();
-        auto initRc = InitTimeoutsFromDispatch(remainingUs, dispatchTime);
-        if (initRc.IsError()) {
-            LOG(ERROR) << initRc.GetMsg();
-            LOG_IF_ERROR(serverApi->SendStatus(initRc), "Send status failed");
-            return;
-        }
-        LOG_IF_ERROR(workerDevOcManager_->ProcessGetDataInfoRequest(req, serverApi, subTimeout),
-                     "Process GetDataInfo failed");
-        LOG(INFO) << "Process GetDataInfo done";
-    });
-    return Status::OK();
-}
+#define DS_OC_WRITE_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_FORWARD(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_REQUEST_TENANT(manager, request, tenant) \
+    worker::AuthenticateRequest(manager, request, request.tenant_id(), tenant)
+#define DS_OC_WRITE_SESSION_TENANT(manager, request, tenant) worker::Authenticate(manager, request, tenant)
+#define DS_OC_WRITE_VERIFY(manager, request) manager->VerifySignatureAndTimestamp(request)
+#define DS_OC_WRITE_KNOWN_TENANT(manager, request, knownTenant, tenant) \
+    AuthenticateRequest(manager, request, knownTenant, tenant)
+#define DS_OC_WRITE_CLIENT_TENANT(manager, request, tenant, client) \
+    worker::Authenticate(manager, request, tenant, client)
+#define DS_OC_WRITE_DATA_INFO_BODY
+#include "datasystem/worker/object_cache/worker_oc_service_body.inc"
+#undef DS_OC_WRITE_DATA_INFO_BODY
+#undef DS_OC_WRITE_KNOWN_TENANT
+#undef DS_OC_WRITE_VERIFY
+#undef DS_OC_WRITE_CLIENT_TENANT
+#undef DS_OC_WRITE_SESSION_TENANT
+#undef DS_OC_WRITE_REQUEST_TENANT
+#undef DS_OC_WRITE_FORWARD
+#undef DS_OC_WRITE_ENTRY
 
 Status WorkerOCServiceImpl::WaitInit()
 {

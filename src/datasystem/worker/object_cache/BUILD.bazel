@@ -280,6 +280,9 @@ ds_cc_library(
         "worker_self_port_health.h",
     ],
     deps = [
+        "//src/datasystem/worker/object_cache:worker_master_oc_api_header",
+        "//src/datasystem/common/rpc:api_deadline",
+        "//src/datasystem/common/device:device_helper",
         "//src/datasystem/worker:rpc_tenant_resolver",
         "//src/datasystem/cluster:remote_ub_port_health_verifier",
         "//src/datasystem/cluster:cluster_topology_scope",

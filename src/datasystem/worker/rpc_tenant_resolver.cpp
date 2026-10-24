@@ -66,7 +66,22 @@ Status RpcTenantResolver::Session(const std::shared_ptr<AkSkManager> &manager, c
     if (FLAGS_skip_authenticate) {
         return CheckTenantId(requestTenant);
     }
-    const auto client = ClientKey::Intern(clientId);
+    return LookupSession(manager, requestTenant, token, ClientKey::Intern(clientId), tenant);
+}
+
+Status RpcTenantResolver::SessionForClient(const std::shared_ptr<AkSkManager> &manager,
+                                           const std::string &requestTenant, const std::string &token,
+                                           const ClientKey &client, std::string &tenant) const
+{
+    if (FLAGS_skip_authenticate) {
+        return CheckTenantId(requestTenant);
+    }
+    return LookupSession(manager, requestTenant, token, client, tenant);
+}
+
+Status RpcTenantResolver::LookupSession(const std::shared_ptr<AkSkManager> &manager, const std::string &requestTenant,
+                                        const std::string &token, const ClientKey &client, std::string &tenant) const
+{
     Timer timer;
     std::string effectiveTenant = requestTenant;
     auto info = ClientManager::Instance().GetClientInfo(client);

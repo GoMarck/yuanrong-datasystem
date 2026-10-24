@@ -93,12 +93,14 @@ ds_cc_library(
         "worker_oc_service_get_impl.cpp",
         "worker_oc_service_get_rpc.cpp",
         "worker_query_and_get_impl.cpp",
+        "worker_query_and_get_rpc.cpp",
     ],
     hdrs = [
         "worker_oc_service_get_body.inc",
         "worker_oc_service_get_info.inc",
         "worker_oc_service_get_impl.h",
         "worker_query_and_get_impl.h",
+        "worker_query_and_get_body.inc",
     ],
     deps = [
         "//src/datasystem/worker:rpc_tenant_resolver",

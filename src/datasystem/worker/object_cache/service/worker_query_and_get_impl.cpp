@@ -44,11 +44,9 @@ namespace {
 constexpr uint64_t QUERY_AND_GET_MAX_TCP_PAYLOAD_SIZE = 512 * 1024UL;
 constexpr double MICROSECONDS_PER_MILLISECOND = 1000.0;
 
-uint64_t GetSteadyTimeUs()
-{
-    const auto now = std::chrono::steady_clock::now().time_since_epoch();
-    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(now).count());
-}
+#define DS_OC_QUERY_CLOCK_BODY
+#include "datasystem/worker/object_cache/service/worker_query_and_get_body.inc"
+#undef DS_OC_QUERY_CLOCK_BODY
 
 /** @brief Log one object-level QueryAndGet phase using the configured Worker slow-log threshold. */
 void LogQueryAndGetObjectPhase(const char *phase, size_t objectIndex, uint64_t dataSize, uint64_t elapsedUs,
@@ -93,34 +91,17 @@ WorkerQueryAndGetImpl::WorkerQueryAndGetImpl(std::shared_ptr<WorkerOcServiceGetI
 {
 }
 
-Status WorkerQueryAndGetImpl::QueryAndGet(
-    std::shared_ptr<ServerUnaryWriterReader<QueryAndGetRspPb, QueryAndGetReqPb>> &serverApi)
-{
-    RequestState state;
-    state.startUs = GetSteadyTimeUs();
-    state.lastCheckpointUs = state.startUs;
-    auto access = AccessRecorder::Object(AccessRecorderKey::DS_POSIX_QUERY_AND_GET);
-    Status rc = ReadAndAuthenticate(serverApi, state.request);
-    state.stats.preprocessUs = RecordPhase(state);
-    if (rc.IsOk()) {
-        access.ObjectKeysRef(state.request.object_keys()).TransportType(GetTransportName(state.request));
-        rc = ProcessAndDeliver(serverApi, state);
-    }
-    const uint64_t totalUs = state.lastCheckpointUs - state.startUs;
-    access.DataSize(state.stats.dataSize).Result(rc).Record();
-    LogCompletion(state, rc, totalUs);
-    return rc;
-}
+#define DS_OC_QUERY_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_OC_QUERY_FORWARD(name, ...) name(__VA_ARGS__)
+#define DS_OC_QUERY_VERIFY(manager, request) manager->VerifySignatureAndTimestamp(request)
+#define DS_OC_QUERY_METHOD_BODY
+#include "datasystem/worker/object_cache/service/worker_query_and_get_body.inc"
+#undef DS_OC_QUERY_METHOD_BODY
+#undef DS_OC_QUERY_VERIFY
+#undef DS_OC_QUERY_FORWARD
+#undef DS_OC_QUERY_ENTRY
 
-Status WorkerQueryAndGetImpl::ReadAndAuthenticate(
-    const std::shared_ptr<ServerUnaryWriterReader<QueryAndGetRspPb, QueryAndGetReqPb>> &serverApi,
-    QueryAndGetReqPb &request) const
-{
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(serverApi->Read(request), "Read QueryAndGet request failed");
-    RETURN_RUNTIME_ERROR_IF_NULL(akSkManager_);
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(akSkManager_->VerifySignatureAndTimestamp(request), "AK/SK failed.");
-    return Status::OK();
-}
+
 
 Status WorkerQueryAndGetImpl::ProcessAndDeliver(
     const std::shared_ptr<ServerUnaryWriterReader<QueryAndGetRspPb, QueryAndGetReqPb>> &serverApi,

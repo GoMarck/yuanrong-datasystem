@@ -54,6 +54,7 @@ set(WORKER_OC_SRCS
         service/worker_oc_service_get_impl.cpp
         service/worker_oc_service_get_rpc.cpp
         service/worker_query_and_get_impl.cpp
+        service/worker_query_and_get_rpc.cpp
         service/worker_oc_service_delete_impl.cpp
         service/worker_oc_service_delete_rpc.cpp
         service/worker_oc_service_clear_data_flow.cpp
@@ -133,6 +134,7 @@ set(WORKER_OC_HEAVY_FILES
     service/worker_oc_service_get_impl.cpp
     service/worker_oc_service_get_rpc.cpp
     service/worker_query_and_get_impl.cpp
+    service/worker_query_and_get_rpc.cpp
     service/worker_oc_service_migrate_impl.cpp
     worker_oc_eviction_manager.cpp
     worker_oc_eviction_policy.cpp

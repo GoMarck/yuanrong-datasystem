@@ -27,6 +27,7 @@
 #include <string>
 #include <sys/stat.h>
 #include <thread>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -2827,6 +2828,151 @@ TEST_F(WorkerOcServiceImplTest, RpcPolicyEntriesKeepPublicHealthAndSessionPrecon
         exclusive.Assign(&impl_->reconFlag_);
         EXPECT_TRUE(exclusive.TryLockIfUnlocked());
     }
+}
+
+TEST_F(WorkerOcServiceImplTest, RpcDeviceAdmissionKeepsReadShapeAndExplicitClientOrder)
+{
+    const bool skip = FLAGS_skip_authenticate;
+    FLAGS_skip_authenticate = false;
+    Raii restore([skip] { FLAGS_skip_authenticate = skip; });
+    const RpcRequestProof missing;
+    worker::RpcTenantResolver resolver(missing);
+    const auto client = ClientKey::Intern("test-only-p2p-client");
+    bool guarded = true;
+    size_t lookups = 0;
+    BINEXPECT_CALL(&WorkerOCServiceImpl::ValidateWorkerState, (_, _))
+        .WillRepeatedly([this](BthreadReadGuard &guard, int) {
+            guard.Assign(&impl_->reconFlag_);
+            EXPECT_TRUE(guard.TryLockIfUnlocked());
+            return Status::OK();
+        });
+    BINEXPECT_CALL(&WorkerOCServiceImpl::ValidateWorkerStateForRequest, (_, _))
+        .WillRepeatedly([this](BthreadReadGuard &guard, int) {
+            guard.Assign(&impl_->reconFlag_);
+            EXPECT_TRUE(guard.TryLockIfUnlocked());
+            return Status::OK();
+        });
+    BINEXPECT_CALL(&worker::ClientManager::GetClientInfo, (_))
+        .WillRepeatedly([this, &client, &guarded, &lookups](const ClientKey &actual) {
+            EXPECT_EQ(actual, client);
+            BthreadWriteGuard exclusive;
+            exclusive.Assign(&impl_->reconFlag_);
+            EXPECT_EQ(exclusive.TryLockIfUnlocked(), !guarded);
+            ++lookups;
+            return std::shared_ptr<worker::ClientInfo>{};
+        });
+    Raii releaseStubs([] { RELEASE_STUBS });
+    ScopedRequestContext context;
+    GetRequestContext()->reqTimeoutDuration.Init(1000);
+    class Done final : public google::protobuf::Closure {
+    public:
+        Done() = default;
+        ~Done() override = default;
+        void Run() override { ++calls; }
+        int calls = 0;
+    };
+    auto read = [&](auto &request, auto &response, bool supplied, StatusCode expected,
+                    auto ordinary, auto authenticated) {
+        using Request = std::decay_t<decltype(request)>;
+        using Response = std::decay_t<decltype(response)>;
+        const auto before = lookups;
+        for (bool useRpc : {false, true}) {
+            brpc::Controller controller;
+            Done done;
+            {
+                std::shared_ptr<ServerUnaryWriterReader<Response, Request>> api =
+                    std::make_shared<BrpcServerUnaryWriterReader<Response, Request>>(
+                        &controller, supplied ? &request : nullptr, &response, &done, "DeviceAdmission");
+                const auto rc = useRpc ? (impl_.get()->*authenticated)(api, resolver)
+                                       : (impl_.get()->*ordinary)(api);
+                EXPECT_EQ(rc.GetCode(), expected) << rc.ToString();
+                if (!supplied) {
+                    EXPECT_NE(rc.GetMsg().find("Request protobuf is null"), std::string::npos);
+                }
+            }
+            EXPECT_EQ(done.calls, 1);
+        }
+        EXPECT_EQ(lookups - before, expected == K_CLIENT_WORKER_DISCONNECT ? 2u : 0u);
+    };
+    auto missingReader = [&](auto &request, auto &response, auto ordinary, auto authenticated) {
+        read(request, response, false, K_RUNTIME_ERROR, ordinary, authenticated);
+        read(request, response, true, K_CLIENT_WORKER_DISCONNECT, ordinary, authenticated);
+    };
+    GetDeviceObjectReqPb get;
+    get.set_client_id(client.ToString());
+    get.set_sub_timeout(-1);
+    GetDeviceObjectRspPb got;
+    missingReader(get, got, &WorkerOCServiceImpl::GetDeviceObject,
+                  &WorkerOCServiceImpl::GetDeviceObjectWithTenantResolver);
+    SubscribeReceiveEventReqPb subscribe;
+    subscribe.set_src_client_id(client.ToString());
+    SubscribeReceiveEventRspPb subscribed;
+    missingReader(subscribe, subscribed, &WorkerOCServiceImpl::SubscribeReceiveEvent,
+                  &WorkerOCServiceImpl::SubscribeReceiveEventWithTenantResolver);
+    GetP2PMetaReqPb query;
+    GetP2PMetaRspPb queried;
+    read(query, queried, false, K_RUNTIME_ERROR, &WorkerOCServiceImpl::GetP2PMeta,
+         &WorkerOCServiceImpl::GetP2PMetaWithTenantResolver);
+    read(query, queried, true, K_INVALID, &WorkerOCServiceImpl::GetP2PMeta,
+         &WorkerOCServiceImpl::GetP2PMetaWithTenantResolver);
+    query.add_dev_obj_meta()->add_locations()->set_client_id(client.ToString());
+    read(query, queried, true, K_CLIENT_WORKER_DISCONNECT, &WorkerOCServiceImpl::GetP2PMeta,
+         &WorkerOCServiceImpl::GetP2PMetaWithTenantResolver);
+    RecvRootInfoReqPb receive;
+    receive.set_src_client_id(client.ToString());
+    RecvRootInfoRspPb received;
+    missingReader(receive, received, &WorkerOCServiceImpl::RecvRootInfo,
+                  &WorkerOCServiceImpl::RecvRootInfoWithTenantResolver);
+    GetDataInfoReqPb data;
+    data.set_client_id(client.ToString());
+    data.set_sub_timeout(-1);
+    GetDataInfoRspPb info;
+    missingReader(data, info, &WorkerOCServiceImpl::GetDataInfo,
+                  &WorkerOCServiceImpl::GetDataInfoWithTenantResolver);
+    QueryAndGetReqPb combined;
+    QueryAndGetRspPb combinedResponse;
+    read(combined, combinedResponse, false, K_RUNTIME_ERROR, &WorkerOCServiceImpl::QueryAndGet,
+         &WorkerOCServiceImpl::QueryAndGetWithTenantResolver);
+    read(combined, combinedResponse, true, K_RUNTIME_ERROR, &WorkerOCServiceImpl::QueryAndGet,
+         &WorkerOCServiceImpl::QueryAndGetWithTenantResolver);
+    auto queryKeys = std::make_shared<AkSkManager>();
+    ASSERT_TRUE(queryKeys->SetServerAkSk(AkSkType::SYSTEM, "test-only-query-access",
+                                         SensitiveValue("test-only-query-secret")).IsOk());
+    impl_->queryAndGetProc_->akSkManager_ = queryKeys;
+    read(combined, combinedResponse, true, K_NOT_AUTHORIZED, &WorkerOCServiceImpl::QueryAndGet,
+         &WorkerOCServiceImpl::QueryAndGetWithTenantResolver);
+    guarded = false;
+    auto direct = [&](auto &request, auto &response, StatusCode expected, auto ordinary, auto authenticated) {
+        for (bool useRpc : {false, true}) {
+            const auto rc = useRpc ? (impl_.get()->*authenticated)(request, response, resolver)
+                                   : (impl_.get()->*ordinary)(request, response);
+            EXPECT_EQ(rc.GetCode(), expected) << rc.ToString();
+        }
+    };
+    PutP2PMetaReqPb put;
+    PutP2PMetaRspPb stored;
+    direct(put, stored, K_INVALID, &WorkerOCServiceImpl::PutP2PMeta,
+           &WorkerOCServiceImpl::PutP2PMetaWithTenantResolver);
+    put.add_dev_obj_meta()->add_locations()->set_client_id(client.ToString());
+    direct(put, stored, K_CLIENT_WORKER_DISCONNECT, &WorkerOCServiceImpl::PutP2PMeta,
+           &WorkerOCServiceImpl::PutP2PMetaWithTenantResolver);
+    SendRootInfoReqPb send;
+    send.set_dst_client_id(client.ToString());
+    SendRootInfoRspPb sent;
+    direct(send, sent, K_CLIENT_WORKER_DISCONNECT, &WorkerOCServiceImpl::SendRootInfo,
+           &WorkerOCServiceImpl::SendRootInfoWithTenantResolver);
+    AckRecvFinishReqPb ack;
+    ack.set_dst_client_id(client.ToString());
+    AckRecvFinishRspPb acked;
+    direct(ack, acked, K_CLIENT_WORKER_DISCONNECT, &WorkerOCServiceImpl::AckRecvFinish,
+           &WorkerOCServiceImpl::AckRecvFinishWithTenantResolver);
+    PublishDeviceObjectReqPb publish;
+    publish.set_client_id(client.ToString());
+    PublishDeviceObjectRspPb published;
+    EXPECT_EQ(impl_->PublishDeviceObject(publish, published, {}).GetCode(), K_CLIENT_WORKER_DISCONNECT);
+    EXPECT_EQ(impl_->PublishDeviceObjectWithTenantResolver(publish, published, {}, resolver).GetCode(),
+              K_CLIENT_WORKER_DISCONNECT);
+    EXPECT_EQ(lookups, 18u);
 }
 
 TEST_F(WorkerOcServiceImplTest, DeviceRemoteGetReservesCleanupBudgetBeforeRetry)

@@ -451,6 +451,9 @@ public:
      */
     Status QueryAndGet(
         std::shared_ptr<ServerUnaryWriterReader<QueryAndGetRspPb, QueryAndGetReqPb>> serverApi) override;
+    Status QueryAndGetWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<QueryAndGetRspPb, QueryAndGetReqPb>> serverApi,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Decrease the reference count of client.
@@ -862,6 +865,9 @@ public:
      */
     Status PublishDeviceObject(const PublishDeviceObjectReqPb &req, PublishDeviceObjectRspPb &resp,
                                std::vector<RpcMessage> payloads) override;
+    Status PublishDeviceObjectWithTenantResolver(
+        const PublishDeviceObjectReqPb &req, PublishDeviceObjectRspPb &resp, std::vector<RpcMessage> payloads,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Handle GetDeviceObject request from the client.
@@ -870,6 +876,9 @@ public:
      */
     Status GetDeviceObject(
         std::shared_ptr<ServerUnaryWriterReader<GetDeviceObjectRspPb, GetDeviceObjectReqPb>> serverApi) override;
+    Status GetDeviceObjectWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<GetDeviceObjectRspPb, GetDeviceObjectReqPb>> serverApi,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Get match object keys.
@@ -911,6 +920,9 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status PutP2PMeta(const PutP2PMetaReqPb &req, PutP2PMetaRspPb &resp) override;
+    Status PutP2PMetaWithTenantResolver(
+        const PutP2PMetaReqPb &req, PutP2PMetaRspPb &resp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Subscribe the p2p receiving event.
@@ -920,6 +932,9 @@ public:
     Status SubscribeReceiveEvent(
         std::shared_ptr<ServerUnaryWriterReader<SubscribeReceiveEventRspPb, SubscribeReceiveEventReqPb>> serverApi)
         override;
+    Status SubscribeReceiveEventWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<SubscribeReceiveEventRspPb, SubscribeReceiveEventReqPb>> serverApi,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Get p2p metadata from master.
@@ -927,6 +942,9 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status GetP2PMeta(std::shared_ptr<ServerUnaryWriterReader<GetP2PMetaRspPb, GetP2PMetaReqPb>> serverApi) override;
+    Status GetP2PMetaWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<GetP2PMetaRspPb, GetP2PMetaReqPb>> serverApi,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Send root info to master.
@@ -935,6 +953,9 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status SendRootInfo(const SendRootInfoReqPb &req, SendRootInfoRspPb &resp) override;
+    Status SendRootInfoWithTenantResolver(
+        const SendRootInfoReqPb &req, SendRootInfoRspPb &resp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Receive root info to master.
@@ -944,6 +965,9 @@ public:
      */
     Status RecvRootInfo(
         std::shared_ptr<ServerUnaryWriterReader<RecvRootInfoRspPb, RecvRootInfoReqPb>> serverApi) override;
+    Status RecvRootInfoWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<RecvRootInfoRspPb, RecvRootInfoReqPb>> serverApi,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Get metadata of object, i.e., lifecycle mode and buffer sizes.
@@ -951,6 +975,9 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status GetDataInfo(std::shared_ptr<ServerUnaryWriterReader<GetDataInfoRspPb, GetDataInfoReqPb>> serverApi) override;
+    Status GetDataInfoWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<GetDataInfoRspPb, GetDataInfoReqPb>> serverApi,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Acknowledging data receiving finished.
@@ -959,6 +986,9 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status AckRecvFinish(const AckRecvFinishReqPb &req, AckRecvFinishRspPb &resp) override;
+    Status AckRecvFinishWithTenantResolver(
+        const AckRecvFinishReqPb &req, AckRecvFinishRspPb &resp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Remove data location in object directory.
