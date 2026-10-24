@@ -242,10 +242,6 @@ public:
                                  int32_t timeoutMs, UbHealthSummary &summary);
 
 private:
-    template <typename TenantResolver>
-    Status GetWithTenantResolverImpl(std::shared_ptr<ServerUnaryWriterReader<GetRspPb, GetReqPb>> &serverApi,
-                                     const TenantResolver &resolver);
-
     using ObjectKeysQueryMetaFailed = std::tuple<std::unordered_set<std::string>, std::unordered_set<std::string>>;
     using TbbTransportStubTable = tbb::concurrent_hash_map<std::string, std::shared_ptr<WorkerRemoteWorkerTransApi>>;
 

@@ -88,9 +88,11 @@ ds_cc_library(
     srcs = [
         "worker_oc_service_batch_get_impl.cpp",
         "worker_oc_service_get_impl.cpp",
+        "worker_oc_service_get_rpc.cpp",
         "worker_query_and_get_impl.cpp",
     ],
     hdrs = [
+        "worker_oc_service_get_body.inc",
         "worker_oc_service_get_impl.h",
         "worker_query_and_get_impl.h",
     ],

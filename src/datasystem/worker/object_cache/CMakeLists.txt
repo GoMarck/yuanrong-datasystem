@@ -48,6 +48,7 @@ set(WORKER_OC_SRCS
         service/worker_oc_service_publish_impl.cpp
         service/worker_oc_service_multi_publish_impl.cpp
         service/worker_oc_service_get_impl.cpp
+        service/worker_oc_service_get_rpc.cpp
         service/worker_query_and_get_impl.cpp
         service/worker_oc_service_delete_impl.cpp
         service/worker_oc_service_clear_data_flow.cpp
@@ -122,6 +123,7 @@ target_link_libraries(worker_object_cache PRIVATE ${WORKER_OBJECT_CACHE_DEPEND_L
 set(WORKER_OC_HEAVY_FILES
     worker_oc_service_impl.cpp
     service/worker_oc_service_get_impl.cpp
+    service/worker_oc_service_get_rpc.cpp
     service/worker_query_and_get_impl.cpp
     service/worker_oc_service_migrate_impl.cpp
     worker_oc_eviction_manager.cpp
