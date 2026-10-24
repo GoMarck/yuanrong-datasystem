@@ -404,6 +404,7 @@ ds_cc_test(
         "//src/datasystem/common/ak_sk:ak_sk_manager",
         "//src/datasystem/common/iam:common_iam",
         "//src/datasystem/common/rpc:brpc_auth",
+        "//src/datasystem/protos:share_memory_brpc",
         "//src/datasystem/common/util:raii",
         "//src/datasystem/common/util:timer",
         "//src/datasystem/worker:authenticate",
@@ -696,6 +697,7 @@ ds_cc_test(
 test_suite(
     name = "all_worker_tests",
     tests = [
+        "worker_service_rpc_tenant_test",
         "async_resource_releaser_test",
         "async_updatelocation_test",
         "authenticate_test",

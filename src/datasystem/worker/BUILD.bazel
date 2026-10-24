@@ -96,6 +96,7 @@ ds_cc_library(
     ],
     hdrs = [
         "worker_service_impl.h",
+        "worker_service_rpc_dispatcher.h",
         "worker_service_get_client_fd_body.inc",
         "worker_service_disconnect_client_body.inc",
         "worker_service_register_client_body.inc",
