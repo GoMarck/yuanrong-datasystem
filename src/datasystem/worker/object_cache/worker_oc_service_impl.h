@@ -409,6 +409,9 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status Publish(const PublishReqPb &req, PublishRspPb &resp, std::vector<RpcMessage> payloads) override;
+    Status PublishWithTenantResolver(
+        const PublishReqPb &req, PublishRspPb &resp, std::vector<RpcMessage> payloads,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Handle multiply set request from the client.
@@ -463,6 +466,9 @@ public:
      * @return Status of the call.
      */
     Status ReleaseGRefs(const ReleaseGRefsReqPb &req, ReleaseGRefsRspPb &resp) override;
+    Status ReleaseGRefsWithTenantResolver(
+        const ReleaseGRefsReqPb &req, ReleaseGRefsRspPb &resp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Increase the global reference count of object.
@@ -471,6 +477,9 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status GIncreaseRef(const GIncreaseReqPb &req, GIncreaseRspPb &resp) override;
+    Status GIncreaseRefWithTenantResolver(
+        const GIncreaseReqPb &req, GIncreaseRspPb &resp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Decrease the global reference count of object.
@@ -479,6 +488,9 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status GDecreaseRef(const GDecreaseReqPb &req, GDecreaseRspPb &resp) override;
+    Status GDecreaseRefWithTenantResolver(
+        const GDecreaseReqPb &req, GDecreaseRspPb &resp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Push metadata to master, for DFX purpose.
@@ -508,6 +520,9 @@ public:
      * @return Status of the call.
      */
     Status DeleteAllCopy(const DeleteAllCopyReqPb &req, DeleteAllCopyRspPb &resp) override;
+    Status DeleteAllCopyWithTenantResolver(
+        const DeleteAllCopyReqPb &req, DeleteAllCopyRspPb &resp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Get the Primary Replica Addr object
@@ -532,6 +547,9 @@ public:
      * @return Status of the call.
      */
     Status QueryGlobalRefNum(const QueryGlobalRefNumReqPb &req, QueryGlobalRefNumRspCollectionPb &rsp) override;
+    Status QueryGlobalRefNumWithTenantResolver(
+        const QueryGlobalRefNumReqPb &req, QueryGlobalRefNumRspCollectionPb &rsp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Recovery client info and reconciliation.
@@ -968,6 +986,9 @@ public:
      * @return Status of the call.
      */
     Status Expire(const ExpireReqPb &req, ExpireRspPb &rsp) override;
+    Status ExpireWithTenantResolver(
+        const ExpireReqPb &req, ExpireRspPb &rsp,
+        const worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Get device meta info of the keys.

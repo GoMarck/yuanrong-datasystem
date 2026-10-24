@@ -15,6 +15,7 @@
 
 #include "datasystem/common/log/access_recorder.h"
 #include "datasystem/common/metrics/kv_metrics.h"
+#include "datasystem/common/perf/perf_manager.h"
 #include "datasystem/common/util/raii.h"
 #include "datasystem/common/util/request_context.h"
 #include "datasystem/common/util/strings_util.h"
@@ -31,9 +32,19 @@ namespace object_cache {
     resolver.Request(manager, request.tenant_id(), request.token(), tenant)
 #define DS_OC_WRITE_SESSION_TENANT(manager, request, tenant) resolver.Resolve(manager, request, tenant)
 #define DS_OC_WRITE_MULTIPUBLISH_BODY
+#define DS_OC_WRITE_PUBLISH_BODY
+#define DS_OC_WRITE_GREF_BODY
+#define DS_OC_WRITE_DELETE_BODY
+#define DS_OC_WRITE_QUERY_REF_BODY
+#define DS_OC_WRITE_EXPIRE_BODY
 #define DS_OC_WRITE_CREATE_BODY
 #include "datasystem/worker/object_cache/worker_oc_service_body.inc"
 #undef DS_OC_WRITE_CREATE_BODY
+#undef DS_OC_WRITE_EXPIRE_BODY
+#undef DS_OC_WRITE_QUERY_REF_BODY
+#undef DS_OC_WRITE_DELETE_BODY
+#undef DS_OC_WRITE_GREF_BODY
+#undef DS_OC_WRITE_PUBLISH_BODY
 #undef DS_OC_WRITE_MULTIPUBLISH_BODY
 #undef DS_OC_WRITE_SESSION_TENANT
 #undef DS_OC_WRITE_REQUEST_TENANT

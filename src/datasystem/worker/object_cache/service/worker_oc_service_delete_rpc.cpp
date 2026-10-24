@@ -41,7 +41,11 @@ namespace object_cache {
 #define DS_OC_REQUEST_TENANT(manager, request, tenant) \
     resolver.Request(manager, request.tenant_id(), request.token(), tenant)
 #define DS_OC_SESSION_TENANT(manager, request, tenant) resolver.Resolve(manager, request, tenant)
+#define DS_OC_DELETE_ENTRY_BODY
+#define DS_OC_DELETE_IMPL_BODY
 #include "datasystem/worker/object_cache/service/worker_oc_service_delete_body.inc"
+#undef DS_OC_DELETE_IMPL_BODY
+#undef DS_OC_DELETE_ENTRY_BODY
 #undef DS_OC_SESSION_TENANT
 #undef DS_OC_REQUEST_TENANT
 #undef DS_OC_PROC_FORWARD

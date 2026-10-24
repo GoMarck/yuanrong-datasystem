@@ -918,51 +918,18 @@ std::string WorkerOCServiceImpl::GetHitInfo() const
     return getProc_->GetHitInfo();
 }
 
-Status WorkerOCServiceImpl::Publish(const PublishReqPb &req, PublishRspPb &resp, std::vector<RpcMessage> payloads)
-{
-    ScopedRequestContext ctx;
-    Raii attachHealth([this, &resp] { AttachPublishedSelfUbHealth(*this, resp); });
-    METRIC_TIMER(metrics::KvMetricId::WORKER_PROCESS_PUBLISH_LATENCY);
-    uint64_t payloadBytes = PayloadBytes(payloads);
-    int64_t remainingUs = GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTimeUs();
-    CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(
-        remainingUs > 0, K_RPC_DEADLINE_EXCEEDED,
-        FormatString("RPC deadline exceeded before Publish dispatch, remaining %ld us.", remainingUs));
-    auto admission = VerifyClientWriteAdmission(req.is_routed());
-    if (admission.GetCode() == K_SCALE_DOWN && membership_.SupportsWriteRedirect()) {
-        std::string tenantId;
-        RETURN_IF_NOT_OK(req.is_routed() ? worker::AuthenticateRequest(akSkManager_, req, req.tenant_id(), tenantId)
-                                        : worker::Authenticate(akSkManager_, req, tenantId));
-        FillWorkerRedirect(req.object_key(), *resp.mutable_worker_redirect());
-        return Status::OK();
-    }
-    RETURN_IF_NOT_OK(admission);
-    BthreadReadGuard noRecon;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
-        ValidateWorkerStateForRequest(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
-        "validate worker state failed");
-    Status rc = publishProc_->Publish(req, resp, payloads);
-    if (rc.IsOk()) {
-        auto clientId = ClientKey::Intern(req.client_id());
-        const bool clientShmEnabled = WorkerOcServiceCrudCommonApi::ClientShmEnabled(clientId);
-        if (!req.shm_id().empty()) {
-            if (WorkerOcServiceCrudCommonApi::ShmEnable() && clientShmEnabled) {
-                METRIC_ADD(metrics::KvMetricId::WORKER_FROM_CLIENT_PUBLISH_SHM_TOTAL_BYTES,
-                           static_cast<uint64_t>(req.data_size()));
-            } else {
-                METRIC_ADD(metrics::KvMetricId::WORKER_FROM_CLIENT_PUBLISH_URMA_TOTAL_BYTES,
-                           static_cast<uint64_t>(req.data_size()));
-            }
-        } else if (payloadBytes > 0) {
-            if (clientShmEnabled) {
-                METRIC_ADD(metrics::KvMetricId::WORKER_FROM_CLIENT_PUBLISH_LOCAL_TOTAL_BYTES, payloadBytes);
-            } else {
-                METRIC_ADD(metrics::KvMetricId::WORKER_FROM_CLIENT_PUBLISH_TCP_TOTAL_BYTES, payloadBytes);
-            }
-        }
-    }
-    return rc;
-}
+#define DS_OC_WRITE_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_FORWARD(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_REQUEST_TENANT(manager, request, tenant) \
+    worker::AuthenticateRequest(manager, request, request.tenant_id(), tenant)
+#define DS_OC_WRITE_SESSION_TENANT(manager, request, tenant) worker::Authenticate(manager, request, tenant)
+#define DS_OC_WRITE_PUBLISH_BODY
+#include "datasystem/worker/object_cache/worker_oc_service_body.inc"
+#undef DS_OC_WRITE_PUBLISH_BODY
+#undef DS_OC_WRITE_SESSION_TENANT
+#undef DS_OC_WRITE_REQUEST_TENANT
+#undef DS_OC_WRITE_FORWARD
+#undef DS_OC_WRITE_ENTRY
 
 #define DS_OC_WRITE_ENTRY(name, ...) name(__VA_ARGS__)
 #define DS_OC_WRITE_FORWARD(name, ...) name(__VA_ARGS__)
@@ -2453,38 +2420,18 @@ Status WorkerOCServiceImpl::ReconcileShmRef(const ReconcileShmRefReqPb &req, Rec
     return Status::OK();
 }
 
-Status WorkerOCServiceImpl::ReleaseGRefs(const ReleaseGRefsReqPb &req, ReleaseGRefsRspPb &resp)
-{
-    ScopedRequestContext ctx;
-    BthreadReadGuard noRecon;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
-        ValidateWorkerState(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
-        "validate worker state failed");
-
-    return gRefProc_->ReleaseGRefs(req, resp);
-}
-
-Status WorkerOCServiceImpl::GIncreaseRef(const GIncreaseReqPb &req, GIncreaseRspPb &resp)
-{
-    ScopedRequestContext ctx;
-    BthreadReadGuard noRecon;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
-        ValidateWorkerState(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
-        "validate worker state failed");
-
-    return gRefProc_->GIncreaseRef(req, resp);
-}
-
-Status WorkerOCServiceImpl::GDecreaseRef(const GDecreaseReqPb &req, GDecreaseRspPb &resp)
-{
-    ScopedRequestContext ctx;
-    BthreadReadGuard noRecon;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
-        ValidateWorkerState(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
-        "validate worker state failed");
-
-    return gRefProc_->GDecreaseRef(req, resp);
-}
+#define DS_OC_WRITE_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_FORWARD(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_REQUEST_TENANT(manager, request, tenant) \
+    worker::AuthenticateRequest(manager, request, request.tenant_id(), tenant)
+#define DS_OC_WRITE_SESSION_TENANT(manager, request, tenant) worker::Authenticate(manager, request, tenant)
+#define DS_OC_WRITE_GREF_BODY
+#include "datasystem/worker/object_cache/worker_oc_service_body.inc"
+#undef DS_OC_WRITE_GREF_BODY
+#undef DS_OC_WRITE_SESSION_TENANT
+#undef DS_OC_WRITE_REQUEST_TENANT
+#undef DS_OC_WRITE_FORWARD
+#undef DS_OC_WRITE_ENTRY
 
 Status WorkerOCServiceImpl::RemoveMetaFromMaster(const std::list<std::string> &objectKeysRemove,
                                                  master::RemoveMetaReqPb::Cause removeCause)
@@ -2521,19 +2468,18 @@ Status WorkerOCServiceImpl::RemoveMetaFromMaster(const std::list<std::string> &o
     return Status::OK();
 }
 
-Status WorkerOCServiceImpl::DeleteAllCopy(const DeleteAllCopyReqPb &req, DeleteAllCopyRspPb &resp)
-{
-    ScopedRequestContext ctx;
-    BthreadReadGuard noRecon;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
-        ValidateWorkerState(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
-        "validate worker state failed");
-    PerfPoint point(PerfKey::WORKER_DELETE_OBJECT);
-    if (req.are_device_objects()) {
-        return DeleteDevObjects(req, resp);
-    }
-    return deleteProc_->DeleteAllCopy(req, resp);
-}
+#define DS_OC_WRITE_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_FORWARD(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_REQUEST_TENANT(manager, request, tenant) \
+    worker::AuthenticateRequest(manager, request, request.tenant_id(), tenant)
+#define DS_OC_WRITE_SESSION_TENANT(manager, request, tenant) worker::Authenticate(manager, request, tenant)
+#define DS_OC_WRITE_DELETE_BODY
+#include "datasystem/worker/object_cache/worker_oc_service_body.inc"
+#undef DS_OC_WRITE_DELETE_BODY
+#undef DS_OC_WRITE_SESSION_TENANT
+#undef DS_OC_WRITE_REQUEST_TENANT
+#undef DS_OC_WRITE_FORWARD
+#undef DS_OC_WRITE_ENTRY
 
 Status WorkerOCServiceImpl::DeleteCopyNotification(const DeleteObjectReqPb &req, DeleteObjectRspPb &rsp)
 {
@@ -2582,16 +2528,18 @@ Status WorkerOCServiceImpl::InvalidateBuffer(const InvalidateBufferReqPb &req, I
     return Status::OK();
 }
 
-Status WorkerOCServiceImpl::QueryGlobalRefNum(const QueryGlobalRefNumReqPb &req, QueryGlobalRefNumRspCollectionPb &rsp)
-{
-    ScopedRequestContext ctx;
-    BthreadReadGuard noRecon;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
-        ValidateWorkerState(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
-        "validate worker state failed");
-
-    return gRefProc_->QueryGlobalRefNum(req, rsp);
-}
+#define DS_OC_WRITE_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_FORWARD(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_REQUEST_TENANT(manager, request, tenant) \
+    worker::AuthenticateRequest(manager, request, request.tenant_id(), tenant)
+#define DS_OC_WRITE_SESSION_TENANT(manager, request, tenant) worker::Authenticate(manager, request, tenant)
+#define DS_OC_WRITE_QUERY_REF_BODY
+#include "datasystem/worker/object_cache/worker_oc_service_body.inc"
+#undef DS_OC_WRITE_QUERY_REF_BODY
+#undef DS_OC_WRITE_SESSION_TENANT
+#undef DS_OC_WRITE_REQUEST_TENANT
+#undef DS_OC_WRITE_FORWARD
+#undef DS_OC_WRITE_ENTRY
 
 Status WorkerOCServiceImpl::RecoveryClient(const ClientKey &clientId, const std::string &tenantId,
                                            const std::string &reqToken,
@@ -3471,15 +3419,18 @@ Status WorkerOCServiceImpl::Exist(const ExistReqPb &req, ExistRspPb &rsp)
     return getProc_->Exist(req, rsp);
 }
 
-Status WorkerOCServiceImpl::Expire(const ExpireReqPb &req, ExpireRspPb &rsp)
-{
-    ScopedRequestContext ctx;
-    BthreadReadGuard noReconciliation;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
-        ValidateWorkerState(noReconciliation, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
-        "validate worker state failed");
-    return expireProc_->Expire(req, rsp);
-}
+#define DS_OC_WRITE_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_FORWARD(name, ...) name(__VA_ARGS__)
+#define DS_OC_WRITE_REQUEST_TENANT(manager, request, tenant) \
+    worker::AuthenticateRequest(manager, request, request.tenant_id(), tenant)
+#define DS_OC_WRITE_SESSION_TENANT(manager, request, tenant) worker::Authenticate(manager, request, tenant)
+#define DS_OC_WRITE_EXPIRE_BODY
+#include "datasystem/worker/object_cache/worker_oc_service_body.inc"
+#undef DS_OC_WRITE_EXPIRE_BODY
+#undef DS_OC_WRITE_SESSION_TENANT
+#undef DS_OC_WRITE_REQUEST_TENANT
+#undef DS_OC_WRITE_FORWARD
+#undef DS_OC_WRITE_ENTRY
 
 Status WorkerOCServiceImpl::GetMetaInfo(const GetMetaInfoReqPb &req, GetMetaInfoRspPb &rsp)
 {

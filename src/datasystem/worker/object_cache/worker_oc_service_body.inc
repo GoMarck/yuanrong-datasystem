@@ -109,3 +109,127 @@ Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(MultiCreate, const MultiCreateReqP
 }
 
 #endif
+
+#ifdef DS_OC_WRITE_PUBLISH_BODY
+Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(Publish, const PublishReqPb &req, PublishRspPb &resp, std::vector<RpcMessage> payloads)
+{
+    ScopedRequestContext ctx;
+    Raii attachHealth([this, &resp] { AttachPublishedSelfUbHealth(*this, resp); });
+    METRIC_TIMER(metrics::KvMetricId::WORKER_PROCESS_PUBLISH_LATENCY);
+    uint64_t payloadBytes = PayloadBytes(payloads);
+    int64_t remainingUs = GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTimeUs();
+    CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(
+        remainingUs > 0, K_RPC_DEADLINE_EXCEEDED,
+        FormatString("RPC deadline exceeded before Publish dispatch, remaining %ld us.", remainingUs));
+    auto admission = VerifyClientWriteAdmission(req.is_routed());
+    if (admission.GetCode() == K_SCALE_DOWN && membership_.SupportsWriteRedirect()) {
+        std::string tenantId;
+        RETURN_IF_NOT_OK(req.is_routed() ? DS_OC_WRITE_REQUEST_TENANT(akSkManager_, req, tenantId)
+                                        : DS_OC_WRITE_SESSION_TENANT(akSkManager_, req, tenantId));
+        FillWorkerRedirect(req.object_key(), *resp.mutable_worker_redirect());
+        return Status::OK();
+    }
+    RETURN_IF_NOT_OK(admission);
+    BthreadReadGuard noRecon;
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
+        ValidateWorkerStateForRequest(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
+        "validate worker state failed");
+    Status rc = publishProc_->DS_OC_WRITE_FORWARD(Publish, req, resp, payloads);
+    if (rc.IsOk()) {
+        auto clientId = ClientKey::Intern(req.client_id());
+        const bool clientShmEnabled = WorkerOcServiceCrudCommonApi::ClientShmEnabled(clientId);
+        if (!req.shm_id().empty()) {
+            if (WorkerOcServiceCrudCommonApi::ShmEnable() && clientShmEnabled) {
+                METRIC_ADD(metrics::KvMetricId::WORKER_FROM_CLIENT_PUBLISH_SHM_TOTAL_BYTES,
+                           static_cast<uint64_t>(req.data_size()));
+            } else {
+                METRIC_ADD(metrics::KvMetricId::WORKER_FROM_CLIENT_PUBLISH_URMA_TOTAL_BYTES,
+                           static_cast<uint64_t>(req.data_size()));
+            }
+        } else if (payloadBytes > 0) {
+            if (clientShmEnabled) {
+                METRIC_ADD(metrics::KvMetricId::WORKER_FROM_CLIENT_PUBLISH_LOCAL_TOTAL_BYTES, payloadBytes);
+            } else {
+                METRIC_ADD(metrics::KvMetricId::WORKER_FROM_CLIENT_PUBLISH_TCP_TOTAL_BYTES, payloadBytes);
+            }
+        }
+    }
+    return rc;
+}
+#endif
+
+#ifdef DS_OC_WRITE_GREF_BODY
+Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(ReleaseGRefs, const ReleaseGRefsReqPb &req, ReleaseGRefsRspPb &resp)
+{
+    ScopedRequestContext ctx;
+    BthreadReadGuard noRecon;
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
+        ValidateWorkerState(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
+        "validate worker state failed");
+
+    return gRefProc_->DS_OC_WRITE_FORWARD(ReleaseGRefs, req, resp);
+}
+
+Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(GIncreaseRef, const GIncreaseReqPb &req, GIncreaseRspPb &resp)
+{
+    ScopedRequestContext ctx;
+    BthreadReadGuard noRecon;
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
+        ValidateWorkerState(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
+        "validate worker state failed");
+
+    return gRefProc_->DS_OC_WRITE_FORWARD(GIncreaseRef, req, resp);
+}
+
+Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(GDecreaseRef, const GDecreaseReqPb &req, GDecreaseRspPb &resp)
+{
+    ScopedRequestContext ctx;
+    BthreadReadGuard noRecon;
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
+        ValidateWorkerState(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
+        "validate worker state failed");
+
+    return gRefProc_->DS_OC_WRITE_FORWARD(GDecreaseRef, req, resp);
+}
+#endif
+
+#ifdef DS_OC_WRITE_DELETE_BODY
+Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(DeleteAllCopy, const DeleteAllCopyReqPb &req, DeleteAllCopyRspPb &resp)
+{
+    ScopedRequestContext ctx;
+    BthreadReadGuard noRecon;
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
+        ValidateWorkerState(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
+        "validate worker state failed");
+    PerfPoint point(PerfKey::WORKER_DELETE_OBJECT);
+    if (req.are_device_objects()) {
+        return DeleteDevObjects(req, resp);
+    }
+    return deleteProc_->DS_OC_WRITE_FORWARD(DeleteAllCopy, req, resp);
+}
+#endif
+
+#ifdef DS_OC_WRITE_QUERY_REF_BODY
+Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(QueryGlobalRefNum, const QueryGlobalRefNumReqPb &req, QueryGlobalRefNumRspCollectionPb &rsp)
+{
+    ScopedRequestContext ctx;
+    BthreadReadGuard noRecon;
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
+        ValidateWorkerState(noRecon, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
+        "validate worker state failed");
+
+    return gRefProc_->DS_OC_WRITE_FORWARD(QueryGlobalRefNum, req, rsp);
+}
+#endif
+
+#ifdef DS_OC_WRITE_EXPIRE_BODY
+Status WorkerOCServiceImpl::DS_OC_WRITE_ENTRY(Expire, const ExpireReqPb &req, ExpireRspPb &rsp)
+{
+    ScopedRequestContext ctx;
+    BthreadReadGuard noReconciliation;
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
+        ValidateWorkerState(noReconciliation, GetRequestContext()->reqTimeoutDuration.CalcRemainingTime()),
+        "validate worker state failed");
+    return expireProc_->DS_OC_WRITE_FORWARD(Expire, req, rsp);
+}
+#endif

@@ -59,7 +59,9 @@ WorkerOcServiceDeleteImpl::WorkerOcServiceDeleteImpl(WorkerOcServiceCrudParam &i
 #define DS_OC_REQUEST_TENANT(manager, request, tenant) \
     worker::AuthenticateRequest(manager, request, request.tenant_id(), tenant)
 #define DS_OC_SESSION_TENANT(manager, request, tenant) worker::Authenticate(manager, request, tenant)
+#define DS_OC_DELETE_ENTRY_BODY
 #include "datasystem/worker/object_cache/service/worker_oc_service_delete_body.inc"
+#undef DS_OC_DELETE_ENTRY_BODY
 #undef DS_OC_SESSION_TENANT
 #undef DS_OC_REQUEST_TENANT
 #undef DS_OC_PROC_FORWARD
@@ -196,6 +198,19 @@ Status WorkerOcServiceDeleteImpl::DeleteObjectFromNotification(const std::string
     }
     return Status::OK();
 }
+
+#define DS_OC_PROC_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_OC_PROC_FORWARD(name, ...) name(__VA_ARGS__)
+#define DS_OC_REQUEST_TENANT(manager, request, tenant) \
+    worker::AuthenticateRequest(manager, request, request.tenant_id(), tenant)
+#define DS_OC_SESSION_TENANT(manager, request, tenant) worker::Authenticate(manager, request, tenant)
+#define DS_OC_DELETE_IMPL_BODY
+#include "datasystem/worker/object_cache/service/worker_oc_service_delete_body.inc"
+#undef DS_OC_DELETE_IMPL_BODY
+#undef DS_OC_SESSION_TENANT
+#undef DS_OC_REQUEST_TENANT
+#undef DS_OC_PROC_FORWARD
+#undef DS_OC_PROC_ENTRY
 
 Status WorkerOcServiceDeleteImpl::DeleteAllCopyWithLock(const std::vector<std::string> &objectKeys,
                                                         std::vector<std::string> &failedObjectKeys,

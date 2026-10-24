@@ -11,6 +11,7 @@
  * limitations under the License.
  */
 
+#ifdef DS_OC_DELETE_ENTRY_BODY
 Status WorkerOcServiceDeleteImpl::DS_OC_PROC_ENTRY(DeleteAllCopy, const DeleteAllCopyReqPb &req, DeleteAllCopyRspPb &resp)
 {
     ScopedRequestContext ctx;
@@ -27,6 +28,9 @@ Status WorkerOcServiceDeleteImpl::DS_OC_PROC_ENTRY(DeleteAllCopy, const DeleteAl
     return rc;
 }
 
+#endif
+
+#ifdef DS_OC_DELETE_IMPL_BODY
 Status WorkerOcServiceDeleteImpl::DS_OC_PROC_ENTRY(DeleteAllCopyImpl, const DeleteAllCopyReqPb &req, DeleteAllCopyRspPb &resp,
                                                     uint64_t &deletedSize)
 {
@@ -66,3 +70,5 @@ Status WorkerOcServiceDeleteImpl::DS_OC_PROC_ENTRY(DeleteAllCopyImpl, const Dele
     }
     return Status::OK();
 }
+
+#endif

@@ -2472,12 +2472,24 @@ TEST_F(WorkerOcServiceImplTest, RpcWriteTenantAdmissionKeepsTheOriginalRecoveryG
     const RpcRequestProof missing;
     worker::RpcTenantResolver resolver(missing);
     size_t authenticated = 0;
+    size_t deviceDeletes = 0;
     BINEXPECT_CALL(&WorkerOCServiceImpl::VerifyClientWriteAdmission, (_))
         .WillRepeatedly([](bool) { return Status::OK(); });
     BINEXPECT_CALL(&WorkerOCServiceImpl::ValidateWorkerStateForRequest, (_, _))
         .WillRepeatedly([this](BthreadReadGuard &guard, int) {
             guard.Assign(&impl_->reconFlag_);
             EXPECT_TRUE(guard.TryLockIfUnlocked());
+            return Status::OK();
+        });
+    BINEXPECT_CALL(&WorkerOCServiceImpl::ValidateWorkerState, (_, _))
+        .WillRepeatedly([this](BthreadReadGuard &guard, int) {
+            guard.Assign(&impl_->reconFlag_);
+            EXPECT_TRUE(guard.TryLockIfUnlocked());
+            return Status::OK();
+        });
+    BINEXPECT_CALL(&WorkerOCServiceImpl::DeleteDevObjects, (_, _))
+        .WillRepeatedly([&deviceDeletes](const DeleteAllCopyReqPb &, DeleteAllCopyRspPb &) {
+            ++deviceDeletes;
             return Status::OK();
         });
     BINEXPECT_CALL(&worker::ClientManager::GetClientInfo, (_))
@@ -2520,11 +2532,60 @@ TEST_F(WorkerOcServiceImplTest, RpcWriteTenantAdmissionKeepsTheOriginalRecoveryG
         rc = useRpc ? impl_->MultiPublishWithTenantResolver(publish, published, {}, resolver)
                     : impl_->MultiPublish(publish, published, {});
         EXPECT_EQ(rc.GetCode(), K_CLIENT_WORKER_DISCONNECT);
+        {
+            BthreadWriteGuard exclusive;
+            exclusive.Assign(&impl_->reconFlag_);
+            EXPECT_TRUE(exclusive.TryLockIfUnlocked());
+        }
+        auto expectMissing = [this, &resolver, useRpc](auto &req, auto &rsp, auto ordinary, auto rpcEntry) {
+            req.set_client_id("test-only-missing-write-client");
+            auto status = useRpc ? (impl_.get()->*rpcEntry)(req, rsp, resolver)
+                                 : (impl_.get()->*ordinary)(req, rsp);
+            EXPECT_EQ(status.GetCode(), K_CLIENT_WORKER_DISCONNECT);
+            BthreadWriteGuard exclusive;
+            exclusive.Assign(&impl_->reconFlag_);
+            EXPECT_TRUE(exclusive.TryLockIfUnlocked());
+        };
+        DeleteAllCopyReqPb deletion;
+        DeleteAllCopyRspPb deleted;
+        expectMissing(deletion, deleted, &WorkerOCServiceImpl::DeleteAllCopy,
+                      &WorkerOCServiceImpl::DeleteAllCopyWithTenantResolver);
+        deletion.set_are_device_objects(true);
+        rc = useRpc ? impl_->DeleteAllCopyWithTenantResolver(deletion, deleted, resolver)
+                    : impl_->DeleteAllCopy(deletion, deleted);
+        EXPECT_TRUE(rc.IsOk());
+        GIncreaseReqPb increase;
+        GIncreaseRspPb increased;
+        expectMissing(increase, increased, &WorkerOCServiceImpl::GIncreaseRef,
+                      &WorkerOCServiceImpl::GIncreaseRefWithTenantResolver);
+        GDecreaseReqPb decrease;
+        GDecreaseRspPb decreased;
+        expectMissing(decrease, decreased, &WorkerOCServiceImpl::GDecreaseRef,
+                      &WorkerOCServiceImpl::GDecreaseRefWithTenantResolver);
+        ReleaseGRefsReqPb release;
+        ReleaseGRefsRspPb released;
+        expectMissing(release, released, &WorkerOCServiceImpl::ReleaseGRefs,
+                      &WorkerOCServiceImpl::ReleaseGRefsWithTenantResolver);
+        QueryGlobalRefNumReqPb query;
+        QueryGlobalRefNumRspCollectionPb queried;
+        expectMissing(query, queried, &WorkerOCServiceImpl::QueryGlobalRefNum,
+                      &WorkerOCServiceImpl::QueryGlobalRefNumWithTenantResolver);
+        ExpireReqPb expiration;
+        ExpireRspPb expired;
+        expectMissing(expiration, expired, &WorkerOCServiceImpl::Expire,
+                      &WorkerOCServiceImpl::ExpireWithTenantResolver);
+        PublishReqPb single;
+        PublishRspPb committed;
+        single.set_client_id(request.client_id());
+        rc = useRpc ? impl_->PublishWithTenantResolver(single, committed, {}, resolver)
+                    : impl_->Publish(single, committed, {});
+        EXPECT_EQ(rc.GetCode(), K_CLIENT_WORKER_DISCONNECT);
         BthreadWriteGuard exclusive;
         exclusive.Assign(&impl_->reconFlag_);
         EXPECT_TRUE(exclusive.TryLockIfUnlocked());
     }
-    EXPECT_EQ(authenticated, 6u);
+    EXPECT_EQ(authenticated, 20u);
+    EXPECT_EQ(deviceDeletes, 2u);
 }
 
 TEST_F(WorkerOcServiceImplTest, RpcCrudTenantResolutionPrecedesObjectAndRoutingWork)
@@ -2544,7 +2605,9 @@ TEST_F(WorkerOcServiceImplTest, RpcCrudTenantResolutionPrecedesObjectAndRoutingW
         auto rpc = (handler.*authenticated)(request, response, resolver);
         EXPECT_EQ(original.GetCode(), K_CLIENT_WORKER_DISCONNECT);
         EXPECT_EQ(rpc.GetCode(), original.GetCode());
-        EXPECT_EQ(rpc.GetMsg(), original.GetMsg());
+        const auto reason = "The client id (" + request.client_id() + ") does not exist.";
+        EXPECT_NE(original.GetMsg().find(reason), std::string::npos);
+        EXPECT_NE(rpc.GetMsg().find(reason), std::string::npos);
     };
     ScopedRequestContext context;
     GetRequestContext()->reqTimeoutDuration.Init(1000);
