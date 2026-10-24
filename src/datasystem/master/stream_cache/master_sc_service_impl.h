@@ -35,6 +35,7 @@
 #include "datasystem/stream/stream_config.h"
 
 namespace datasystem {
+struct RpcRequestProof;
 class MetadataManagerHolder;
 
 namespace master {
@@ -85,6 +86,10 @@ public:
     Status CreateProducer(
         std::shared_ptr<ServerUnaryWriterReader<CreateProducerRspPb, CreateProducerReqPb>> serverApi) override;
 
+    Status CreateProducerWithRpcAuth(
+        std::shared_ptr<ServerUnaryWriterReader<CreateProducerRspPb, CreateProducerReqPb>> serverApi,
+        const RpcRequestProof &proof);
+
     /**
      * @brief The real work of the CreateProducer is started in this function.
      * @param[in] serverApi Used to read request from rpc client and write response to client. nullptr can be passed
@@ -97,6 +102,11 @@ public:
         const std::shared_ptr<ServerUnaryWriterReader<CreateProducerRspPb, CreateProducerReqPb>> &serverApi,
         const CreateProducerReqPb &req, CreateProducerRspPb &rsp);
 
+    Status CreateProducerImplWithRpcAuth(
+        const std::shared_ptr<ServerUnaryWriterReader<CreateProducerRspPb, CreateProducerReqPb>> &serverApi,
+        const CreateProducerReqPb &req, CreateProducerRspPb &rsp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Close a producer, force flushing and page seal, unregister a publisher to a stream.
      * Similar to worker::CloseProducer. This is a wrapper version that will redirect the call to the
@@ -106,6 +116,10 @@ public:
      */
     Status CloseProducer(
         std::shared_ptr<ServerUnaryWriterReader<CloseProducerRspPb, CloseProducerReqPb>> serverApi) override;
+
+    Status CloseProducerWithRpcAuth(
+        std::shared_ptr<ServerUnaryWriterReader<CloseProducerRspPb, CloseProducerReqPb>> serverApi,
+        const RpcRequestProof &proof);
 
     /**
      * @brief The real work of the CloseProducer is started in this function.
@@ -119,6 +133,11 @@ public:
         const std::shared_ptr<ServerUnaryWriterReader<CloseProducerRspPb, CloseProducerReqPb>> &serverApi,
         const CloseProducerReqPb &req, CloseProducerRspPb &rsp);
 
+    Status CloseProducerImplWithRpcAuth(
+        const std::shared_ptr<ServerUnaryWriterReader<CloseProducerRspPb, CloseProducerReqPb>> &serverApi,
+        const CloseProducerReqPb &req, CloseProducerRspPb &rsp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Subscribe to a stream, using a subscription name, i.e., register a consumer to a subscription.
      * Similar to worker::Subscribe. This is a wrapper version that will redirect the call to the SubscribeImpl()
@@ -127,6 +146,10 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status Subscribe(std::shared_ptr<ServerUnaryWriterReader<SubscribeRspPb, SubscribeReqPb>> serverApi) override;
+
+    Status SubscribeWithRpcAuth(
+        std::shared_ptr<ServerUnaryWriterReader<SubscribeRspPb, SubscribeReqPb>> serverApi,
+        const RpcRequestProof &proof);
 
     /**
      * @brief The real work for the Subscribe is started in this function.
@@ -139,6 +162,11 @@ public:
     Status SubscribeImpl(const std::shared_ptr<ServerUnaryWriterReader<SubscribeRspPb, SubscribeReqPb>> &serverApi,
                          const SubscribeReqPb &req, SubscribeRspPb &rsp);
 
+    Status SubscribeImplWithRpcAuth(
+        const std::shared_ptr<ServerUnaryWriterReader<SubscribeRspPb, SubscribeReqPb>> &serverApi,
+                         const SubscribeReqPb &req, SubscribeRspPb &rsp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Close a consumer, trigger subscription cursor change and unregister a subscribed consumer to a stream.
      * Similar to worker::CloseConsumer. This is a wrapper version that will redirect the call to the
@@ -148,6 +176,10 @@ public:
      */
     Status CloseConsumer(
         std::shared_ptr<ServerUnaryWriterReader<CloseConsumerRspPb, CloseConsumerReqPb>> serverApi) override;
+
+    Status CloseConsumerWithRpcAuth(
+        std::shared_ptr<ServerUnaryWriterReader<CloseConsumerRspPb, CloseConsumerReqPb>> serverApi,
+        const RpcRequestProof &proof);
 
     /**
      * @brief The real work of the CloseConsumer is started in this function.
@@ -161,6 +193,11 @@ public:
         const std::shared_ptr<ServerUnaryWriterReader<CloseConsumerRspPb, CloseConsumerReqPb>> &serverApi,
         const CloseConsumerReqPb &req, CloseConsumerRspPb &rsp);
 
+    Status CloseConsumerImplWithRpcAuth(
+        const std::shared_ptr<ServerUnaryWriterReader<CloseConsumerRspPb, CloseConsumerReqPb>> &serverApi,
+        const CloseConsumerReqPb &req, CloseConsumerRspPb &rsp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Delete a stream.
      * @param[in] req The rpc request protobuf.
@@ -168,6 +205,10 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status DeleteStream(const DeleteStreamReqPb &req, DeleteStreamRspPb &rsp) override;
+
+    Status DeleteStreamWithRpcAuth(
+        const DeleteStreamReqPb &req, DeleteStreamRspPb &rsp,
+        const RpcRequestProof &proof);
 
     /**
      * @brief Query global producers for a stream.
@@ -177,6 +218,10 @@ public:
      */
     Status QueryGlobalProducersNum(const QueryGlobalNumReqPb &req, QueryGlobalNumRsqPb &rsp) override;
 
+    Status QueryGlobalProducersNumWithRpcAuth(
+        const QueryGlobalNumReqPb &req, QueryGlobalNumRsqPb &rsp,
+        const RpcRequestProof &proof);
+
     /**
      * @brief Query global consumers for a stream.
      * @param[in] req The rpc request protobuf.
@@ -184,6 +229,10 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status QueryGlobalConsumersNum(const QueryGlobalNumReqPb &req, QueryGlobalNumRsqPb &rsp) override;
+
+    Status QueryGlobalConsumersNumWithRpcAuth(
+        const QueryGlobalNumReqPb &req, QueryGlobalNumRsqPb &rsp,
+        const RpcRequestProof &proof);
 
     /**
      * @brief Check metadata when master starts
@@ -198,6 +247,10 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status MigrateSCMetadata(const MigrateSCMetadataReqPb &req, MigrateSCMetadataRspPb &rsp) override;
+
+    Status MigrateSCMetadataWithRpcAuth(
+        const MigrateSCMetadataReqPb &req, MigrateSCMetadataRspPb &rsp,
+        const RpcRequestProof &proof);
 
 protected:
 

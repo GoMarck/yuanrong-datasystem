@@ -22,6 +22,7 @@
 #include <type_traits>
 
 #include <gtest/gtest.h>
+#include <brpc/server.h>
 
 #include "tests/common/binmock/binmock.h"
 #include "datasystem/cluster/membership/membership_endpoint_view.h"
@@ -33,6 +34,8 @@
 #include "datasystem/common/util/thread_pool.h"
 #include "datasystem/common/util/timer.h"
 #include "datasystem/master/metadata_manager_holder.h"
+#include "datasystem/master/stream_cache/master_sc_rpc_dispatcher.h"
+#include "datasystem/protos/master_stream.brpc.auth.pb.h"
 #include "datasystem/protos/master_object.brpc.auth.pb.h"
 #define private public
 #include "datasystem/master/object_cache/master_oc_service_impl.h"
@@ -116,6 +119,109 @@ TEST_F(MasterRpcAdmissionTest, KeepsMetadataAvailabilityAndReadBeforeAuthenticat
         ServerUnaryWriterReader<master::DeleteAllCopyMetaRspPb, master::DeleteAllCopyMetaReqPb>>, const RpcRequestProof &);
     read(erase, erased, static_cast<Delete>(&master::MasterOCServiceImpl::DeleteAllCopyMeta),
          static_cast<DeleteAuth>(&master::MasterOCServiceImpl::DeleteAllCopyMetaWithRpcAuth));
+}
+
+TEST_F(MasterRpcAdmissionTest, ScMasterKeepsFirstRequestAndMigrationAuthenticationBoundaries)
+{
+    master::MasterSCServiceImpl service(HostPort(), manager_, &holder_, membership_, "", false, false);
+    master::MasterSCServiceRpcDispatcher dispatcher(service);
+    master::MasterSCServiceBrpcAuthAdapter<master::MasterSCServiceRpcDispatcher> adapter(dispatcher);
+    EXPECT_EQ(adapter.GetDescriptor()->method_count(), 8);
+    const RpcRequestProof missing;
+    auto read = [&](auto &request, auto &response, auto ordinary, auto authenticated) {
+        using Request = std::decay_t<decltype(request)>;
+        using Response = std::decay_t<decltype(response)>;
+        for (bool supplied : {false, true}) {
+            for (bool useRpc : {false, true}) {
+                brpc::Controller controller;
+                auto api = std::make_shared<BrpcServerUnaryWriterReader<Response, Request>>(
+                    &controller, supplied ? &request : nullptr, &response, nullptr, "ScMasterAdmission");
+                const auto rc = useRpc ? (service.*authenticated)(api, missing) : (service.*ordinary)(api);
+                EXPECT_EQ(rc.GetCode(), supplied ? K_NOT_AUTHORIZED : K_RUNTIME_ERROR) << rc.ToString();
+            }
+        }
+    };
+    master::CreateProducerReqPb producer;
+    master::CreateProducerRspPb produced;
+    read(producer, produced, &master::MasterSCServiceImpl::CreateProducer,
+         &master::MasterSCServiceImpl::CreateProducerWithRpcAuth);
+    master::CloseProducerReqPb close;
+    master::CloseProducerRspPb closed;
+    read(close, closed, &master::MasterSCServiceImpl::CloseProducer,
+         &master::MasterSCServiceImpl::CloseProducerWithRpcAuth);
+    master::SubscribeReqPb subscribe;
+    master::SubscribeRspPb subscribed;
+    read(subscribe, subscribed, &master::MasterSCServiceImpl::Subscribe,
+         &master::MasterSCServiceImpl::SubscribeWithRpcAuth);
+    master::CloseConsumerReqPb consumer;
+    master::CloseConsumerRspPb consumed;
+    read(consumer, consumed, &master::MasterSCServiceImpl::CloseConsumer,
+         &master::MasterSCServiceImpl::CloseConsumerWithRpcAuth);
+    master::MigrateSCMetadataReqPb migration;
+    migration.set_topology_version(1);
+    migration.add_stream_metas()->add_notifications()->set_id("test-only-notification");
+    master::MigrateSCMetadataRspPb migrated;
+    EXPECT_EQ(service.MigrateSCMetadata(migration, migrated).GetCode(), K_NOT_AUTHORIZED);
+    EXPECT_EQ(service.MigrateSCMetadataWithRpcAuth(migration, migrated, missing).GetCode(), K_NOT_AUTHORIZED);
+    auto projected = migration;
+    projected.mutable_stream_metas(0)->clear_notifications();
+    ASSERT_TRUE(provider_.GenerateSignature(projected).IsOk());
+    migration.set_timestamp(projected.timestamp());
+    migration.set_signature(projected.signature());
+    migration.set_access_key(projected.access_key());
+    EXPECT_EQ(service.MigrateSCMetadata(migration, migrated).GetCode(), K_INVALID);
+    EXPECT_EQ(service.MigrateSCMetadataWithRpcAuth(migration, migrated, proof_).GetCode(), K_INVALID);
+
+    ASSERT_TRUE(RegisterRpcAuthCapture().IsOk());
+    RpcAuthDataFactory factory;
+    brpc::Server server;
+    ASSERT_EQ(server.AddService(&adapter, brpc::SERVER_DOESNT_OWN_SERVICE), 0);
+    brpc::ServerOptions options;
+    options.session_local_data_factory = &factory;
+    ASSERT_EQ(server.Start("127.0.0.1:0", &options), 0);
+    Raii stop([&server] { server.Stop(0); server.Join(); });
+    const auto *plain = master::MigrateSCMetadataReqPb::descriptor()->file()->FindServiceByName("MasterSCService");
+    ASSERT_NE(plain, nullptr);
+    std::shared_ptr<const RpcMethodMap> methods;
+    ASSERT_TRUE(RpcMethodMap::Create({{plain, master::MasterSCServiceAuth::descriptor()}}, methods).IsOk());
+    auto provider = std::make_shared<Signature>(key_.accessKey, key_.secretKey);
+    BrpcChannelConfig config;
+    config.endpoint = butil::endpoint2str(server.listen_address()).c_str();
+    config.timeout_ms = 1000;
+    config.max_retry = 0;
+    std::unique_ptr<brpc::Channel> channel;
+    ASSERT_TRUE(CreateBrpcAuthChannel(config, {provider, methods}, channel).IsOk());
+    brpc::Controller controller;
+    channel->CallMethod(plain->FindMethodByName("MigrateSCMetadata"), &controller, &migration, &migrated, nullptr);
+    ASSERT_TRUE(controller.Failed());
+    EXPECT_NE(controller.ErrorText().find("Incomplete topology migration RPC fence"), std::string::npos);
+
+    const auto timestamp = static_cast<uint64_t>(GetSystemClockTimeStampUs());
+    butil::IOBuf originalBytes;
+    originalBytes.append(migration.SerializeAsString());
+    AkSkDigest digest{};
+    const auto *method = plain->FindMethodByName("MigrateSCMetadata");
+    ASSERT_TRUE(ComputeRpcRequestDigest(*method, timestamp, originalBytes, digest).IsOk());
+    std::string signature;
+    ASSERT_TRUE(Signature::GetSignatureFromDigest(key_, digest, signature).IsOk());
+    auto native = BrpcChannelFactory::Create(config);
+    ASSERT_NE(native, nullptr);
+    auto callOriginalSignature = [&](const std::string &expectedReason) {
+        brpc::Controller call;
+        call.set_request_checksum_type(RPC_AUTH_CHECKSUM_TYPE);
+        auto &fields = *call.request_user_fields();
+        fields["ds.auth.ak"] = key_.accessKey;
+        fields["ds.auth.ts"] = std::to_string(timestamp);
+        fields["ds.auth.sig"] = signature;
+        native->CallMethod(master::MasterSCServiceAuth::descriptor()->FindMethodByName("MigrateSCMetadata"),
+                           &call, &migration, &migrated, nullptr);
+        EXPECT_TRUE(call.Failed());
+        EXPECT_NE(call.ErrorText().find(expectedReason), std::string::npos) << call.ErrorText();
+    };
+    migration.mutable_stream_metas(0)->mutable_notifications(0)->set_id("test-only-altered-notification");
+    callOriginalSignature("Incomplete topology migration RPC fence");
+    migration.set_source_addr("test-only-altered-source");
+    callOriginalSignature("AK/SK authorized failed");
 }
 
 TEST_F(MasterRpcAdmissionTest, QueuedReconciliationOwnsProofAndVerifiesOnlyWhenDequeued)

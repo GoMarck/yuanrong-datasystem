@@ -1,6 +1,7 @@
 add_subdirectory(store)
 set(MASTER_SC_SRCS
         master_sc_service_impl.cpp
+        master_sc_service_rpc.cpp
         master_worker_sc_api.cpp
         rpc_session_manager.cpp
         stream_metadata.cpp

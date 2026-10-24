@@ -40,11 +40,15 @@ ds_cc_library(
     name = "master_sc_service_impl",
     srcs = [
         "master_sc_service_impl.cpp",
+        "master_sc_service_rpc.cpp",
     ],
     hdrs = [
         "master_sc_service_impl.h",
+        "master_sc_service_body.inc",
+        "master_sc_rpc_dispatcher.h",
     ],
     deps = [
+        "//src/datasystem/common/rpc:brpc_auth",
         "//src/datasystem/cluster:cluster_topology",
         ":master_worker_sc_api_header",
         ":rpc_session_manager",

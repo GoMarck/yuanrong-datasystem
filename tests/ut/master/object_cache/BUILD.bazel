@@ -201,6 +201,7 @@ ds_cc_test(
     srcs = ["master_rpc_admission_test.cpp"],
     linkstatic = True,
     deps = [
+        "//src/datasystem/master/stream_cache:master_sc_service_impl",
         "//src/datasystem/cluster:cluster_topology",
         "//src/datasystem/common/ak_sk:ak_sk_manager",
         "//src/datasystem/common/rpc:brpc_auth",
