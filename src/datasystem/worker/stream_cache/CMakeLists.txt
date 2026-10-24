@@ -9,8 +9,11 @@ set(WORKER_SC_SRCS
         producer.cpp
         remote_worker_manager.cpp
         client_worker_sc_service_impl.cpp
+        client_worker_sc_service_rpc.cpp
         master_worker_sc_service_impl.cpp
+        master_worker_sc_service_rpc.cpp
         worker_worker_sc_service_impl.cpp
+        worker_worker_sc_service_rpc.cpp
         buffer_pool.cpp
         stream_data_pool.cpp
         usage_monitor.cpp

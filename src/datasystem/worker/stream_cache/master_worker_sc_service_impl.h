@@ -27,6 +27,7 @@
 
 namespace datasystem {
 namespace worker {
+class RpcTenantResolver;
 namespace stream_cache {
 class MasterWorkerSCServiceImpl : public MasterWorkerSCService, public IMasterWorkerSCService {
 public:
@@ -56,6 +57,10 @@ public:
      */
     Status SyncPubNode(const SyncPubNodeReqPb &req, SyncPubNodeRspPb &rsp) override;
 
+    Status SyncPubNodeWithTenantResolver(
+        const SyncPubNodeReqPb &req, SyncPubNodeRspPb &rsp,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Synchronize all remote consumer node for target stream to current worker node.
      * Invoked when first producer occurs on current node.
@@ -65,6 +70,10 @@ public:
      */
     Status SyncConsumerNode(const SyncConsumerNodeReqPb &req, SyncConsumerNodeRspPb &rsp) override;
 
+    Status SyncConsumerNodeWithTenantResolver(
+        const SyncConsumerNodeReqPb &req, SyncConsumerNodeRspPb &rsp,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Clear all remote pub node for target stream on current worker node.
      * Invoked when last consumer disappears within current node.
@@ -73,6 +82,10 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status ClearAllRemotePub(const ClearRemoteInfoReqPb &req, ClearRemoteInfoRspPb &rsp) override;
+
+    Status ClearAllRemotePubWithTenantResolver(
+        const ClearRemoteInfoReqPb &req, ClearRemoteInfoRspPb &rsp,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Clear all remote consumer node for target stream on current worker node.
@@ -91,6 +104,10 @@ public:
      */
     Status DelStreamContext(const DelStreamContextReqPb &req, DelStreamContextRspPb &rsp) override;
 
+    Status DelStreamContextWithTenantResolver(
+        const DelStreamContextReqPb &req, DelStreamContextRspPb &rsp,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Query meta data for all streams from worker.
      * @param[in, out] stream The server reader writer session.
@@ -98,6 +115,10 @@ public:
      */
     Status QueryMetadata(
         std::shared_ptr<ServerWriterReader<GetStreamMetadataRspPb, GetMetadataAllStreamReqPb>> stream) override;
+
+    Status QueryMetadataWithTenantResolver(
+        std::shared_ptr<ServerWriterReader<GetStreamMetadataRspPb, GetMetadataAllStreamReqPb>> stream,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Query meta data from worker. This version simply populates the rsp for all the streams for to a master.
@@ -107,6 +128,10 @@ public:
      */
     Status QueryMetadata(const GetMetadataAllStreamReqPb &req, GetMetadataAllStreamRspPb &rsp);
 
+    Status QueryMetadataWithTenantResolver(
+        const GetMetadataAllStreamReqPb &req, GetMetadataAllStreamRspPb &rsp,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Master notify worker to update Topo.
      * @param[in] req The rpc request protobuf.
@@ -114,6 +139,10 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status UpdateTopoNotification(const UpdateTopoNotificationReq &req, UpdateTopoNotificationRsp &rsp) override;
+
+    Status UpdateTopoNotificationWithTenantResolver(
+        const UpdateTopoNotificationReq &req, UpdateTopoNotificationRsp &rsp,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Get log prefix

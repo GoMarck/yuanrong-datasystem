@@ -74,12 +74,16 @@ ds_cc_library(
     srcs = [
         "stream_manager.cpp",
         "worker_worker_sc_service_impl.cpp",
+        "worker_worker_sc_service_rpc.cpp",
     ],
     hdrs = [
         "stream_manager.h",
         "worker_worker_sc_service_impl.h",
+        "worker_worker_sc_service_body.inc",
+        "worker_worker_sc_rpc_dispatcher.h",
     ],
     deps = [
+        "//src/datasystem/worker:rpc_tenant_resolver",
         "//src/datasystem/common/ak_sk:ak_sk_manager",
         "//src/datasystem/common/eventloop:common_event_loop",
         "//src/datasystem/common/iam:common_iam",
@@ -270,11 +274,15 @@ ds_cc_library(
     name = "master_worker_sc_service_impl",
     srcs = [
         "master_worker_sc_service_impl.cpp",
+        "master_worker_sc_service_rpc.cpp",
     ],
     hdrs = [
         "master_worker_sc_service_impl.h",
+        "master_worker_sc_service_body.inc",
+        "master_worker_sc_rpc_dispatcher.h",
     ],
     deps = [
+        "//src/datasystem/worker:rpc_tenant_resolver",
         "//src/datasystem/common/ak_sk:ak_sk_manager",
         "//src/datasystem/common/log:common_log",
         "//src/datasystem/common/stream_cache:consumer_meta",
@@ -346,11 +354,15 @@ ds_cc_library(
     name = "client_worker_sc_service_impl",
     srcs = [
         "client_worker_sc_service_impl.cpp",
+        "client_worker_sc_service_rpc.cpp",
     ],
     hdrs = [
         "client_worker_sc_service_impl.h",
+        "client_worker_sc_service_body.inc",
+        "client_worker_sc_rpc_dispatcher.h",
     ],
     deps = [
+        "//src/datasystem/worker:rpc_tenant_resolver",
         "//src/datasystem/cluster:cluster_topology",
         "//src/datasystem/worker:metadata_route_resolver",
         "client_worker_sc_service_header",
@@ -425,11 +437,15 @@ ds_cc_library(
     name = "worker_worker_sc_service_impl_backup",
     srcs = [
         "worker_worker_sc_service_impl.cpp",
+        "worker_worker_sc_service_rpc.cpp",
     ],
     hdrs = [
         "worker_worker_sc_service_impl.h",
+        "worker_worker_sc_service_body.inc",
+        "worker_worker_sc_rpc_dispatcher.h",
     ],
     deps = [
+        "//src/datasystem/worker:rpc_tenant_resolver",
         "//src/datasystem/common/ak_sk:ak_sk_manager",
         "//src/datasystem/worker/stream_cache:buffer_pool",
         "//src/datasystem/worker/stream_cache:client_worker_sc_service_impl",

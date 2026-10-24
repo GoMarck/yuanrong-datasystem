@@ -31,6 +31,7 @@
 
 namespace datasystem {
 namespace worker {
+class RpcTenantResolver;
 namespace stream_cache {
 struct RecvElementView : public BaseBufferData {
     std::string streamName_;
@@ -72,6 +73,10 @@ public:
      */
     Status PushElementsCursors(std::shared_ptr<ServerUnaryWriterReader<PushRspPb, PushReqPb>> serverApi) override;
 
+    Status PushElementsCursorsWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<PushRspPb, PushReqPb>> serverApi,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Helper function to handle the pushed elements.
      * @param[in] req The request protobuf.
@@ -88,6 +93,10 @@ public:
      */
     Status PushSharedPageCursors(
         std::shared_ptr<ServerUnaryWriterReader<PushRspPb, SharedPagePushReqPb>> serverApi) override;
+
+    Status PushSharedPageCursorsWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<PushRspPb, SharedPagePushReqPb>> serverApi,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
 
     Status ProcessEndOfStream(const std::shared_ptr<StreamManager> &streamMgr, std::list<BaseData> dataLst,
                               const std::string &streamName, const std::string &workerAddr);

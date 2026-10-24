@@ -702,6 +702,7 @@ ds_cc_test(
 test_suite(
     name = "all_worker_tests",
     tests = [
+        "sc_rpc_admission_test",
         "worker_service_rpc_tenant_test",
         "async_resource_releaser_test",
         "async_updatelocation_test",
@@ -741,5 +742,26 @@ test_suite(
         "worker_worker_peer_state_codec_test",
         "worker_worker_oc_gather_layout_test",
         "worker_worker_oc_api_test",
+    ],
+)
+
+
+ds_cc_test(
+    name = "sc_rpc_admission_test",
+    srcs = ["sc_rpc_admission_test.cpp"],
+    linkstatic = True,
+    deps = [
+        "//src/datasystem/cluster:cluster_topology",
+        "//src/datasystem/common/ak_sk:ak_sk_manager",
+        "//src/datasystem/common/rpc:brpc_auth",
+        "//src/datasystem/common/rpc:brpc_server_unary_writer_reader",
+        "//src/datasystem/worker:authenticate",
+        "//src/datasystem/worker:rpc_tenant_resolver",
+        "//src/datasystem/worker:add_miss_libs_fixme",
+        "//src/datasystem/worker/stream_cache:client_worker_sc_service_impl",
+        "//src/datasystem/worker/stream_cache:master_worker_sc_service_impl",
+        "//src/datasystem/worker/stream_cache:stream_manager",
+        "//tests/common/binmock:binmock",
+        "//tests/ut:ut_common",
     ],
 )

@@ -49,6 +49,7 @@
 
 namespace datasystem {
 namespace worker {
+class RpcTenantResolver;
 namespace stream_cache {
 class MasterWorkerSCServiceImpl;
 class WorkerWorkerSCServiceImpl;
@@ -229,6 +230,10 @@ public:
     Status CreateProducer(
         std::shared_ptr<ServerUnaryWriterReader<CreateProducerRspPb, CreateProducerReqPb>> serverApi) override;
 
+    Status CreateProducerWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<CreateProducerRspPb, CreateProducerReqPb>> serverApi,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Close a producer, force flushing and page seal, unregister a publisher to a stream.
      * @param[in] serverApi Used to read request from client and write response to client.
@@ -237,12 +242,20 @@ public:
     Status CloseProducer(
         std::shared_ptr<ServerUnaryWriterReader<CloseProducerRspPb, CloseProducerReqPb>> serverApi) override;
 
+    Status CloseProducerWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<CloseProducerRspPb, CloseProducerReqPb>> serverApi,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Subscribe to a stream, using a subscription name, i.e., register a consumer to a subscription.
      * @param[in] serverApi Used to read request from client and write response to client.
      * @return K_OK on success; the error code otherwise.
      */
     Status Subscribe(std::shared_ptr<ServerUnaryWriterReader<SubscribeRspPb, SubscribeReqPb>> serverApi) override;
+
+    Status SubscribeWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<SubscribeRspPb, SubscribeReqPb>> serverApi,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Close a consumer, trigger subscription cursor change and unregister a subscribed consumer to a stream.
@@ -252,6 +265,10 @@ public:
     Status CloseConsumer(
         std::shared_ptr<ServerUnaryWriterReader<CloseConsumerRspPb, CloseConsumerReqPb>> serverApi) override;
 
+    Status CloseConsumerWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<CloseConsumerRspPb, CloseConsumerReqPb>> serverApi,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Create a stream page and get its related shared memory meta to perform zero-copy send.
      * @param[in] serverApi Used to read request from client and write response to client.
@@ -260,7 +277,15 @@ public:
     Status CreateShmPage(
         std::shared_ptr<ServerUnaryWriterReader<CreateShmPageRspPb, CreateShmPageReqPb>> serverApi) override;
 
+    Status CreateShmPageWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<CreateShmPageRspPb, CreateShmPageReqPb>> serverApi,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
+
     Status GetDataPage(std::shared_ptr<ServerUnaryWriterReader<GetDataPageRspPb, GetDataPageReqPb>> serverApi) override;
+
+    Status GetDataPageWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<GetDataPageRspPb, GetDataPageReqPb>> serverApi,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
 
     template <typename W, typename R>
     void AsyncSendMemReq(const std::string &namespaceUri);
@@ -276,6 +301,10 @@ public:
      */
     Status DeleteStream(const DeleteStreamReqPb &req, DeleteStreamRspPb &rsp) override;
 
+    Status DeleteStreamWithTenantResolver(
+        const DeleteStreamReqPb &req, DeleteStreamRspPb &rsp,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Query producer count in global scope for one stream
      * @param[in] req The rpc request protobuf
@@ -284,6 +313,10 @@ public:
      */
     Status QueryGlobalProducersNum(const QueryGlobalNumReqPb &req, QueryGlobalNumRsqPb &rsp) override;
 
+    Status QueryGlobalProducersNumWithTenantResolver(
+        const QueryGlobalNumReqPb &req, QueryGlobalNumRsqPb &rsp,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Query consumer count in global scope for one stream
      * @param[in] req The rpc request protobuf
@@ -291,6 +324,10 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status QueryGlobalConsumersNum(const QueryGlobalNumReqPb &req, QueryGlobalNumRsqPb &rsp) override;
+
+    Status QueryGlobalConsumersNumWithTenantResolver(
+        const QueryGlobalNumReqPb &req, QueryGlobalNumRsqPb &rsp,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Closes all of the producers and consumers for a given client when client crashes
@@ -355,6 +392,10 @@ public:
     Status UnblockProducer(
         std::shared_ptr<ServerUnaryWriterReader<UnblockProducerRspPb, UnblockProducerReqPb>> serverApi) override;
 
+    Status UnblockProducerWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<UnblockProducerRspPb, UnblockProducerReqPb>> serverApi,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Blocks producer sending stream
      * @param[in] serverApi The api used to read request from client and write response to client.
@@ -362,6 +403,10 @@ public:
      */
     Status BlockProducer(
         std::shared_ptr<ServerUnaryWriterReader<BlockProducerRspPb, BlockProducerReqPb>> serverApi) override;
+
+    Status BlockProducerWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<BlockProducerRspPb, BlockProducerReqPb>> serverApi,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Get a pointer to the threadpool
@@ -404,6 +449,10 @@ public:
      */
     Status GetLastAppendCursor(const LastAppendCursorReqPb &req, LastAppendCursorRspPb &rsp) override;
 
+    Status GetLastAppendCursorWithTenantResolver(
+        const LastAppendCursorReqPb &req, LastAppendCursorRspPb &rsp,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
+
     /**
      * @brief The main delete stream driver is DeleteStream() call in the worker. This call DeleteStreamContext() is an
      * internal call when the master sends a delete to the worker and MasterWorkerSCServiceImpl wants to delete the
@@ -431,6 +480,11 @@ public:
     Status ResetStreams(std::shared_ptr<ServerUnaryWriterReader<ResetOrResumeStreamsRspPb, ResetOrResumeStreamsReqPb>>
                             serverApi) override;
 
+    Status ResetStreamsWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<ResetOrResumeStreamsRspPb, ResetOrResumeStreamsReqPb>>
+                            serverApi,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Resume streams to allow regular data flow.
      * @param[in] serverApi Used to read request from client and write response to client.
@@ -438,6 +492,11 @@ public:
      */
     Status ResumeStreams(std::shared_ptr<ServerUnaryWriterReader<ResetOrResumeStreamsRspPb, ResetOrResumeStreamsReqPb>>
                              serverApi) override;
+
+    Status ResumeStreamsWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<ResetOrResumeStreamsRspPb, ResetOrResumeStreamsReqPb>>
+                             serverApi,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Allocate shared memory for big element insert
@@ -447,6 +506,10 @@ public:
     Status AllocBigShmMemory(
         std::shared_ptr<ServerUnaryWriterReader<CreateLobPageRspPb, CreateLobPageReqPb>> serverApi) override;
 
+    Status AllocBigShmMemoryWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<CreateLobPageRspPb, CreateLobPageReqPb>> serverApi,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Release big element
      * @param[in] serverApi Server stream used to read requests and write responses.
@@ -454,6 +517,10 @@ public:
      */
     Status ReleaseBigShmMemory(
         std::shared_ptr<ServerUnaryWriterReader<ReleaseLobPageRspPb, ReleaseLobPageReqPb>> serverApi) override;
+
+    Status ReleaseBigShmMemoryWithTenantResolver(
+        std::shared_ptr<ServerUnaryWriterReader<ReleaseLobPageRspPb, ReleaseLobPageReqPb>> serverApi,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Setter method for assigning worker-worker service
@@ -976,6 +1043,11 @@ private:
         const CreateProducerReqPb &req, std::shared_ptr<StreamAccessRecorder> recorder,
         std::shared_ptr<ServerUnaryWriterReader<CreateProducerRspPb, CreateProducerReqPb>> serverApi);
 
+    Status CreateProducerInternalWithTenantResolver(
+        const CreateProducerReqPb &req, std::shared_ptr<StreamAccessRecorder> recorder,
+        std::shared_ptr<ServerUnaryWriterReader<CreateProducerRspPb, CreateProducerReqPb>> serverApi,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Close a producer, force flushing and page seal, unregister a publisher to a stream.
      * @param[in] req The request instance.
@@ -987,6 +1059,11 @@ private:
         const CloseProducerReqPb &req, std::shared_ptr<StreamAccessRecorder> recorder,
         std::shared_ptr<ServerUnaryWriterReader<CloseProducerRspPb, CloseProducerReqPb>> serverApi);
 
+    Status CloseProducerInternalWithTenantResolver(
+        const CloseProducerReqPb &req, std::shared_ptr<StreamAccessRecorder> recorder,
+        std::shared_ptr<ServerUnaryWriterReader<CloseProducerRspPb, CloseProducerReqPb>> serverApi,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Subscribe to a stream, using a subscription name, i.e., register a consumer to a subscription.
      * @param[in] req The request instance.
@@ -996,6 +1073,11 @@ private:
      */
     Status SubscribeInternal(const SubscribeReqPb &req, std::shared_ptr<StreamAccessRecorder> recorder,
                              std::shared_ptr<ServerUnaryWriterReader<SubscribeRspPb, SubscribeReqPb>> serverApi);
+
+    Status SubscribeInternalWithTenantResolver(
+        const SubscribeReqPb &req, std::shared_ptr<StreamAccessRecorder> recorder,
+                             std::shared_ptr<ServerUnaryWriterReader<SubscribeRspPb, SubscribeReqPb>> serverApi,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Close a consumer, trigger subscription cursor change and unregister a subscribed consumer to a stream.
@@ -1008,6 +1090,11 @@ private:
         const CloseConsumerReqPb &req, std::shared_ptr<StreamAccessRecorder> recorder,
         std::shared_ptr<ServerUnaryWriterReader<CloseConsumerRspPb, CloseConsumerReqPb>> serverApi);
 
+    Status CloseConsumerInternalWithTenantResolver(
+        const CloseConsumerReqPb &req, std::shared_ptr<StreamAccessRecorder> recorder,
+        std::shared_ptr<ServerUnaryWriterReader<CloseConsumerRspPb, CloseConsumerReqPb>> serverApi,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Delete stream manager and related sessions when it is not used anymore.
      * @param[in] req The rpc request protobuf.
@@ -1015,6 +1102,10 @@ private:
      * @return K_OK on success; the error code otherwise.
      */
     Status DeleteStreamImpl(const DeleteStreamReqPb &req, DeleteStreamRspPb &rsp);
+
+    Status DeleteStreamImplWithTenantResolver(
+        const DeleteStreamReqPb &req, DeleteStreamRspPb &rsp,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
 
     /**
      * @brief Send delete stream request.
@@ -1031,6 +1122,10 @@ private:
      */
     Status QueryGlobalProducersNumImpl(const QueryGlobalNumReqPb &req, QueryGlobalNumRsqPb &rsp);
 
+    Status QueryGlobalProducersNumImplWithTenantResolver(
+        const QueryGlobalNumReqPb &req, QueryGlobalNumRsqPb &rsp,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
+
     /**
      * @brief Query consumer count in global scope for one stream
      * @param[in] req The rpc request protobuf
@@ -1038,6 +1133,10 @@ private:
      * @return K_OK on success; the error code otherwise.
      */
     Status QueryGlobalConsumersNumImpl(const QueryGlobalNumReqPb &req, QueryGlobalNumRsqPb &rsp);
+
+    Status QueryGlobalConsumersNumImplWithTenantResolver(
+        const QueryGlobalNumReqPb &req, QueryGlobalNumRsqPb &rsp,
+        const ::datasystem::worker::RpcTenantResolver &resolver);
 
     Status PostCreateStreamManager(const std::shared_ptr<StreamManager> &streamManager,
                                    const Optional<StreamFields> &streamFields, bool reserveShm);
