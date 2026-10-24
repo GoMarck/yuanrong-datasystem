@@ -153,21 +153,14 @@ Status WorkerServiceImpl::Init()
     return Status::OK();
 }
 
-Status WorkerServiceImpl::GetClientFd(const GetClientFdReqPb &req, GetClientFdRspPb &rsp)
-{
+#define DS_WORKER_RPC_ENTRY(name, ...) name(__VA_ARGS__)
+#define DS_WORKER_RPC_FORWARD(name, ...) name(__VA_ARGS__)
 #define DS_RESOLVE_WORKER_TENANT(manager, request, requested, resolved) \
     AuthenticateRequest(manager, request, requested, resolved)
-#include "datasystem/worker/worker_service_get_client_fd_body.inc"
+#include "datasystem/worker/worker_service_body.inc"
 #undef DS_RESOLVE_WORKER_TENANT
-}
-
-Status WorkerServiceImpl::DisconnectClient(const DisconnectClientReqPb &req, DisconnectClientRspPb &rsp)
-{
-#define DS_RESOLVE_WORKER_TENANT(manager, request, requested, resolved) \
-    AuthenticateRequest(manager, request, requested, resolved)
-#include "datasystem/worker/worker_service_disconnect_client_body.inc"
-#undef DS_RESOLVE_WORKER_TENANT
-}
+#undef DS_WORKER_RPC_FORWARD
+#undef DS_WORKER_RPC_ENTRY
 
 Status WorkerServiceImpl::CheckClientVersion(const std::string &clientVersion)
 {
@@ -202,21 +195,6 @@ const std::string WorkerServiceImpl::GetLocalStandbyWorker()
         return "";
     }
     return standby->identity.address;
-}
-
-Status WorkerServiceImpl::RegisterClient(const RegisterClientReqPb &req, RegisterClientRspPb &rsp)
-{
-#define DS_VALIDATE_REGISTER_CLIENT(request, tenant) ValidateRegisterClientRequest(request, tenant)
-#include "datasystem/worker/worker_service_register_client_body.inc"
-#undef DS_VALIDATE_REGISTER_CLIENT
-}
-
-Status WorkerServiceImpl::ValidateRegisterClientRequest(const RegisterClientReqPb &req, std::string &tenantId) const
-{
-#define DS_RESOLVE_WORKER_TENANT(manager, request, requested, resolved) \
-    AuthenticateRequest(manager, request, requested, resolved)
-#include "datasystem/worker/worker_service_validate_register_client_body.inc"
-#undef DS_RESOLVE_WORKER_TENANT
 }
 
 Status WorkerServiceImpl::ConsumeRegisterClientFd(const RegisterClientReqPb &req)
@@ -311,14 +289,6 @@ void WorkerServiceImpl::PopulateRegisterClientResponse(
 #endif
 }
 
-Status WorkerServiceImpl::Heartbeat(const HeartbeatReqPb &req, HeartbeatRspPb &rsp)
-{
-#define DS_RESOLVE_WORKER_TENANT(manager, request, requested, resolved) \
-    AuthenticateRequest(manager, request, requested, resolved)
-#include "datasystem/worker/worker_service_heartbeat_body.inc"
-#undef DS_RESOLVE_WORKER_TENANT
-}
-
 void WorkerServiceImpl::SetUbHealthSummaryProvider(UbHealthSummaryProvider provider)
 {
     std::lock_guard<bthread::Mutex> lock(ubHealthSummaryProviderMutex_);
@@ -362,14 +332,6 @@ std::set<int> WorkerServiceImpl::GetExpiredFdsForClient(const ClientKey &clientI
     std::set_intersection(expiredFds.begin(), expiredFds.end(), fdsMmapedByClient.begin(), fdsMmapedByClient.end(),
                           std::inserter(intersection, intersection.begin()));
     return intersection;
-}
-
-Status WorkerServiceImpl::GetSocketPath(const GetSocketPathReqPb &req, GetSocketPathRspPb &rsp)
-{
-#define DS_RESOLVE_WORKER_TENANT(manager, request, requested, resolved) \
-    AuthenticateRequest(manager, request, requested, resolved)
-#include "datasystem/worker/worker_service_get_socket_path_body.inc"
-#undef DS_RESOLVE_WORKER_TENANT
 }
 
 void WorkerServiceImpl::CloseExpiredUnixSockFd()

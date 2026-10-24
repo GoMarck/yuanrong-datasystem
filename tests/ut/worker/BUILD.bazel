@@ -410,6 +410,8 @@ ds_cc_test(
         "//src/datasystem/worker:authenticate",
         "//src/datasystem/worker:rpc_tenant_resolver",
         "//src/datasystem/worker:worker_service_impl",
+        "//src/datasystem/worker:worker_oc_server",
+        "//src/datasystem/worker:add_miss_libs_fixme",
         "//tests/common/binmock",
         "//tests/ut:ut_common",
     ],

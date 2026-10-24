@@ -37,58 +37,13 @@ DS_DECLARE_bool(ipc_through_shared_memory);
 
 namespace datasystem {
 namespace worker {
-Status WorkerServiceImpl::GetClientFdWithTenantResolver(
-    const GetClientFdReqPb &req, GetClientFdRspPb &rsp, const RpcTenantResolver &resolver)
-{
+#define DS_WORKER_RPC_ENTRY(name, ...) name##WithTenantResolver(__VA_ARGS__, const RpcTenantResolver &resolver)
+#define DS_WORKER_RPC_FORWARD(name, ...) name##WithTenantResolver(__VA_ARGS__, resolver)
 #define DS_RESOLVE_WORKER_TENANT(manager, request, requested, resolved) \
     resolver.Request(manager, requested, request.token(), resolved)
-#include "datasystem/worker/worker_service_get_client_fd_body.inc"
+#include "datasystem/worker/worker_service_body.inc"
 #undef DS_RESOLVE_WORKER_TENANT
-}
-
-Status WorkerServiceImpl::DisconnectClientWithTenantResolver(
-    const DisconnectClientReqPb &req, DisconnectClientRspPb &rsp, const RpcTenantResolver &resolver)
-{
-#define DS_RESOLVE_WORKER_TENANT(manager, request, requested, resolved) \
-    resolver.Request(manager, requested, request.token(), resolved)
-#include "datasystem/worker/worker_service_disconnect_client_body.inc"
-#undef DS_RESOLVE_WORKER_TENANT
-}
-
-Status WorkerServiceImpl::RegisterClientWithTenantResolver(
-    const RegisterClientReqPb &req, RegisterClientRspPb &rsp, const RpcTenantResolver &resolver)
-{
-#define DS_VALIDATE_REGISTER_CLIENT(request, tenant) \
-    ValidateRegisterClientRequestWithTenantResolver(request, tenant, resolver)
-#include "datasystem/worker/worker_service_register_client_body.inc"
-#undef DS_VALIDATE_REGISTER_CLIENT
-}
-
-Status WorkerServiceImpl::ValidateRegisterClientRequestWithTenantResolver(
-    const RegisterClientReqPb &req, std::string &tenantId, const RpcTenantResolver &resolver) const
-{
-#define DS_RESOLVE_WORKER_TENANT(manager, request, requested, resolved) \
-    resolver.Request(manager, requested, request.token(), resolved)
-#include "datasystem/worker/worker_service_validate_register_client_body.inc"
-#undef DS_RESOLVE_WORKER_TENANT
-}
-
-Status WorkerServiceImpl::HeartbeatWithTenantResolver(
-    const HeartbeatReqPb &req, HeartbeatRspPb &rsp, const RpcTenantResolver &resolver)
-{
-#define DS_RESOLVE_WORKER_TENANT(manager, request, requested, resolved) \
-    resolver.Request(manager, requested, request.token(), resolved)
-#include "datasystem/worker/worker_service_heartbeat_body.inc"
-#undef DS_RESOLVE_WORKER_TENANT
-}
-
-Status WorkerServiceImpl::GetSocketPathWithTenantResolver(
-    const GetSocketPathReqPb &req, GetSocketPathRspPb &rsp, const RpcTenantResolver &resolver)
-{
-#define DS_RESOLVE_WORKER_TENANT(manager, request, requested, resolved) \
-    resolver.Request(manager, requested, request.token(), resolved)
-#include "datasystem/worker/worker_service_get_socket_path_body.inc"
-#undef DS_RESOLVE_WORKER_TENANT
-}
+#undef DS_WORKER_RPC_FORWARD
+#undef DS_WORKER_RPC_ENTRY
 }  // namespace worker
 }  // namespace datasystem
