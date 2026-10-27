@@ -158,7 +158,6 @@ Status WorkerWorkerTransportServiceImpl::QueryUbPortHealth(const QueryUbPortHeal
                                                            QueryUbPortHealthRspPb &rsp)
 {
     RETURN_RUNTIME_ERROR_IF_NULL(akSkManager_);
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(akSkManager_->VerifySignatureAndTimestamp(req), "AK/SK failed.");
     RETURN_RUNTIME_ERROR_IF_NULL(ocClientWorkerSvc_);
     return ocClientWorkerSvc_->QuerySelfUbPortHealth(req, rsp);
 }

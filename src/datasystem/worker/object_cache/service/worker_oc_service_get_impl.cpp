@@ -2811,12 +2811,9 @@ void WorkerOcServiceGetImpl::FillGetObjMetaInfoRspPb(
     }
 }
 
-Status AuthenticateGetMetaUser(AkSkManager *akSkManager, const GetObjMetaInfoReqPb &req)
+Status AuthenticateGetMetaUser(AkSkManager *akSkManager)
 {
-    if (akSkManager->SystemAuthEnabled()) {
-        RETURN_IF_NOT_OK_PRINT_ERROR_MSG(akSkManager->VerifySignatureAndTimestamp(req),
-                                         "AK/SK failed. Only the ak/sk client can check the meta info of objects.");
-    } else {
+    if (!akSkManager->SystemAuthEnabled()) {
         CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(
             !FLAGS_authorization_enable, K_NOT_AUTHORIZED,
             "Only the ak/sk client can check the meta info of objects if tenant authorization is enabled.");
@@ -3045,7 +3042,7 @@ Status WorkerOcServiceGetImpl::GetObjMetaInfo(const GetObjMetaInfoReqPb &req, Ge
 {
     ScopedRequestContext ctx;
     INJECT_POINT("worker.GetObjMetaInfo");
-    RETURN_IF_NOT_OK(AuthenticateGetMetaUser(akSkManager_.get(), req));
+    RETURN_IF_NOT_OK(AuthenticateGetMetaUser(akSkManager_.get()));
     // construct objectKey by the input tenantId
     auto objectKeys = TenantAuthManager::ConstructNamespaceUriWithTenantId(req.tenantid(), req.object_keys());
     Status lastRc;

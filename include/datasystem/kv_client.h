@@ -378,6 +378,8 @@ public:
      * @brief Update aksk for yr iam
      * @param[in] acessKey message for auth certification
      * @param[in] secretKey message for auth certification
+     * Authentication mode is fixed at Init. Enable AK/SK by recreating an initially unauthenticated client.
+     * Nonempty key rotation is supported for clients initialized with complete AK/SK.
      * @return K_OK on success; the error code otherwise.
      */
     Status UpdateAkSk(const std::string accessKey, SensitiveValue secretKey);

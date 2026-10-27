@@ -23,10 +23,11 @@
 #include "datasystem/common/ak_sk/ak_sk_manager.h"
 #include "datasystem/common/util/net_util.h"
 #include "datasystem/common/util/status_helper.h"
+#include "datasystem/protos/perf_posix.irpc.pb.h"
 #include "datasystem/protos/perf_posix.service.rpc.pb.h"
 
 namespace datasystem {
-class PerfServiceImpl : public PerfService {
+class PerfServiceImpl : public PerfService, public IPerfService {
 public:
     /**
      * @brief Create a new GenericServiceImpl object, it is used to define common service of rpc server.
@@ -38,8 +39,8 @@ public:
 
     ~PerfServiceImpl() = default;
 
-    Status GetPerfLog(const datasystem::GetPerfLogReqPb &req, datasystem::GetPerfLogRspPb &rsp);
-    Status ResetPerfLog(const datasystem::ResetPerfLogReqPb &req, datasystem::ResetPerfLogRspPb &rsp);
+    Status GetPerfLog(const datasystem::GetPerfLogReqPb &req, datasystem::GetPerfLogRspPb &rsp) override;
+    Status ResetPerfLog(const datasystem::ResetPerfLogReqPb &req, datasystem::ResetPerfLogRspPb &rsp) override;
 
 private:
     std::shared_ptr<AkSkManager> akSkManager_{ nullptr };

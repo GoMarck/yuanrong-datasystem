@@ -453,6 +453,7 @@ global:
     # https://github.com/openucx/ucx/wiki/UCX-environment-parameters
     ucxTransportLayerSelection: "rc_x"
   akSk:
+    enableRpcAkSk: false
     # The access key used by the system.
     systemAccessKey: ""
     # The secret key used by the system.

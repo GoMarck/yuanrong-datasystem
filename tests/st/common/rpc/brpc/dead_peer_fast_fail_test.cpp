@@ -80,7 +80,7 @@ public:
         hadOldWorkerBinOverride_ = workerBin != nullptr;
         oldWorkerBinOverride_ = hadOldWorkerBinOverride_ ? workerBin : "";
         DS_ASSERT_OK(UseBazelBuiltWorker());
-        signature_ = std::make_unique<Signature>(kAccessKey, kSecretKey);
+        signature_ = std::make_shared<Signature>(kAccessKey, kSecretKey);
         ClusterTest::SetUp();
     }
 
@@ -112,7 +112,7 @@ protected:
             return nullptr;
         }
         auto api = std::make_shared<ClientWorkerRemoteApi>(
-            workerAddr, HeartbeatType::RPC_HEARTBEAT, "", signature_.get());
+            workerAddr, HeartbeatType::RPC_HEARTBEAT, "", signature_);
         rc = api->Init(kRpcBudgetMs, kRpcBudgetMs);
         if (rc.IsError()) {
             ADD_FAILURE() << rc.ToString();
@@ -138,7 +138,7 @@ protected:
 
         auto akSkManager = std::make_shared<AkSkManager>(0);
         akSkManager->SetClientAkSk(kAccessKey, kSecretKey);
-        rc = RpcStubCacheMgr::Instance().Init(kStubCacheNum, localAddr);
+        rc = RpcStubCacheMgr::Instance().Init(kStubCacheNum, localAddr, akSkManager);
         if (rc.IsError()) {
             ADD_FAILURE() << rc.ToString();
             return nullptr;
@@ -155,7 +155,7 @@ protected:
     bool oldUseBrpc_ = true;
     bool hadOldWorkerBinOverride_ = false;
     std::string oldWorkerBinOverride_;
-    std::unique_ptr<Signature> signature_;
+    std::shared_ptr<Signature> signature_;
 };
 
 TEST_F(BrpcDeadPeerFastFailTest, ClientWorkerCreateFastFailsAfterWorkerKilled)

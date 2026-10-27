@@ -18,8 +18,8 @@
  * Description: brpc client-side streaming adapters for single-streaming modes.
  *
  * BrpcClientWriterImpl<W> — client-streaming (stream→unary):
- *   Client writes N messages via brpc::StreamWrite on a StreamCreate'd stream,
- *   closes the stream, then reads a single response from the RPC.
+ *   The first request establishes the stream through the RPC body; later writes
+ *   use the stream. Read ends writes and receives the final response on the stream.
  *
  * BrpcClientReaderImpl<R> — server-streaming (unary→stream):
  *   Client sends a single request via CallMethod, receives N response
@@ -45,240 +45,232 @@
 #include "datasystem/common/rpc/brpc_perf_trace.h"
 #include "datasystem/common/rpc/brpc_status_util.h"
 #include "datasystem/common/rpc/brpc_stream_close_helper.h"
+#include "datasystem/common/rpc/brpc_single_stream.h"
 #include "datasystem/common/rpc/rpc_message.h"
 #include "datasystem/common/rpc/mem_view.h"
 #include "datasystem/utils/status.h"
 
 namespace datasystem {
 
-/**
- * @brief brpc adapter for client-streaming (stream→unary) on the client side.
- *
- * The client creates a brpc stream, writes N request messages via
- * StreamWrite, closes the stream, and reads a single response.
- *
- * @tparam W Write (request) protobuf type that the client streams.
- */
+class BrpcClientWriterState final : public brpc::StreamInputHandler {
+public:
+    int on_received_messages(brpc::StreamId, butil::IOBuf *const messages[], size_t size) override
+    {
+        std::lock_guard<bthread::Mutex> lock(mutex);
+        for (size_t i = 0; i < size; ++i) {
+            if (messages[i] != nullptr) {
+                replies.emplace_back(std::move(*messages[i]));
+            }
+        }
+        condition.notify_all();
+        return 0;
+    }
+    void on_idle_timeout(brpc::StreamId) override
+    {
+        std::lock_guard<bthread::Mutex> lock(mutex);
+        failed = true;
+        condition.notify_all();
+    }
+    void on_failed(brpc::StreamId id, int, const std::string &) override { on_idle_timeout(id); }
+    void on_closed(brpc::StreamId) override
+    {
+        {
+            std::lock_guard<bthread::Mutex> lock(mutex);
+            closed = true;
+            condition.notify_all();
+        }
+        keepalive.reset();
+    }
+
+    bthread::Mutex mutex;
+    bthread::ConditionVariable condition;
+    std::deque<butil::IOBuf> replies;
+    bool closed = false;
+    bool failed = false;
+    std::unique_ptr<brpc::Controller> controller;
+    std::shared_ptr<BrpcClientWriterState> keepalive;
+};
+
 template <typename W>
 class BrpcClientWriterImpl {
 public:
-    BrpcClientWriterImpl(brpc::Channel *channel,
-                         const google::protobuf::MethodDescriptor *method,
-                         int32_t timeoutMs)
-        : channel_(channel),
-          method_(method),
-          timeoutMs_(timeoutMs),
-          streamId_(brpc::INVALID_STREAM_ID),
-          streamCreated_(false),
-          rpcDone_(false),
-          rpcFailed_(false),
-          finished_(false),
-          traceRecorded_(false),
+    BrpcClientWriterImpl(brpc::Channel *channel, const google::protobuf::MethodDescriptor *method, int32_t timeoutMs)
+        : channel_(channel), method_(method), timeoutMs_(timeoutMs),
           trace_(Trace::Instance().GetTraceID(), method == nullptr ? "unknown" : method->full_name())
     {
     }
-
     ~BrpcClientWriterImpl()
     {
-        if (streamId_ != brpc::INVALID_STREAM_ID) {
-            brpc::StreamClose(streamId_);
-            streamId_ = brpc::INVALID_STREAM_ID;
-        }
-        if (cntl_) {
-            brpc::Join(cntl_->call_id());
-        }
+        Close();
         if (ShouldRecordBrpcTraceOnDestroy(trace_)) {
             RecordTraceOnce();
         }
     }
+    BrpcClientWriterImpl(const BrpcClientWriterImpl &) = delete;
+    BrpcClientWriterImpl &operator=(const BrpcClientWriterImpl &) = delete;
 
-    /**
-     * @brief Write a request protobuf to the stream.
-     * The first call creates the stream and issues the RPC.
-     * @param[in] pb Request protobuf to stream to the server.
-     * @return Status of the call.
-     */
     Status Write(const W &pb)
     {
-        if (finished_.load()) {
-            RETURN_STATUS(StatusCode::K_RUNTIME_ERROR,
-                "Write called after Finish");
-        }
-
-        // Serialize to string first, then to IOBuf
-        std::string serialized;
-        if (!pb.SerializeToString(&serialized)) {
-            RETURN_STATUS(StatusCode::K_RUNTIME_ERROR,
-                "Failed to serialize protobuf for stream write");
-        }
-
-        if (!streamCreated_) {
-            // First Write: create the stream and issue the RPC.
-            cntl_ = std::make_unique<brpc::Controller>();
-            if (timeoutMs_ > 0) {
-                cntl_->set_timeout_ms(timeoutMs_);
-            }
-
+        CHECK_FAIL_RETURN_STATUS(!writesEnded_, K_RUNTIME_ERROR, "Write called after client-streaming writes ended.");
+        if (!state_) {
+            CHECK_FAIL_RETURN_STATUS(channel_ != nullptr && method_ != nullptr, K_INVALID,
+                                     "Missing client-streaming channel or method.");
+            const auto *prototype =
+                google::protobuf::MessageFactory::generated_factory()->GetPrototype(method_->output_type());
+            CHECK_FAIL_RETURN_STATUS(prototype != nullptr, K_RUNTIME_ERROR,
+                                     "Missing client-streaming response prototype.");
+            deadline_ = butil::microseconds_from_now(
+                static_cast<int64_t>(timeoutMs_ > 0 ? timeoutMs_ : kStreamReadTimeoutSec * 1000) * 1000);
+            state_ = std::make_shared<BrpcClientWriterState>();
+            state_->controller = std::make_unique<brpc::Controller>();
+            state_->controller->set_timeout_ms(timeoutMs_ > 0 ? timeoutMs_ : kStreamReadTimeoutSec * 1000);
             brpc::StreamOptions options;
-            options.handler = nullptr;  // Client does not read from this stream
-            int rc = brpc::StreamCreate(&streamId_, *cntl_, &options);
-            if (rc != 0) {
-                cntl_.reset();
-                RETURN_STATUS(StatusCode::K_RUNTIME_ERROR,
-                    "brpc::StreamCreate failed for client-streaming");
+            options.handler = state_.get();
+            state_->keepalive = state_;
+            if (brpc::StreamCreate(&streamId_, *state_->controller, &options) != 0) {
+                state_->keepalive.reset();
+                state_.reset();
+                RETURN_STATUS(K_RUNTIME_ERROR, "Failed to create client-streaming stream.");
             }
-            streamCreated_ = true;
-
-            // Issue the RPC.  For client-streaming (stream→unary), the real data
-            // goes via the stream; the RPC body carries the first message as a
-            // marker.  The response is a placeholder created from the method
-            // descriptor so CallMethod has a correctly-typed target.
-            auto *respProto = method_->output_type();
-            response_.reset(
-                google::protobuf::MessageFactory::generated_factory()
-                    ->GetPrototype(respProto)->New());
-            AttachTraceIDToAttachment(cntl_->request_attachment());
+            std::unique_ptr<google::protobuf::Message> response(prototype->New());
+            AttachTraceIDToAttachment(state_->controller->request_attachment());
             trace_.MarkClientStart();
             trace_.MarkClientSend();
-            VLOG(1) << FormatString("ClientSend ts %llu tid %d cpu %d bid %llu\n", trace_.ClientSendTs(),
-                                    BrpcTraceGetTid(), sched_getcpu(),
-                                    static_cast<unsigned long long>(bthread_self()));
-            channel_->CallMethod(method_, cntl_.get(),
-                                 static_cast<const google::protobuf::Message *>(&pb),
-                                 response_.get(), nullptr);
-            if (cntl_->Failed()) {
-                trace_.MarkClientRecv();
-                VLOG(1) << FormatString("ClientRecv ts %llu tid %d cpu %d bid %llu\n", trace_.ClientRecvTs(),
-                                        BrpcTraceGetTid(), sched_getcpu(),
-                                        static_cast<unsigned long long>(bthread_self()));
-                RecordTraceOnce();
-                auto errText = cntl_->ErrorText();
-                // Wrap with RETURN_STATUS to retain this adapter's call-site
-                // (file/line) for on-call; the helper's Status carries the
-                // brpc errno/name + ErrorText diagnostics in its message.
-                auto st = TryExtractStatusFromControllerError(errText, cntl_->ErrorCode());
-                RETURN_STATUS(st.GetCode(), st.GetMsg());
+            channel_->CallMethod(method_, state_->controller.get(), &pb, response.get(), nullptr);
+            if (state_->controller->Failed()) {
+                auto status = TryExtractStatusFromControllerError(state_->controller->ErrorText(),
+                                                                  state_->controller->ErrorCode());
+                return Fail(status);
             }
+            return Status::OK();
         }
-
-        // Write the serialized message to the stream
-        butil::IOBuf buf;
-        buf.append(serialized);
-        int rc = brpc::StreamWrite(streamId_, buf);
-        if (rc != 0) {
-            RETURN_STATUS(StatusCode::K_RPC_CANCELLED,
-                "brpc::StreamWrite failed for client-streaming");
+        std::string serialized;
+        if (!pb.SerializeToString(&serialized)) {
+            return Fail(Status(K_RUNTIME_ERROR, "Failed to serialize client-streaming request."));
         }
-        return Status::OK();
+        butil::IOBuf frame;
+        if (frame.append(&SINGLE_STREAM_DATA, 1) != 0 || frame.append(serialized) != 0) {
+            return Fail(Status(K_OUT_OF_MEMORY, "Failed to buffer client-streaming request."));
+        }
+        auto status = WriteSingleStreamFrame(streamId_, frame, deadline_);
+        return status.IsError() ? Fail(status) : status;
     }
 
-    /**
-     * @brief Read the single response from the RPC.
-     * Must be called after Finish().
-     * @tparam R Response protobuf type.
-     * @param[out] pb Response protobuf to fill.
-     * @return Status of the call.
-     */
     template <typename R>
     Status Read(R &pb)
     {
-        if (!finished_.load()) {
-            RETURN_STATUS(StatusCode::K_RUNTIME_ERROR,
-                "Read called before Finish");
+        auto status = AwaitResponse();
+        if (status.IsError()) {
+            Close();
+            return status;
         }
-        if (cntl_ == nullptr) {
-            RETURN_STATUS(StatusCode::K_RUNTIME_ERROR,
-                "No RPC in flight");
-        }
-
-        // Wait for the RPC to complete
-        brpc::Join(cntl_->call_id());
-        trace_.MarkClientRecv();
-        VLOG(1) << FormatString("ClientRecv ts %llu tid %d cpu %d bid %llu\n", trace_.ClientRecvTs(),
-                                BrpcTraceGetTid(),
-                                sched_getcpu(), static_cast<unsigned long long>(bthread_self()));
-
-        if (cntl_->Failed()) {
-            RecordTraceOnce();
-            auto errText = cntl_->ErrorText();
-            return TryExtractStatusFromControllerError(errText, cntl_->ErrorCode());
-        }
-
-        // Parse response from response attachment
-        butil::IOBuf &rspBuf = cntl_->response_attachment();
-        if (!rspBuf.empty()) {
-            std::string data = rspBuf.to_string();
-            if (pb.ParseFromString(data)) {
-                RecordTraceOnce();
-                return Status::OK();
-            }
-            // Fallback: try parsing from the response Message itself
-        }
-
-        // Try the response Message if attachment is empty
-        auto *typedRsp = dynamic_cast<R *>(response_.get());
-        if (typedRsp != nullptr) {
-            pb.CopyFrom(*typedRsp);
-            RecordTraceOnce();
-            return Status::OK();
-        }
-
-        RETURN_STATUS(StatusCode::K_RUNTIME_ERROR,
-            "Failed to extract response from client-streaming RPC");
+        CHECK_FAIL_RETURN_STATUS(pb.ParseFromString(response_), K_RUNTIME_ERROR,
+                                 "Failed to parse client-streaming response.");
+        return Status::OK();
     }
 
-    /**
-     * @brief Signal that writing is done. Closes the stream.
-     * @return Status of the call.
-     */
     Status Finish()
     {
-        if (finished_.exchange(true)) {
+        if (!state_) {
+            writesEnded_ = true;
             return Status::OK();
         }
+        auto status = AwaitResponse();
+        Close();
+        return status;
+    }
+
+    Status SendPayload(const std::vector<MemView> &)
+    {
+        RETURN_STATUS(K_NOT_SUPPORTED, "SendPayload not supported in BrpcClientWriterImpl");
+    }
+    Status ReceivePayload(std::vector<RpcMessage> &)
+    {
+        RETURN_STATUS(K_NOT_SUPPORTED, "ReceivePayload not supported in BrpcClientWriterImpl");
+    }
+
+private:
+    Status AwaitResponse()
+    {
+        if (responseReady_) {
+            return responseStatus_;
+        }
+        CHECK_FAIL_RETURN_STATUS(state_ != nullptr, K_RUNTIME_ERROR, "No client-streaming RPC in flight.");
+        Status endStatus;
+        if (!writesEnded_) {
+            writesEnded_ = true;
+            butil::IOBuf end;
+            if (end.append(SINGLE_STREAM_END_WRITES, sizeof(SINGLE_STREAM_END_WRITES) - 1) != 0) {
+                return Fail(Status(K_OUT_OF_MEMORY, "Failed to buffer client-streaming end marker."));
+            }
+            endStatus = WriteSingleStreamFrame(streamId_, end, deadline_);
+        }
+        std::unique_lock<bthread::Mutex> lock(state_->mutex);
+        while (state_->replies.empty() && !state_->closed && !state_->failed) {
+            if (state_->condition.wait_until(lock, deadline_) == ETIMEDOUT) {
+                responseStatus_ = Status(K_RPC_DEADLINE_EXCEEDED, "Client-streaming response deadline exceeded.");
+                break;
+            }
+        }
+        if (!state_->replies.empty()) {
+            response_ = state_->replies.front().to_string();
+            if (!response_.empty() && response_.front() == SINGLE_STREAM_DATA) {
+                response_.erase(0, 1);
+            } else if (response_.compare(0, 8, "\x01" "DS_ERR:") == 0) {
+                responseStatus_ = TryExtractStatusFromControllerError(response_);
+            } else {
+                responseStatus_ = Status(K_INVALID, "Invalid client-streaming response frame.");
+            }
+        } else if (responseStatus_.IsOk()) {
+            responseStatus_ = endStatus.IsError()
+                                  ? endStatus : Status(K_RPC_CANCELLED, "Stream closed without a response.");
+        }
+        responseReady_ = true;
+        lock.unlock();
+        trace_.MarkClientRecv();
+        RecordTraceOnce();
+        return responseStatus_;
+    }
+
+    Status Fail(const Status &status)
+    {
+        responseStatus_ = status;
+        responseReady_ = true;
+        writesEnded_ = true;
+        trace_.MarkClientRecv();
+        RecordTraceOnce();
+        Close();
+        return status;
+    }
+
+    void Close()
+    {
         if (streamId_ != brpc::INVALID_STREAM_ID) {
             brpc::StreamClose(streamId_);
             streamId_ = brpc::INVALID_STREAM_ID;
         }
-        return Status::OK();
     }
-
-    Status SendPayload(const std::vector<MemView> &payload)
-    {
-        (void)payload;
-        RETURN_STATUS(StatusCode::K_NOT_SUPPORTED,
-            "SendPayload not supported in BrpcClientWriterImpl");
-    }
-
-    Status ReceivePayload(std::vector<RpcMessage> &recvBuffer)
-    {
-        (void)recvBuffer;
-        RETURN_STATUS(StatusCode::K_NOT_SUPPORTED,
-            "ReceivePayload not supported in BrpcClientWriterImpl");
-    }
-
-private:
-    brpc::Channel *channel_;
-    const google::protobuf::MethodDescriptor *method_;
-    int32_t timeoutMs_;
-    std::unique_ptr<brpc::Controller> cntl_;
-    std::unique_ptr<google::protobuf::Message> response_;
-    brpc::StreamId streamId_;
-    bool streamCreated_;
-    bool rpcDone_;
-    bool rpcFailed_;
-    std::atomic<bool> finished_;
-    std::atomic<bool> traceRecorded_;
-    BrpcPerfTrace trace_;
-
     void RecordTraceOnce()
     {
-        if (!traceRecorded_.exchange(true, std::memory_order_acq_rel)) {
-            // Stream RPC tracing is one summary sample per stream, not one sample per message.
+        if (!traceRecorded_) {
+            traceRecorded_ = true;
             trace_.MarkClientEnd();
             RecordBrpcRpcTrace(trace_);
         }
     }
+
+    brpc::Channel *channel_;
+    const google::protobuf::MethodDescriptor *method_;
+    int32_t timeoutMs_;
+    brpc::StreamId streamId_ = brpc::INVALID_STREAM_ID;
+    std::shared_ptr<BrpcClientWriterState> state_;
+    timespec deadline_{};
+    bool writesEnded_ = false;
+    bool responseReady_ = false;
+    bool traceRecorded_ = false;
+    std::string response_;
+    Status responseStatus_;
+    BrpcPerfTrace trace_;
 };
 
 /**

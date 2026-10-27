@@ -508,9 +508,6 @@ Status OCMigrateMetadataManager::BatchMigrateMetadata(
     MigrateMetadataRspPb rsp;
     auto sendStatus = CheckTopologyExecution(info);
     if (sendStatus.IsOk()) {
-        sendStatus = akSkManager_->GenerateSignature(req);
-    }
-    if (sendStatus.IsOk()) {
         INJECT_POINT("BatchMigrateMetadata.rpc.error");
         sendStatus = api->MigrateMetadata(req, rsp);
         ObserveMetadataRpcResult(info.destAddr, sendStatus);

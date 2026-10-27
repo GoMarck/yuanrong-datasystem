@@ -252,7 +252,6 @@ Status WorkerRemoteMasterOCApi::CreateMeta(master::CreateMetaReqPb &request, mas
             if (opts.GetTimeout() <= 0 || opts.GetTimeout() > WORKER_TO_MASTER_RPC_HARD_CAP_MS) {
                 opts.SetTimeout(WORKER_TO_MASTER_RPC_HARD_CAP_MS);
             }
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
             Timer timer;
             Status rc = brpcSession_->CreateMeta(opts, request, response);
             GetWorkerTimeCost().Append("Worker to master rpc CreateMeta", timer.ElapsedMilliSecond());
@@ -280,7 +279,6 @@ Status WorkerRemoteMasterOCApi::ReportResource(master::ResourceReportReqPb &requ
             CHECK_FAIL_RETURN_STATUS(remainingTime > 0, K_RPC_DEADLINE_EXCEEDED,
                                      FormatString("Request timeout (%ld ms).", -remainingTime));
             opts.SetTimeout(std::min(remainingTime, RESOURCE_REPORT_RPC_TIMEOUT_MS));
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
             Timer timer;
             return brpcSession_->ReportResource(opts, request, response);
         },
@@ -305,7 +303,6 @@ Status WorkerRemoteMasterOCApi::ReportRebalanceResult(master::ReportRebalanceRes
             CHECK_FAIL_RETURN_STATUS(remainingTime > 0, K_RPC_DEADLINE_EXCEEDED,
                                      FormatString("Request timeout (%ld ms).", -remainingTime));
             opts.SetTimeout(std::min(remainingTime, RESOURCE_REPORT_RPC_TIMEOUT_MS));
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
             return brpcSession_->ReportRebalanceResult(opts, request, response);
         },
         []() { return Status::OK(); },
@@ -321,7 +318,6 @@ Status WorkerRemoteMasterOCApi::CreateMultiMeta(master::CreateMultiMetaReqPb &re
     if (!retry) {
         CHECK_AND_SET_TIMEOUT_WITH_RPC_DIAG(
             "CreateMultiMeta", &GetRequestContext()->reqTimeoutDuration, request, opts, localHostPort_, hostPort_);
-        RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
         auto rc = brpcSession_->CreateMultiMeta(opts, request, response);
         return WithRpcDiag(rc, "CreateMultiMeta", localHostPort_, hostPort_);
     }
@@ -329,7 +325,6 @@ Status WorkerRemoteMasterOCApi::CreateMultiMeta(master::CreateMultiMetaReqPb &re
         GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTime(),
         [this, &opts, &request, &response](int32_t) {
             CHECK_AND_SET_TIMEOUT(&GetRequestContext()->reqTimeoutDuration, request, opts);
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
             return brpcSession_->CreateMultiMeta(opts, request, response);
         },
         []() { return Status::OK(); },
@@ -351,7 +346,6 @@ Status WorkerRemoteMasterOCApi::CreateCopyMeta(master::CreateCopyMetaReqPb &requ
             CHECK_FAIL_RETURN_STATUS(remainingTime > 0, K_RPC_DEADLINE_EXCEEDED,
                                      FormatString("Request timeout (%ld ms).", -remainingTime));
             opts.SetTimeout(remainingTime);
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
             Timer timer;
             Status rc = brpcSession_->CreateCopyMeta(opts, request, response);
             GetWorkerTimeCost().Append("Worker to master rpc CreateCopyMeta", timer.ElapsedMilliSecond());
@@ -376,7 +370,6 @@ Status WorkerRemoteMasterOCApi::CreateMultiCopyMeta(master::CreateMultiCopyMetaR
             CHECK_FAIL_RETURN_STATUS(remainingTime > 0, K_RPC_DEADLINE_EXCEEDED,
                                      FormatString("Request timeout (%ld ms).", - remainingTime));
             opts.SetTimeout(remainingTime);
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
             Timer timer;
             Status rc = brpcSession_->CreateMultiCopyMeta(opts, request, response);
             GetWorkerTimeCost().Append("Worker to master rpc CreateMultiCopyMeta", timer.ElapsedMilliSecond());
@@ -410,7 +403,6 @@ Status WorkerRemoteMasterOCApi::QueryMeta(master::QueryMetaReqPb &request, uint6
     Status status = RetryOnErrorRepent(timeoutMs,
         [this, &opts, &request, &response, &payloads](int32_t) {
             CHECK_AND_SET_TIMEOUT(&GetRequestContext()->reqTimeoutDuration, request, opts);
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
             Timer timer;
             Status rc = brpcSession_->QueryMeta(opts, request, response, payloads);
             GetWorkerTimeCost().Append("Worker to master rpc QueryMeta", timer.ElapsedMilliSecond());
@@ -432,7 +424,6 @@ Status WorkerRemoteMasterOCApi::RemoveMeta(master::RemoveMetaReqPb &request, mas
         timeoutMs,
         [this, &opts, &request, &response](int32_t) {
             CHECK_AND_SET_TIMEOUT(&GetRequestContext()->reqTimeoutDuration, request, opts);
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
             Timer timer;
             Status rc = brpcSession_->RemoveMeta(opts, request, response);
             GetWorkerTimeCost().Append("Worker to master rpc RemoveMeta", timer.ElapsedMilliSecond());
@@ -455,7 +446,6 @@ Status WorkerRemoteMasterOCApi::GIncNestedRef(master::GIncNestedRefReqPb &reques
                                           GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTimeUs()));
     opts.SetTimeout(TimeoutDuration::CeilUsToMs(remainingUs));
     request.set_address(localHostPort_.ToString());
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
     Timer timer;
     Status rc = brpcSession_->GIncNestedRef(opts, request, response);
     GetWorkerTimeCost().Append("Worker to master rpc GIncNestedRef", timer.ElapsedMilliSecond());
@@ -467,7 +457,6 @@ Status WorkerRemoteMasterOCApi::GDecNestedRef(master::GDecNestedRefReqPb &reques
     RpcOptions opts;
     CHECK_AND_SET_TIMEOUT(&GetRequestContext()->reqTimeoutDuration, request, opts);
     request.set_address(localHostPort_.ToString());
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
     Timer timer;
     Status rc = brpcSession_->GDecNestedRef(opts, request, response);
     GetWorkerTimeCost().Append("Worker to master rpc GDecNestedRef", timer.ElapsedMilliSecond());
@@ -487,7 +476,6 @@ Status WorkerRemoteMasterOCApi::UpdateMeta(master::UpdateMetaReqPb &request, mas
         timeoutMs,
         [this, &opts, &request, &response](int32_t) {
             CHECK_AND_SET_TIMEOUT(&GetRequestContext()->reqTimeoutDuration, request, opts);
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
             Timer timer;
             Status rc = brpcSession_->UpdateMeta(opts, request, response);
             GetWorkerTimeCost().Append("Worker to master rpc UpdateMeta", timer.ElapsedMilliSecond());
@@ -508,7 +496,6 @@ Status WorkerRemoteMasterOCApi::DeleteAllCopyMeta(master::DeleteAllCopyMetaReqPb
         GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTime(),
         [this, &opts, &request, &response](int32_t) {
             CHECK_AND_SET_TIMEOUT(&GetRequestContext()->reqTimeoutDuration, request, opts);
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
             Timer timer;
             Status rc = brpcSession_->DeleteAllCopyMeta(opts, request, response);
             GetWorkerTimeCost().Append("Worker to master rpc DeleteAllCopyMeta", timer.ElapsedMilliSecond());
@@ -526,7 +513,6 @@ Status WorkerRemoteMasterOCApi::ReleaseGRefs(master::ReleaseGRefsReqPb &request,
     RpcOptions opts;
     CHECK_AND_SET_TIMEOUT_WITH_RPC_DIAG(
         "ReleaseGRefs", &GetRequestContext()->reqTimeoutDuration, request, opts, localHostPort_, hostPort_);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
     auto rc = brpcSession_->ReleaseGRefs(opts, request, response);
     return WithRpcDiag(rc, "ReleaseGRefs", localHostPort_, hostPort_);
 }
@@ -549,7 +535,6 @@ Status WorkerRemoteMasterOCApi::GIncreaseMasterRef(master::GIncreaseReqPb &incRe
             RpcOptions opts;
             opts.SetTimeout(rpcTimeout);
             INJECT_POINT("WorkerMasterOCApi.GIncreaseMasterRef.beforeRpc");
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(incReq));
             return brpcSession_->GIncreaseRef(opts, incReq, incRsp);
         },
         []() { return Status::OK(); },
@@ -566,7 +551,6 @@ Status WorkerRemoteMasterOCApi::GDecreaseMasterRef(master::GDecreaseReqPb &decRe
         timeoutMs,
         [this, &opts, &decReq, &decRsp](int32_t) {
             CHECK_AND_SET_TIMEOUT(&GetRequestContext()->reqTimeoutDuration, decReq, opts);
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(decReq));
             return brpcSession_->GDecreaseRef(opts, decReq, decRsp);
         },
         []() { return Status::OK(); },
@@ -597,7 +581,6 @@ Status WorkerRemoteMasterOCApi::GDecreaseMasterRef(const std::vector<std::string
         timeoutMs,
         [this, &opts, &decReq, &decRsp](int32_t) {
             CHECK_AND_SET_TIMEOUT(&GetRequestContext()->reqTimeoutDuration, decReq, opts);
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(decReq));
             Timer timer;
             Status rc = brpcSession_->GDecreaseRef(opts, decReq, decRsp);
             GetWorkerTimeCost().Append("Worker to master rpc GDecreaseMasterRef", timer.ElapsedMilliSecond());
@@ -627,7 +610,6 @@ Status WorkerRemoteMasterOCApi::QueryGlobalRefNum(QueryGlobalRefNumReqPb &req, Q
     RpcOptions opts;
     CHECK_AND_SET_TIMEOUT_WITH_RPC_DIAG(
         "QueryGlobalRefNum", &GetRequestContext()->reqTimeoutDuration, req, opts, localHostPort_, hostPort_);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     Timer timer;
     Status rc = brpcSession_->QueryGlobalRefNum(opts, req, rsp);
     GetWorkerTimeCost().Append("Worker to master rpc QueryGlobalRefNum", timer.ElapsedMilliSecond());
@@ -648,7 +630,6 @@ Status WorkerRemoteMasterOCApi::PushMetadataToMaster(master::PushMetaToMasterReq
         [this, &req, &rsp](int32_t rpcTimeoutMs) {
             RpcOptions opts;
             opts.SetTimeout(rpcTimeoutMs + WORKER_ADD_MILLISECOND);
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
             Timer timer;
             Status rc = brpcSession_->PushMetaToMaster(opts, req, rsp);
             GetWorkerTimeCost().Append("Worker to master rpc PushMetadataToMaster", timer.ElapsedMilliSecond());
@@ -678,7 +659,6 @@ Status WorkerRemoteMasterOCApi::ReconcileMembershipChange(master::Reconciliation
                                                       StatusCode::K_RPC_DEADLINE_EXCEEDED,
                                                       StatusCode::K_RPC_UNAVAILABLE };
     auto retryFun = [this, &req, &rsp](int32_t) {
-        RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
         Timer timer;
         Status rc = brpcSession_->ReconcileMembershipChange(req, rsp);
         GetWorkerTimeCost().Append("Worker to master rpc ReconcileMembershipChange", timer.ElapsedMilliSecond());
@@ -700,7 +680,6 @@ Status WorkerRemoteMasterOCApi::PutP2PMeta(PutP2PMetaReqPb &req, PutP2PMetaRspPb
     RpcOptions opts;
     auto remainingTime = GetRequestContext()->reqTimeoutDuration.CalcRemainingTime();
     opts.SetTimeout(remainingTime);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     PerfPoint point(PerfKey::WORKER_REMOTE_PUT_P2P_META);
     return brpcSession_->PutP2PMeta(opts, req, resp);
 }
@@ -710,12 +689,6 @@ Status WorkerRemoteMasterOCApi::SubscribeReceiveEvent(
     std::shared_ptr<ServerUnaryWriterReader<SubscribeReceiveEventRspPb, SubscribeReceiveEventReqPb>> serverApi,
     std::shared_ptr<AsyncRpcRequestManager> &asyncRpcManager)
 {
-    auto rc = akSkManager_->GenerateSignature(req);
-    if (rc.IsError()) {
-        LOG_IF_ERROR(serverApi->SendStatus(rc), "GetDataInfo Send Status to client failed.");
-        return rc;
-    }
-
     auto remainingTime = GetRequestContext()->reqTimeoutDuration.CalcRemainingTime();
     using RemoteRpc = RemoteAsyncRpcRequest<SubscribeReceiveEventReqPb, SubscribeReceiveEventRspPb>;
 
@@ -767,12 +740,6 @@ Status WorkerRemoteMasterOCApi::GetP2PMeta(
     GetP2PMetaReqPb &req, std::shared_ptr<ServerUnaryWriterReader<GetP2PMetaRspPb, GetP2PMetaReqPb>> serverApi,
     std::shared_ptr<AsyncRpcRequestManager> &asyncRpcManager)
 {
-    auto rc = akSkManager_->GenerateSignature(req);
-    if (rc.IsError()) {
-        LOG_IF_ERROR(serverApi->SendStatus(rc), "GetP2PMeta Send Status to client failed.");
-        return rc;
-    }
-
     auto remainingTime = GetRequestContext()->reqTimeoutDuration.CalcRemainingTime();
     using RemoteRpc = RemoteAsyncRpcRequest<GetP2PMetaReqPb, GetP2PMetaRspPb>;
 
@@ -825,7 +792,6 @@ Status WorkerRemoteMasterOCApi::SendRootInfo(SendRootInfoReqPb &req, SendRootInf
     }
     RpcOptions opts;
     opts.SetTimeout(remainingTime);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     return brpcSession_->SendRootInfo(opts, req, resp);
 }
 
@@ -833,12 +799,6 @@ Status WorkerRemoteMasterOCApi::RecvRootInfo(
     RecvRootInfoReqPb &req, std::shared_ptr<ServerUnaryWriterReader<RecvRootInfoRspPb, RecvRootInfoReqPb>> serverApi,
     std::shared_ptr<AsyncRpcRequestManager> &asyncRpcManager)
 {
-    auto rc = akSkManager_->GenerateSignature(req);
-    if (rc.IsError()) {
-        LOG_IF_ERROR(serverApi->SendStatus(rc), "RecvRootInfo Send Status to client failed.");
-        return rc;
-    }
-
     auto remainingTime = GetRequestContext()->reqTimeoutDuration.CalcRemainingTime();
     using RemoteRpc = RemoteAsyncRpcRequest<RecvRootInfoReqPb, RecvRootInfoRspPb>;
 
@@ -891,7 +851,6 @@ Status WorkerRemoteMasterOCApi::AckRecvFinish(AckRecvFinishReqPb &req, AckRecvFi
     }
     RpcOptions opts;
     opts.SetTimeout(remainingTime);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     return brpcSession_->AckRecvFinish(opts, req, resp);
 }
 
@@ -902,12 +861,6 @@ Status WorkerRemoteMasterOCApi::GetDataInfo(
 {
     auto remainingTime = GetRequestContext()->reqTimeoutDuration.CalcRemainingTime();
     req.set_sub_timeout(std::min<int64_t>(subTimeoutMs, remainingTime));
-    auto rc = akSkManager_->GenerateSignature(req);
-    if (rc.IsError()) {
-        LOG_IF_ERROR(serverApi->SendStatus(rc), "GetDataInfo Send Status to client failed.");
-        return rc;
-    }
-
     using RemoteRpc = RemoteAsyncRpcRequest<GetDataInfoReqPb, GetDataInfoRspPb>;
 
     auto asyncWriteCallback = [remainingTime, req, serverApi](RemoteRpc &remoteRpc) {
@@ -980,7 +933,6 @@ Status WorkerRemoteMasterOCApi::RemoveP2PLocation(RemoveP2PLocationReqPb &req, R
     }
     RpcOptions opts;
     opts.SetTimeout(remainingTime);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     auto rc = brpcSession_->RemoveP2PLocation(opts, req, resp);
     return WithRpcDiag(rc, "RemoveP2PLocation", localHostPort_, hostPort_);
 }
@@ -1004,7 +956,6 @@ Status WorkerRemoteMasterOCApi::GetObjectLocations(master::GetObjectLocationsReq
         timeoutMs,
         [this, &opts, &req, &resp](int32_t onceRpcRemainTime) {
             opts.SetTimeout(onceRpcRemainTime);
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
             Timer timer;
             Status rc = brpcSession_->GetObjectLocations(opts, req, resp);
             GetWorkerTimeCost().Append("Worker to master rpc GetObjectLocations", timer.ElapsedMilliSecond());
@@ -1022,7 +973,6 @@ Status WorkerRemoteMasterOCApi::ReleaseMetaData(ReleaseMetaDataReqPb &req, Relea
     RpcOptions opts;
     auto remainingTime = GetRequestContext()->reqTimeoutDuration.CalcRemainingTime();
     opts.SetTimeout(remainingTime);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     auto rc = brpcSession_->ReleaseMetaData(opts, req, resp);
     return WithRpcDiag(rc, "ReleaseMetaData", localHostPort_, hostPort_);
 }
@@ -1037,7 +987,6 @@ Status WorkerRemoteMasterOCApi::ReplacePrimary(master::ReplacePrimaryReqPb &req,
     }
     RpcOptions opts;
     opts.SetTimeout(remainingTime);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     auto rc = brpcSession_->ReplacePrimary(opts, req, rsp);
     return WithRpcDiag(rc, "ReplacePrimary", localHostPort_, hostPort_);
 }
@@ -1052,7 +1001,6 @@ Status WorkerRemoteMasterOCApi::PureQueryMeta(master::PureQueryMetaReqPb &req, m
     }
     RpcOptions opts;
     opts.SetTimeout(remainingTime);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     auto rc = brpcSession_->PureQueryMeta(opts, req, rsp);
     return WithRpcDiag(rc, "PureQueryMeta", localHostPort_, hostPort_);
 }
@@ -1066,7 +1014,6 @@ Status WorkerRemoteMasterOCApi::BatchExists(master::BatchExistsReqPb &req, maste
     }
     RpcOptions opts;
     opts.SetTimeout(remainingTime);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     auto rc = brpcSession_->BatchExists(opts, req, rsp);
     return WithRpcDiag(rc, "BatchExists", localHostPort_, hostPort_);
 }
@@ -1085,7 +1032,6 @@ Status WorkerRemoteMasterOCApi::CheckObjectDataLocation(master::CheckObjectDataL
         remainingTime,
         [this, &opts, &req, &rsp](int32_t rpcTimeout) {
             opts.SetTimeout(rpcTimeout);
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
             return brpcSession_->CheckObjectDataLocation(opts, req, rsp);
         },
         []() { return Status::OK(); },
@@ -1102,7 +1048,6 @@ Status WorkerRemoteMasterOCApi::RollbackMultiMeta(master::RollbackMultiMetaReqPb
         GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTime(),
         [this, &opts, &req, &rsp](int32_t) {
             CHECK_AND_SET_TIMEOUT(&GetRequestContext()->reqTimeoutDuration, req, opts);
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
             return brpcSession_->RollbackMultiMeta(opts, req, rsp);
         },
         []() { return Status::OK(); },
@@ -1121,7 +1066,6 @@ Status WorkerRemoteMasterOCApi::Expire(master::ExpireReqPb &req, master::ExpireR
     }
     RpcOptions opts;
     opts.SetTimeout(remainingTime);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     auto rc = brpcSession_->Expire(opts, req, rsp);
     return WithRpcDiag(rc, "Expire", localHostPort_, hostPort_);
 }
@@ -1136,7 +1080,6 @@ Status WorkerRemoteMasterOCApi::GetMetaInfo(GetMetaInfoReqPb &req, GetMetaInfoRs
     }
     RpcOptions opts;
     opts.SetTimeout(remainingTime);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     auto rc = brpcSession_->GetMetaInfo(opts, req, rsp);
     return WithRpcDiag(rc, "GetMetaInfo", localHostPort_, hostPort_);
 }
@@ -1163,7 +1106,6 @@ Status WorkerLocalMasterOCApi::CreateMeta(master::CreateMetaReqPb &request, mast
     CHECK_FAIL_RETURN_STATUS(remainingTime_ > 0, K_RPC_DEADLINE_EXCEEDED,
                              FormatString("Request timeout (%ld ms).", -remainingTime_));
     request.set_timeout(remainingTime_);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
     int64_t timeoutMs = GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTime();
     return RetryOnErrorRepent(
         timeoutMs, [this, &request, &response](int32_t) { return masterOC_->CreateMeta(request, response); },
@@ -1173,14 +1115,12 @@ Status WorkerLocalMasterOCApi::CreateMeta(master::CreateMetaReqPb &request, mast
 Status WorkerLocalMasterOCApi::ReportResource(master::ResourceReportReqPb &request,
                                               master::ResourceReportRspPb &response)
 {
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
     return masterOC_->ReportResource(request, response);
 }
 
 Status WorkerLocalMasterOCApi::ReportRebalanceResult(master::ReportRebalanceResultReqPb &request,
                                                      master::ReportRebalanceResultRspPb &response)
 {
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
     return masterOC_->ReportRebalanceResult(request, response);
 }
 
@@ -1192,13 +1132,11 @@ Status WorkerLocalMasterOCApi::CreateMultiMeta(master::CreateMultiMetaReqPb &req
                              FormatString("Request timeout (%lld ms).", -timeoutMs));
     request.set_timeout(timeoutMs);
     if (!retry) {
-        RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
         return masterOC_->CreateMultiMeta(request, response);
     }
     return RetryOnErrorRepent(
         timeoutMs,
         [this, &request, &response](int32_t) {
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
             return masterOC_->CreateMultiMeta(request, response);
         },
         []() { return Status::OK(); }, { StatusCode::K_TRY_AGAIN });
@@ -1207,14 +1145,12 @@ Status WorkerLocalMasterOCApi::CreateMultiMeta(master::CreateMultiMetaReqPb &req
 Status WorkerLocalMasterOCApi::CreateCopyMeta(master::CreateCopyMetaReqPb &request,
                                               master::CreateCopyMetaRspPb &response)
 {
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
     return masterOC_->CreateCopyMeta(request, response);
 }
 
 Status WorkerLocalMasterOCApi::CreateMultiCopyMeta(master::CreateMultiCopyMetaReqPb &request,
                                                   master::CreateMultiCopyMetaRspPb &response)
 {
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
     return masterOC_->CreateMultiCopyMeta(request, response);
 }
 
@@ -1231,7 +1167,6 @@ Status WorkerLocalMasterOCApi::QueryMeta(master::QueryMetaReqPb &request, uint64
     request.set_sub_timeout(std::min<int64_t>(
         subTimeout, TimeoutDuration::WorkerGetRequestTimeout(reqTimeoutDuration.CalcRemainingTime())));
     request.set_timeout(remainingTime);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
     Status rc = masterOC_->QueryMeta(request, response, payloads);
     point.Record();
     return rc;
@@ -1241,21 +1176,18 @@ Status WorkerLocalMasterOCApi::RemoveMeta(master::RemoveMetaReqPb &request, mast
 {
     RpcOptions opts;
     CHECK_AND_SET_TIMEOUT(&GetRequestContext()->reqTimeoutDuration, request, opts);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
     return masterOC_->RemoveMeta(request, response);
 }
 
 Status WorkerLocalMasterOCApi::GIncNestedRef(master::GIncNestedRefReqPb &request, master::GIncNestedRefRspPb &response)
 {
     request.set_address(localHostPort_.ToString());
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
     return masterOC_->GIncNestedRef(request, response);
 }
 
 Status WorkerLocalMasterOCApi::GDecNestedRef(master::GDecNestedRefReqPb &request, master::GDecNestedRefRspPb &response)
 {
     request.set_address(localHostPort_.ToString());
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
     return masterOC_->GDecNestedRef(request, response);
 }
 
@@ -1263,7 +1195,6 @@ Status WorkerLocalMasterOCApi::UpdateMeta(master::UpdateMetaReqPb &request, mast
 {
     RpcOptions opts;  // Useless. Define opts just to be able to call CHECK_AND_SET_TIMEOUT
     CHECK_AND_SET_TIMEOUT(&GetRequestContext()->reqTimeoutDuration, request, opts);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
     int64_t timeoutMs = GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTime();
     return RetryOnErrorRepent(
         timeoutMs, [this, &request, &response](int32_t) { return masterOC_->UpdateMeta(request, response); },
@@ -1275,7 +1206,6 @@ Status WorkerLocalMasterOCApi::DeleteAllCopyMeta(master::DeleteAllCopyMetaReqPb 
 {
     RpcOptions opts;
     CHECK_AND_SET_TIMEOUT(&GetRequestContext()->reqTimeoutDuration, request, opts);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
     return masterOC_->DeleteAllCopyMeta(request, response);
 }
 
@@ -1283,13 +1213,11 @@ Status WorkerLocalMasterOCApi::ReleaseGRefs(master::ReleaseGRefsReqPb &request, 
 {
     RpcOptions opts;
     CHECK_AND_SET_TIMEOUT(&GetRequestContext()->reqTimeoutDuration, request, opts);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
     return masterOC_->ReleaseGRefs(request, response);
 }
 
 Status WorkerLocalMasterOCApi::GIncreaseMasterRef(master::GIncreaseReqPb &incReq, master::GIncreaseRspPb &incRsp)
 {
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(incReq));
     return masterOC_->GIncreaseRef(incReq, incRsp);
 }
 
@@ -1299,7 +1227,6 @@ Status WorkerLocalMasterOCApi::GDecreaseMasterRef(master::GDecreaseReqPb &decReq
     CHECK_FAIL_RETURN_STATUS(remainingTime_ > 0, K_RPC_DEADLINE_EXCEEDED,
                              FormatString("Request timeout (%ld ms).", -remainingTime_));
     decReq.set_timeout(remainingTime_);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(decReq));
     return masterOC_->GDecreaseRef(decReq, decRsp);
 }
 
@@ -1318,7 +1245,6 @@ Status WorkerLocalMasterOCApi::GDecreaseMasterRef(const std::vector<std::string>
     decReq.set_address(localHostPort_.ToString());
     decReq.set_remote_client_id(remoteClientId);
     master::GDecreaseRspPb decRsp;
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(decReq));
     LOG(INFO) << "GDecreaseMasterRef";
     auto rc = masterOC_->GDecreaseRef(decReq, decRsp);
     if (rc.IsError()) {
@@ -1339,14 +1265,12 @@ Status WorkerLocalMasterOCApi::GDecreaseMasterRef(const std::vector<std::string>
 Status WorkerLocalMasterOCApi::QueryGlobalRefNum(QueryGlobalRefNumReqPb &req, QueryGlobalRefNumRspCollectionPb &rsp)
 {
     req.set_timeout(GetRequestContext()->reqTimeoutDuration.CalcRemainingTime());
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     return masterOC_->QueryGlobalRefNum(req, rsp);
 }
 
 Status WorkerLocalMasterOCApi::PushMetadataToMaster(master::PushMetaToMasterReqPb &req,
                                                     master::PushMetaToMasterRspPb &rsp)
 {
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     return masterOC_->PushMetaToMaster(req, rsp);
 }
 
@@ -1355,7 +1279,6 @@ Status WorkerLocalMasterOCApi::ReconcileMembershipChange(master::ReconciliationQ
 {
     LOG(INFO) << "worker(" << localHostPort_.ToString() << ") performs reconciliation with local master.";
     req.set_hostport(localHostPort_.ToString());
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     RETURN_IF_NOT_OK(masterOC_->IfNeedTriggerReconciliationImpl(req, rsp));
     return Status::OK();
 }
@@ -1381,7 +1304,6 @@ std::shared_ptr<WorkerMasterOCApi> WorkerMasterOcApiManager::CreateWorkerMasterA
 Status WorkerLocalMasterOCApi::PutP2PMeta(PutP2PMetaReqPb &req, PutP2PMetaRspPb &resp)
 {
     PerfPoint point(PerfKey::WORKER_LOCAL_PUT_P2P_META);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     RETURN_IF_NOT_OK(masterOC_->PutP2PMeta(req, resp));
     return Status::OK();
 }
@@ -1391,11 +1313,6 @@ Status WorkerLocalMasterOCApi::SubscribeReceiveEvent(
     std::shared_ptr<ServerUnaryWriterReader<SubscribeReceiveEventRspPb, SubscribeReceiveEventReqPb>> serverApi,
     std::shared_ptr<AsyncRpcRequestManager> &asyncRpcManager)
 {
-    auto rc = akSkManager_->GenerateSignature(req);
-    if (rc.IsError()) {
-        LOG_IF_ERROR(serverApi->SendStatus(rc), "SubscribeReceiveEvent Send Status to client failed.");
-        return rc;
-    }
     using LocalRpc = LocalAsyncRpcRequest<SubscribeReceiveEventReqPb, SubscribeReceiveEventRspPb>;
     auto remainingTime = GetRequestContext()->reqTimeoutDuration.CalcRemainingTime();
     auto asyncWriteCallback = [this, serverApi](LocalRpc &localRpc) -> Status {
@@ -1439,11 +1356,6 @@ Status WorkerLocalMasterOCApi::GetP2PMeta(
     std::shared_ptr<AsyncRpcRequestManager> &asyncRpcManager)
 {
     PerfPoint point(PerfKey::WORKER_LOCAL_GET_P2P_META);
-    auto rc = akSkManager_->GenerateSignature(req);
-    if (rc.IsError()) {
-        LOG_IF_ERROR(serverApi->SendStatus(rc), "GetP2PMeta Send Status to client failed.");
-        return rc;
-    }
     using LocalRpc = LocalAsyncRpcRequest<GetP2PMetaReqPb, GetP2PMetaRspPb>;
     auto remainingTime = GetRequestContext()->reqTimeoutDuration.CalcRemainingTime();
     auto asyncWriteCallback = [this, serverApi](LocalRpc &localRpc) -> Status {
@@ -1479,7 +1391,6 @@ Status WorkerLocalMasterOCApi::GetP2PMeta(
 
 Status WorkerLocalMasterOCApi::SendRootInfo(SendRootInfoReqPb &req, SendRootInfoRspPb &resp)
 {
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     RETURN_IF_NOT_OK(masterOC_->SendRootInfo(req, resp));
     return Status::OK();
 }
@@ -1488,12 +1399,6 @@ Status WorkerLocalMasterOCApi::RecvRootInfo(
     RecvRootInfoReqPb &req, std::shared_ptr<ServerUnaryWriterReader<RecvRootInfoRspPb, RecvRootInfoReqPb>> serverApi,
     std::shared_ptr<AsyncRpcRequestManager> &asyncRpcManager)
 {
-    auto rc = akSkManager_->GenerateSignature(req);
-    if (rc.IsError()) {
-        LOG_IF_ERROR(serverApi->SendStatus(rc), "RecvRootInfo Send Status to client failed.");
-        return rc;
-    }
-
     using LocalRpc = LocalAsyncRpcRequest<RecvRootInfoReqPb, RecvRootInfoRspPb>;
     auto remainingTime = GetRequestContext()->reqTimeoutDuration.CalcRemainingTime();
     auto asyncWriteCallback = [this, serverApi](LocalRpc &localRpc) -> Status {
@@ -1529,7 +1434,6 @@ Status WorkerLocalMasterOCApi::RecvRootInfo(
 
 Status WorkerLocalMasterOCApi::AckRecvFinish(AckRecvFinishReqPb &req, AckRecvFinishRspPb &resp)
 {
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     return masterOC_->AckRecvFinish(req, resp);
 }
 
@@ -1540,12 +1444,6 @@ Status WorkerLocalMasterOCApi::GetDataInfo(
 {
     auto remainingTime = GetRequestContext()->reqTimeoutDuration.CalcRemainingTime();
     req.set_sub_timeout(std::min<int64_t>(subTimeoutMs, remainingTime));
-    auto rc = akSkManager_->GenerateSignature(req);
-    if (rc.IsError()) {
-        LOG_IF_ERROR(serverApi->SendStatus(rc), "RecvRootInfo Send Status to client failed.");
-        return rc;
-    }
-
     using LocalRpc = LocalAsyncRpcRequest<GetDataInfoReqPb, GetDataInfoRspPb>;
 
     auto asyncWriteCallback = [this, serverApi, subTimeoutMs](LocalRpc &localRpc) -> Status {
@@ -1581,14 +1479,12 @@ Status WorkerLocalMasterOCApi::GetDataInfo(
 
 Status WorkerLocalMasterOCApi::RemoveP2PLocation(RemoveP2PLocationReqPb &req, RemoveP2PLocationRspPb &resp)
 {
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     return masterOC_->RemoveP2PLocation(req, resp);
 }
 
 Status WorkerLocalMasterOCApi::GetObjectLocations(master::GetObjectLocationsReqPb &req,
                                                   master::GetObjectLocationsRspPb &resp)
 {
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     return masterOC_->GetObjectLocations(req, resp);
 }
 
@@ -1601,50 +1497,42 @@ Status WorkerLocalMasterOCApi::GetObjectLocations(master::GetObjectLocationsReqP
 
 Status WorkerLocalMasterOCApi::ReleaseMetaData(ReleaseMetaDataReqPb &req, ReleaseMetaDataRspPb &resp)
 {
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     return masterOC_->ReleaseMetaData(req, resp);
 }
 
 Status WorkerLocalMasterOCApi::ReplacePrimary(master::ReplacePrimaryReqPb &req, master::ReplacePrimaryRspPb &rsp)
 {
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     return masterOC_->ReplacePrimary(req, rsp);
 }
 
 Status WorkerLocalMasterOCApi::PureQueryMeta(master::PureQueryMetaReqPb &req, master::PureQueryMetaRspPb &rsp)
 {
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     return masterOC_->PureQueryMeta(req, rsp);
 }
 
 Status WorkerLocalMasterOCApi::BatchExists(master::BatchExistsReqPb &req, master::BatchExistsRspPb &rsp)
 {
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     return masterOC_->BatchExists(req, rsp);
 }
 
 Status WorkerLocalMasterOCApi::CheckObjectDataLocation(master::CheckObjectDataLocationReqPb &req,
                                                        master::CheckObjectDataLocationRspPb &rsp)
 {
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     return masterOC_->CheckObjectDataLocation(req, rsp);
 }
 
 Status WorkerLocalMasterOCApi::RollbackMultiMeta(master::RollbackMultiMetaReqPb &req,
                                                  master::RollbackMultiMetaRspPb &rsp)
 {
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     return masterOC_->RollbackMultiMeta(req, rsp);
 }
 
 Status WorkerLocalMasterOCApi::Expire(master::ExpireReqPb &req, master::ExpireRspPb &rsp)
 {
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     return masterOC_->Expire(req, rsp);
 }
 Status WorkerLocalMasterOCApi::GetMetaInfo(GetMetaInfoReqPb &req, GetMetaInfoRspPb &rsp)
 {
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     return masterOC_->GetMetaInfo(req, rsp);
 }
 }  // namespace worker

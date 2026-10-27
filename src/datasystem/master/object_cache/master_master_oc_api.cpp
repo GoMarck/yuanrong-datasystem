@@ -110,7 +110,6 @@ Status MasterMasterOCApi::DeleteAllCopyMeta(DeleteAllCopyMetaReqPb &request, Del
                                      FormatString("Request timeout (%lld ms).", -remainingTime));
             opts.SetTimeout(remainingTime);
             request.set_timeout(remainingTime);
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
             return brpcSession_->DeleteAllCopyMeta(opts, request, response);
         },
         []() { return Status::OK(); },

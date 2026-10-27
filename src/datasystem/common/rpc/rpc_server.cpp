@@ -17,6 +17,7 @@
 /**
  * Description: RPC Server.
  */
+#include "datasystem/common/rpc/brpc_single_stream.h"
 #include "datasystem/common/rpc/rpc_server.h"
 
 #include <brpc/server.h>
@@ -34,6 +35,8 @@ DECLARE_int32(max_connection_pool_size);
 
 #include "datasystem/common/flags/common_flags.h"
 #include "datasystem/common/rpc/brpc_expired_request_interceptor.h"
+#include "datasystem/common/rpc/brpc_factory.h"
+#include "datasystem/common/rpc/brpc_auth.h"
 #include "datasystem/common/rpc/rpc_service_base.h"
 #include "datasystem/common/util/thread_pool.h"
 
@@ -111,7 +114,8 @@ Status RpcServer::AddBrpcServices(const std::function<Status(brpc::Server &)> &r
     return registrar(*brpcServer_);
 }
 
-Status RpcServer::StartBrpcServer(const std::string &addr, int port, BrpcLogPolicy logPolicy)
+Status RpcServer::StartBrpcServer(const std::string &addr, int port, BrpcLogPolicy logPolicy,
+                                   const RpcAuthDataFactory *authCapture)
 {
     if (!brpcServer_) {
         brpcServer_ = std::make_unique<brpc::Server>();
@@ -125,7 +129,12 @@ Status RpcServer::StartBrpcServer(const std::string &addr, int port, BrpcLogPoli
         logging::InitLogging(settings);
     }
 
+    BrpcChannelFactory::EnsureGlobalInitialized();
+    if (authCapture != nullptr) {
+        RETURN_IF_NOT_OK(RegisterRpcAuthChecksumColdOnce());
+    }
     brpc::ServerOptions options;
+    options.session_local_data_factory = authCapture;
     options.idle_timeout_sec = -1;
     // Builtin HTTP services (/flags, /pprof, /vars) are off by default for a
     // tight security surface; set FLAGS_brpc_enable_builtin_services=true to debug.
@@ -191,6 +200,23 @@ void RpcServer::StopBrpcServer()
         // Stop+Join, so doing it synchronously first makes the destructor's
         // calls no-ops (status=READY), avoiding a race with ~Server().
         brpcServer_->Stop(0);
+        std::vector<google::protobuf::Service *> services;
+        brpcServer_->ListServices(&services);
+        for (auto *&service : services) {
+            if (auto *authenticated = dynamic_cast<BrpcAuthService *>(service)) {
+                service = &authenticated->Delegate();
+            }
+        }
+        for (auto *service : services) {
+            if (auto *streamService = dynamic_cast<BrpcSingleStreamService *>(service)) {
+                streamService->Stop();
+            }
+        }
+        for (auto *service : services) {
+            if (auto *streamService = dynamic_cast<BrpcSingleStreamService *>(service)) {
+                streamService->Wait();
+            }
+        }
         brpcServer_->Join();
         brpcServer_.reset();
     }

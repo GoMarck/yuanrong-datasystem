@@ -1717,7 +1717,6 @@ Status ClientWorkerSCServiceImpl::UnblockProducer(
 {
     UnblockProducerReqPb req;
     RETURN_IF_NOT_OK(serverApi->Read(req));
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(akSkManager_->VerifySignatureAndTimestamp(req), "AK/SK failed.");
     const auto &streamName = req.stream_name();
     const auto &workerAddr = req.worker_addr();
     LOG(INFO) << "UnBlocking Producer for stream: " << streamName << " From remote worker: " << workerAddr;
@@ -1735,7 +1734,6 @@ Status ClientWorkerSCServiceImpl::BlockProducer(
 {
     BlockProducerReqPb req;
     RETURN_IF_NOT_OK(serverApi->Read(req));
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(akSkManager_->VerifySignatureAndTimestamp(req), "AK/SK failed.");
     const auto &streamName = req.stream_name();
     const auto &workerAddr = req.worker_addr();
     LOG(INFO) << "Blocking Producer for stream: " << streamName << " From remote worker: " << workerAddr;
