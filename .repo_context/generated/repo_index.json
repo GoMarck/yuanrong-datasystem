@@ -1,6 +1,6 @@
 {
   "repo_root": ".",
-  "generated_at_utc": "2026-10-29T07:55:43+00:00",
+  "generated_at_utc": "2026-10-29T12:52:35+00:00",
   "root_files": [
     "README.md",
     "build.sh",
@@ -208,6 +208,7 @@
         "  - metadata_route_resolver.h",
         "  - rebalance_executor.cpp",
         "  - rebalance_executor.h",
+        "  - rpc_service_auth_registration.h",
         "  - worker_api_c_wrapper.cpp",
         "  - worker_api_c_wrapper.h",
         "  - worker_flags.cpp",

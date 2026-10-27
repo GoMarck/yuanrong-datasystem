@@ -46,7 +46,6 @@ Status MetadataManagerHolder::Init(MetadataManagerHolderParam param)
     LOG(INFO) << "Init metadata manager holder.";
     dbRootPath_ = std::move(param.dbRootPath);
     currentWorkerId_ = std::move(param.currWorkerId);
-    akSkManager_ = param.akSkManager;
     etcdStore_ = param.etcdStore;
     persistenceApi_ = param.persistenceApi;
     masterAddress_ = param.masterAddress;
@@ -87,7 +86,7 @@ Status MetadataManagerHolder::CreateMetaManager(const std::string &workerId, Roc
     double scElapsed = 0;
     if (isOcEnabled_) {
         auto oc = std::make_shared<master::OCMetadataManager>(
-            akSkManager_, objectRocksStore, etcdStore_, persistenceApi_, masterAddress_.ToString(), placement_,
+            objectRocksStore, etcdStore_, persistenceApi_, masterAddress_.ToString(), placement_,
             membership_, centralizedMetadata_, metadataAddress_, localAddress_, exitRequested_, workerId, isNewNode_);
         LOG(INFO) << "Start init OCMetadataManager for " << workerId;
         RETURN_IF_NOT_OK(oc->Init());
@@ -98,7 +97,7 @@ Status MetadataManagerHolder::CreateMetaManager(const std::string &workerId, Roc
 
     if (isScEnabled_) {
         auto sc = std::make_shared<master::SCMetadataManager>(
-            masterAddress_, akSkManager_, rpcSessionManager_, placement_, membership_, centralizedMetadata_,
+            masterAddress_, rpcSessionManager_, placement_, membership_, centralizedMetadata_,
             metadataAddress_, streamRocksStore, workerId);
         LOG(INFO) << "Start init SCMetadataManager for " << workerId;
         timer.Reset();

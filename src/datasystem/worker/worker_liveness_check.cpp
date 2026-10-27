@@ -57,15 +57,13 @@ DS_DECLARE_int32(sc_stream_socket_num);
 namespace datasystem {
 namespace worker {
 WorkerLivenessCheck::WorkerLivenessCheck(WorkerOCServer *workerOcServer, std::string probeFileName,
-                                         uint32_t probeTimeoutMs, HostPort hostPort, std::string workerUuid,
-                                         std::shared_ptr<AkSkManager> akSkManager)
+                                         uint32_t probeTimeoutMs, HostPort hostPort, std::string workerUuid)
     : workerOcServer_(workerOcServer),
       probeFileName_(std::move(probeFileName)),
       probeTimeoutMs_(probeTimeoutMs),
       policies_{ { "CheckWorkerServices", std::bind(&WorkerLivenessCheck::CheckWorkerServices, this) } },
       hostPort_(std::move(hostPort)),
-      workerUuid_(std::move(workerUuid)),
-      akSkManager_(std::move(akSkManager))
+      workerUuid_(std::move(workerUuid))
 {
     if (IsMasterNode()) {
         policies_.emplace_back(
@@ -269,7 +267,6 @@ Status WorkerLivenessCheck::CheckRocksDbService()
     }
     master::LivenessCheckReqPb req;
     master::LivenessCheckRspPb rsp;
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     auto rc = workerOcServer_->GetOcMetaSvc()->LivenessCheck(req, rsp);
     if (rc.IsError()) {
         RETURN_STATUS_LOG_ERROR(K_WORKER_ABNORMAL,

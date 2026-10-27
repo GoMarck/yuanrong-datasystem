@@ -34,7 +34,7 @@ namespace ut {
 class SCMetadataManagerForMigrationTest : public SCMetadataManager {
 public:
     SCMetadataManagerForMigrationTest()
-        : SCMetadataManager(HostPort(), nullptr, nullptr, nullptr, nullptr, false, HostPort(), nullptr,
+        : SCMetadataManager(HostPort(), nullptr, nullptr, nullptr, false, HostPort(), nullptr,
                             "migration-test")
     {
     }
@@ -59,7 +59,7 @@ public:
             .WillRepeatedly(Invoke(this, &SCMigrateMetadataManagerTest::MockMigrateMetaDataFailed));
         HostPort hostPort;
         auto scMetadataManager = std::make_shared<master::SCMetadataManager>(
-            hostPort, nullptr, nullptr, nullptr, nullptr, false, HostPort(), nullptr, "");
+            hostPort, nullptr, nullptr, nullptr, false, HostPort(), nullptr, "");
         DS_ASSERT_OK(migrateManager_.MigrateMetaDataWithRetry(scMetadataManager, info, true));
     }
 
@@ -77,7 +77,7 @@ public:
             .WillRepeatedly(Invoke(this, &SCMigrateMetadataManagerTest::MockMigrateMetaDataRetError));
         HostPort hostPort;
         auto scMetadataManager = std::make_shared<master::SCMetadataManager>(
-            hostPort, nullptr, nullptr, nullptr, nullptr, false, HostPort(), nullptr, "");
+            hostPort, nullptr, nullptr, nullptr, false, HostPort(), nullptr, "");
         ASSERT_EQ(migrateManager_.MigrateMetaData(scMetadataManager, info).GetCode(), K_RUNTIME_ERROR);
     }
 

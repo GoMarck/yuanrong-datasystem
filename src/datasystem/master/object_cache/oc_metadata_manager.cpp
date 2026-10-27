@@ -180,7 +180,7 @@ static Status WaitForClientIdRefMigration(MasterMasterOCApi &api, const GIncreas
     }
 }
 
-OCMetadataManager::OCMetadataManager(std::shared_ptr<AkSkManager> akSkManager, RocksStore *rocksStore,
+OCMetadataManager::OCMetadataManager(RocksStore *rocksStore,
                                      EtcdStore *etcdStore, std::shared_ptr<PersistenceApi> persistApi,
                                      const std::string &masterAddress, const cluster::PlacementFacade *placement,
                                      const cluster::MembershipEndpointView *membership, bool centralizedMetadata,
@@ -191,7 +191,6 @@ OCMetadataManager::OCMetadataManager(std::shared_ptr<AkSkManager> akSkManager, R
       topologyMembership_(membership),
       localAddress_(std::move(localAddress)),
       exitRequested_(exitRequested),
-      akSkManager_(std::move(akSkManager)),
       eventName_(OC_METADATA_MANAGER + workerId),
       persistApi_(persistApi),
       newNode_(newNode)
@@ -214,10 +213,10 @@ Status OCMetadataManager::Init()
     RETURN_IF_NOT_OK(InitGlobalRef());
     asyncPool_ = std::make_unique<ThreadPool>(ASYNC_MIN_THREAD_NUM, ASYNC_MAX_THREAD_NUM, "OcAsyncTask");
     notifyWorkerManager_ =
-        std::make_unique<OCNotifyWorkerManager>(objectStore_, rocksdbHealthy, akSkManager_, this);
+        std::make_unique<OCNotifyWorkerManager>(objectStore_, rocksdbHealthy, this);
     RETURN_IF_NOT_OK(notifyWorkerManager_->Init());
     globalCacheDeleteManager_ = std::make_unique<OCGlobalCacheDeleteManager>(
-        objectStore_, persistApi_, rocksdbHealthy, masterAddress_, akSkManager_);
+        objectStore_, persistApi_, rocksdbHealthy, masterAddress_);
     RETURN_IF_NOT_OK(globalCacheDeleteManager_->Init());
     expiredObjectManager_ = std::make_unique<ExpiredObjectManager>(masterAddress_, this);
     expiredObjectManager_->Init();
@@ -3118,7 +3117,7 @@ Status OCMetadataManager::GIncreaseRemoteClientIdToMaster(const std::string &rem
     HostPort localAddr;
     RETURN_IF_NOT_OK(localAddr.ParseString(masterAddress_));
     std::unique_ptr<MasterMasterOCApi> api;
-    api = std::make_unique<MasterMasterOCApi>(masterAddr, localAddr, akSkManager_);
+    api = std::make_unique<MasterMasterOCApi>(masterAddr, localAddr);
     RETURN_IF_NOT_OK(api->Init());
 
     GIncreaseReqPb req;
@@ -3126,7 +3125,6 @@ Status OCMetadataManager::GIncreaseRemoteClientIdToMaster(const std::string &rem
     req.set_address(masterAddress_);
     req.set_remote_client_id(remoteClientId);
     req.set_redirect(checkRedirect);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     Status rc = [&api, &req, &rsp, &localAddr, this]() {
         Status res = WaitForClientIdRefMigration(*api, req, rsp);
         RETURN_IF_NOT_OK(res);
@@ -3134,10 +3132,9 @@ Status OCMetadataManager::GIncreaseRemoteClientIdToMaster(const std::string &rem
             HostPort newMetaAddr;
             RETURN_IF_NOT_OK(newMetaAddr.ParseString(rsp.infos()[0].redirect_meta_address()));
             LOG(INFO) << "clientId ref has been migrated to the new master[%s]" << newMetaAddr.ToString();
-            api = std::make_unique<MasterMasterOCApi>(newMetaAddr, localAddr, akSkManager_);
+            api = std::make_unique<MasterMasterOCApi>(newMetaAddr, localAddr);
             RETURN_IF_NOT_OK(api->Init());
             req.set_redirect(false);
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
             rsp.Clear();
             res = api->GIncreaseMasterAppRef(req, rsp);
         }
@@ -3337,7 +3334,7 @@ Status OCMetadataManager::ReleaseGRefsToMaster(const std::string &remoteClientId
     RETURN_IF_NOT_OK(localAddr.ParseString(masterAddress_));
     // create master to master api
     std::unique_ptr<MasterMasterOCApi> api;
-    api = std::make_unique<MasterMasterOCApi>(masterAddr, localAddr, akSkManager_);
+    api = std::make_unique<MasterMasterOCApi>(masterAddr, localAddr);
     RETURN_IF_NOT_OK(api->Init());
 
     ReleaseGRefsReqPb req;
@@ -3347,7 +3344,6 @@ Status OCMetadataManager::ReleaseGRefsToMaster(const std::string &remoteClientId
                              FormatString("Request timeout (%ld ms).", -remainingTime));
     req.set_timeout(remainingTime);
     req.set_remote_client_id(remoteClientId);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
         api->ReleaseGRefsOfRemoteClientId(req, rsp),
         FormatString("ReleaseGRefsToMaster failed. masterAddr:%s", masterAddr.ToString()));
@@ -4035,7 +4031,7 @@ void OCMetadataManager::AssignLocalWorker(object_cache::MasterWorkerOCServiceImp
                                           object_cache::WorkerWorkerOCServiceImpl *workerWorkerService,
                                           const HostPort &masterAddr)
 {
-    localApi_ = std::make_unique<object_cache::WorkerLocalWorkerOCApi>(workerWorkerService, akSkManager_);
+    localApi_ = std::make_unique<object_cache::WorkerLocalWorkerOCApi>(workerWorkerService);
     notifyWorkerManager_->AssignLocalWorker(masterWorkerService, masterAddr);
     globalCacheDeleteManager_->AssignLocalWorker(masterWorkerService);
     // We set initialized_ as true at the end of OCMetadataManager::AssignLocalWorker, because if
@@ -4594,13 +4590,8 @@ void OCMetadataManager::TryGetObjectData(const std::string &objectKey, const Tbb
     req.set_try_lock(true);
     req.set_object_key(objectKey);
     req.set_version(accessor->second.meta.version());
-    Status status = akSkManager_->GenerateSignature(req);
-    if (status.IsError()) {
-        LOG(WARNING) << FormatString("[ObjectKey %s] Failed to generate signature, detail: %s", objectKey, status);
-        return;
-    }
     uint32_t curIndex = payloads.size();
-    status = localApi_->GetObjectRemote(req, rsp, tmpPayloads);
+    auto status = localApi_->GetObjectRemote(req, rsp, tmpPayloads);
     if (status.IsError() || tmpPayloads.empty()) {
         // If we meets K_UNKNOWN_ERROR, it means worker want us to erase the location because the object is bad.
         if (status.GetCode() == StatusCode::K_UNKNOWN_ERROR) {

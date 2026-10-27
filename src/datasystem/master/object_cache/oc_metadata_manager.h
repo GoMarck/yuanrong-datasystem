@@ -35,8 +35,8 @@
 #include <tbb/concurrent_hash_map.h>
 
 #include "datasystem/cluster/executor/topology_phase_callbacks.h"
+#include "datasystem/common/inject/inject_point.h"
 #include "datasystem/cluster/membership/membership_endpoint_view.h"
-#include "datasystem/common/ak_sk/ak_sk_manager.h"
 #include "datasystem/common/log/log.h"
 #include "datasystem/common/util/locks.h"
 #include "datasystem/common/l2cache/persistence_api.h"
@@ -246,7 +246,6 @@ public:
 
     /**
      * @brief Construct a new OCMetadataManager object
-     * @param[in] akSkManager Used to do AK/SK authenticate.
      * @param[in] rocksStore pointer to RocksStore owned by WorkerOcServer
      * @param[in] etcdStore pointer to EtcdStore owned by WorkerOcServer
      * @param[in] persistApi Provides calls to a persistence service through a cloud client.
@@ -260,7 +259,7 @@ public:
      * @param[in] workerId The worker id.
      * @param[in] newNode Whether the local Worker is joining for the first time.
      */
-    OCMetadataManager(std::shared_ptr<AkSkManager> akSkManager, RocksStore *rocksStore, EtcdStore *etcdStore,
+    OCMetadataManager(RocksStore *rocksStore, EtcdStore *etcdStore,
                       std::shared_ptr<PersistenceApi> persistApi = nullptr, const std::string &masterAddress = "",
                       const cluster::PlacementFacade *placement = nullptr,
                       const cluster::MembershipEndpointView *membership = nullptr, bool centralizedMetadata = false,
@@ -2116,7 +2115,6 @@ private:
     const std::string localAddress_;
     const std::atomic<bool> *exitRequested_{ nullptr };
 
-    std::shared_ptr<AkSkManager> akSkManager_;
     std::unique_ptr<object_cache::WorkerLocalWorkerOCApi> localApi_;
 
     std::shared_ptr<ObjectMetaStore> objectStore_{ nullptr };  // Metadata store for object.
