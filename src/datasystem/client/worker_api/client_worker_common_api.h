@@ -70,7 +70,13 @@
 namespace brpc {
 class Channel;
 }
+namespace google {
+namespace protobuf {
+class ServiceDescriptor;
+}
+}
 namespace datasystem {
+struct BrpcChannelConfig;
 class WorkerService_BrpcGenericStub;
 }
 
@@ -795,6 +801,15 @@ private:
      *        result is retryable (caller continues the backoff loop), false otherwise (caller stops).
      */
     bool LogUrmaHandshakeRetryResult(const Status &status);
+
+protected:
+    Status InitializeRpcAuthMode();
+    Status CreateRpcChannel(const BrpcChannelConfig &config, const google::protobuf::ServiceDescriptor *plain,
+                            const google::protobuf::ServiceDescriptor *authenticated,
+                            std::unique_ptr<brpc::Channel> &out);
+    std::shared_ptr<Signature> rpcSignatureOwner_;
+    bool rpcAuthModeInitialized_ = false;
+    bool rpcAuthEnabled_ = false;
 };
 }  // namespace client
 }  // namespace datasystem

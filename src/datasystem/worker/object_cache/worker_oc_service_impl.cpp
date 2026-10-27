@@ -1315,7 +1315,6 @@ Status WorkerOCServiceImpl::MigrateData(const MigrateDataReqPb &req, MigrateData
 {
     ScopedRequestContext ctx;
     Raii attachHealth([this, &rsp] { AttachPublishedSelfUbHealth(*this, rsp); });
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(akSkManager_->VerifySignatureAndTimestamp(req), "AK/SK failed.");
     return gMigrateProc_->MigrateData(req, rsp, std::move(payloads));
 }
 
@@ -1323,7 +1322,6 @@ Status WorkerOCServiceImpl::MigrateDataDirect(const MigrateDataDirectReqPb &req,
 {
     ScopedRequestContext ctx;
     Raii attachHealth([this, &rsp] { AttachPublishedSelfUbHealth(*this, rsp); });
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(akSkManager_->VerifySignatureAndTimestamp(req), "AK/SK failed.");
     return gMigrateProc_->MigrateDataDirect(req, rsp);
 }
 
@@ -3464,7 +3462,6 @@ Status WorkerOCServiceImpl::GetHashRing(const GetHashRingReqPb &req, GetHashRing
 {
     ScopedRequestContext ctx;
     RETURN_RUNTIME_ERROR_IF_NULL(akSkManager_);
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(akSkManager_->VerifySignatureAndTimestamp(req), "AK/SK failed.");
     RETURN_RUNTIME_ERROR_IF_NULL(topologyEngine_);
     std::shared_ptr<const cluster::TopologySnapshot> snapshot;
     RETURN_IF_NOT_OK(membership_.GetSnapshot(snapshot));

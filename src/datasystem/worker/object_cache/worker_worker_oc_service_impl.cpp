@@ -340,7 +340,6 @@ Status WorkerWorkerOCServiceImpl::ProcessSingleGetObjectRemote(GetObjectRemoteRe
     ScopedRequestContext ctx;
     METRIC_TIMER(metrics::KvMetricId::WORKER_RPC_REMOTE_GET_INBOUND_LATENCY);
     Timer slowLogTimer;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(akSkManager_->VerifySignatureAndTimestamp(req), "AK/SK failed.");
     const std::string callerAddress = GetRemoteAddressForLog(req);
     if (transportContext != nullptr) {
         RETURN_IF_NOT_OK(PrepareSingleGetObjectRemoteReq(req, *transportContext));
@@ -1047,11 +1046,10 @@ Status WorkerWorkerOCServiceImpl::GetObjectRemoteImpl(const GetObjectRemoteReqPb
                                       isUrmaFastTransport, isPipelineH2DRequest, batchImplPoint);
 }
 
-Status WorkerWorkerOCServiceImpl::CheckCoordinatorState(const CheckCoordinatorStateReqPb &req,
+Status WorkerWorkerOCServiceImpl::CheckCoordinatorState(const CheckCoordinatorStateReqPb &,
                                                         CheckCoordinatorStateRspPb &rsp)
 {
     ScopedRequestContext ctx;
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(akSkManager_->VerifySignatureAndTimestamp(req), "AK/SK failed.");
     CHECK_FAIL_RETURN_STATUS(static_cast<bool>(coordinationAvailable_), K_NOT_READY,
                              "Coordination availability provider is not initialized.");
     bool isCoordinationAvailable = coordinationAvailable_();
@@ -1060,11 +1058,10 @@ Status WorkerWorkerOCServiceImpl::CheckCoordinatorState(const CheckCoordinatorSt
     return Status::OK();
 }
 
-Status WorkerWorkerOCServiceImpl::GetClusterState(const GetClusterStateReqPb &req, GetClusterStateRspPb &rsp)
+Status WorkerWorkerOCServiceImpl::GetClusterState(const GetClusterStateReqPb &, GetClusterStateRspPb &rsp)
 {
     ScopedRequestContext ctx;
     INJECT_POINT("WorkerWorkerOCServiceImpl.GetClusterState.returnError");
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(akSkManager_->VerifySignatureAndTimestamp(req), "AK/SK failed.");
     CHECK_FAIL_RETURN_STATUS(static_cast<bool>(backendObservationProvider_), K_NOT_READY,
                              "Control-backend observation provider is not initialized.");
     RETURN_IF_NOT_OK(FillGetClusterStateRspPbFromControlBackendObservation(backendObservationProvider_(), rsp));
@@ -1081,7 +1078,6 @@ Status WorkerWorkerOCServiceImpl::QueryUbPortHealth(const QueryUbPortHealthReqPb
                                                     QueryUbPortHealthRspPb &rsp)
 {
     RETURN_RUNTIME_ERROR_IF_NULL(akSkManager_);
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(akSkManager_->VerifySignatureAndTimestamp(req), "AK/SK failed.");
     RETURN_RUNTIME_ERROR_IF_NULL(ocClientWorkerSvc_);
     return ocClientWorkerSvc_->QuerySelfUbPortHealth(req, rsp);
 }
@@ -1183,7 +1179,6 @@ Status WorkerWorkerOCServiceImpl::ProcessBatchGetObjectRemoteRpc(
     VLOG(1) << AppendSrcDstForLog(
         FormatString("[Get/RemotePull] Receive, count: %d, remainingTime: %zu", req.requests_size(), realRemainingTime),
         callerAddress, FLAGS_worker_address);
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(akSkManager_->VerifySignatureAndTimestamp(req), "AK/SK failed.");
     BatchRh2dContext batchTransportContext;
     auto prepareRc = PrepareBatchGetObjectRemoteReq(req, batchTransportContext);
     if (prepareRc.IsError()) {

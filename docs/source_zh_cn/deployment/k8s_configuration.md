@@ -477,6 +477,7 @@ global:
 
 | 配置项 | 类型 | 默认值 | 描述 |
 |-----|------|---------|-------------|
+| global.akSk.enableRpcAkSk | bool | `false` | 启动时启用 RPC 请求 AK/SK 认证，修改后需重启 Worker。关闭时不可配置系统或租户 AK/SK；无认证滚动升级期间保持关闭。客户端首次启用需重建客户端。 |
 | global.akSk.systemAccessKey | string | `""` | 系统访问密钥 |
 | global.akSk.systemSecretKey | string | `""` | 系统密钥 |
 | global.akSk.systemDataKey | string | `""` | 系统数据秘钥 |

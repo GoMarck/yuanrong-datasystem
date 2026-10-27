@@ -66,6 +66,19 @@
 #include "datasystem/common/util/uuid_generator.h"
 #include "datasystem/common/rdma/fast_transport_manager_wrapper.h"
 #include "datasystem/common/rpc/brpc_factory.h"
+#include "datasystem/common/rpc/brpc_auth.h"
+#include "datasystem/worker/rpc_service_auth_registration.h"
+#include "datasystem/protos/share_memory.auth.pb.h"
+#include "datasystem/protos/object_posix.auth.pb.h"
+#include "datasystem/protos/worker_object.auth.pb.h"
+#include "datasystem/protos/stream_posix.auth.pb.h"
+#include "datasystem/protos/worker_stream.auth.pb.h"
+#include "datasystem/protos/master_object.auth.pb.h"
+#include "datasystem/protos/master_stream.auth.pb.h"
+#ifdef ENABLE_PERF
+#include "datasystem/protos/perf_posix.brpc.pb.h"
+#include "datasystem/protos/perf_posix.auth.pb.h"
+#endif
 #include "datasystem/common/rpc/brpc_stream_close_helper.h"
 #include "datasystem/common/rpc/rpc_stub_cache_mgr.h"
 #include "datasystem/common/rpc/unix_sock_fd.h"
@@ -130,6 +143,7 @@ DS_DEFINE_uint32(page_size, 1024 * 1024,
                  "Size of the page used for caching worker files. The valid range is 4096-1073741824.");
 DS_DEFINE_bool(ipc_through_shared_memory, true, "Using shared memory to exchange data between client and worker.");
 DS_DECLARE_bool(authorization_enable);
+DS_DEFINE_bool(enable_rpc_ak_sk, false, "Enable request AK/SK authentication at worker startup.");
 DS_DEFINE_string(system_access_key, "", "The access key for system component AK/SK authentication.");
 DS_DEFINE_string(system_secret_key, "", "The secret key for system component AK/SK authentication.");
 DS_DEFINE_string(system_data_key, "", "The data key for system encrypte and decrypt secert key.");
@@ -631,6 +645,8 @@ WorkerOCServer::~WorkerOCServer()
     // exit, exception unwind) must replicate this ordering.
     // StopBrpcServer() is idempotent (resets brpcServer_ after Stop+Join), so calling
     // it here has no effect when ~RpcServer() later calls StopBrpcServer() again.
+    rpcAuthServices_.clear();
+    rpcAuthCapture_.reset();
     builder_ = RpcServer::Builder();
     if (objCacheMasterSvc_ != nullptr) {
         objCacheMasterSvc_->Shutdown();
@@ -694,7 +710,13 @@ Status WorkerOCServer::InitWorkerOCService()
     RETURN_IF_NOT_OK(objCacheClientWorkerSvc_->Init());
     if (rpcServer_ && rpcServer_->IsBrpc()) {
         brpcOcAdapter_ = std::make_unique<WorkerOCServiceBrpcAdapter>(*objCacheClientWorkerSvc_);
-        RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcOcAdapter_.get()));
+        if (rpcAuthCapture_) {
+            RETURN_IF_NOT_OK(RegisterRpcAuthService(
+                *rpcServer_, *brpcOcAdapter_, *WorkerOCServiceAuth::descriptor(),
+                akSkManager_, rpcAuthServices_));
+        } else {
+            RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcOcAdapter_.get()));
+        }
     } else {
         RpcServiceCfg cfg;
         cfg.numRegularSockets_ = std::max(FLAGS_rpc_thread_num, LIGHTWEIGHT_SERVICE_THREAD_NUM);
@@ -712,7 +734,13 @@ Status WorkerOCServer::InitWorkerWorkerOCService()
     RETURN_IF_NOT_OK(objCacheWorkerWkSvc_->Init());
     if (rpcServer_ && rpcServer_->IsBrpc()) {
         brpcWorkerWorkerOcAdapter_ = std::make_unique<WorkerWorkerOCServiceBrpcAdapter>(*objCacheWorkerWkSvc_);
-        RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcWorkerWorkerOcAdapter_.get()));
+        if (rpcAuthCapture_) {
+            RETURN_IF_NOT_OK(RegisterRpcAuthService(
+                *rpcServer_, *brpcWorkerWorkerOcAdapter_, *WorkerWorkerOCServiceAuth::descriptor(),
+                akSkManager_, rpcAuthServices_));
+        } else {
+            RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcWorkerWorkerOcAdapter_.get()));
+        }
     } else {
         RpcServiceCfg cfg;
         cfg.numRegularSockets_ = std::max(FLAGS_rpc_thread_num, LIGHTWEIGHT_SERVICE_THREAD_NUM);
@@ -734,7 +762,13 @@ Status WorkerOCServer::InitWorkerWorkerTransportService()
     if (rpcServer_ && rpcServer_->IsBrpc()) {
         brpcWorkerWorkerTransAdapter_ =
             std::make_unique<WorkerWorkerTransportServiceBrpcAdapter>(*objCacheWorkerTransSvc_);
-        RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcWorkerWorkerTransAdapter_.get()));
+        if (rpcAuthCapture_) {
+            RETURN_IF_NOT_OK(RegisterRpcAuthService(
+                *rpcServer_, *brpcWorkerWorkerTransAdapter_, *WorkerWorkerTransportServiceAuth::descriptor(),
+                akSkManager_, rpcAuthServices_));
+        } else {
+            RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcWorkerWorkerTransAdapter_.get()));
+        }
     } else {
         RpcServiceCfg cfg;
         cfg.numRegularSockets_ = LIGHTWEIGHT_SERVICE_THREAD_NUM;
@@ -751,7 +785,13 @@ Status WorkerOCServer::InitMasterWorkerOCService()
     RETURN_IF_NOT_OK(objCacheWorkerMsSvc_->Init());
     if (rpcServer_ && rpcServer_->IsBrpc()) {
         brpcMasterWorkerOcAdapter_ = std::make_unique<MasterWorkerOCServiceBrpcAdapter>(*objCacheWorkerMsSvc_);
-        RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcMasterWorkerOcAdapter_.get()));
+        if (rpcAuthCapture_) {
+            RETURN_IF_NOT_OK(RegisterRpcAuthService(
+                *rpcServer_, *brpcMasterWorkerOcAdapter_, *MasterWorkerOCServiceAuth::descriptor(),
+                akSkManager_, rpcAuthServices_));
+        } else {
+            RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcMasterWorkerOcAdapter_.get()));
+        }
     } else {
         RpcServiceCfg cfg;
         cfg.numRegularSockets_ = std::max(FLAGS_rpc_thread_num, LIGHTWEIGHT_SERVICE_THREAD_NUM);
@@ -789,7 +829,13 @@ Status WorkerOCServer::InitClientWorkerSCService()
     RETURN_IF_NOT_OK(CheckScEncryptSecretKey());
     if (rpcServer_ && rpcServer_->IsBrpc()) {
         brpcClientWorkerScAdapter_ = std::make_unique<ClientWorkerSCServiceBrpcAdapter>(*streamCacheClientWorkerSvc_);
-        RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcClientWorkerScAdapter_.get()));
+        if (rpcAuthCapture_) {
+            RETURN_IF_NOT_OK(RegisterRpcAuthService(
+                *rpcServer_, *brpcClientWorkerScAdapter_, *ClientWorkerSCServiceAuth::descriptor(),
+                akSkManager_, rpcAuthServices_));
+        } else {
+            RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcClientWorkerScAdapter_.get()));
+        }
     } else {
         RpcServiceCfg cfg;
         cfg.numRegularSockets_ = FLAGS_sc_regular_socket_num;
@@ -810,7 +856,13 @@ Status WorkerOCServer::InitWorkerWorkerSCService()
                              "The number of service threads exceeds the upper limit, please adjust it");
     if (rpcServer_ && rpcServer_->IsBrpc()) {
         brpcWorkerWorkerScAdapter_ = std::make_unique<WorkerWorkerSCServiceBrpcAdapter>(*streamCacheWorkerWorkerSvc_);
-        RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcWorkerWorkerScAdapter_.get()));
+        if (rpcAuthCapture_) {
+            RETURN_IF_NOT_OK(RegisterRpcAuthService(
+                *rpcServer_, *brpcWorkerWorkerScAdapter_, *WorkerWorkerSCServiceAuth::descriptor(),
+                akSkManager_, rpcAuthServices_));
+        } else {
+            RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcWorkerWorkerScAdapter_.get()));
+        }
     } else {
         RpcServiceCfg cfg;
         cfg.numRegularSockets_ = FLAGS_sc_regular_socket_num;
@@ -831,7 +883,13 @@ Status WorkerOCServer::InitMasterWorkerSCService()
     RETURN_IF_NOT_OK(streamCacheMasterWorkerSvc_->Init());
     if (rpcServer_ && rpcServer_->IsBrpc()) {
         brpcMasterWorkerScAdapter_ = std::make_unique<MasterWorkerSCServiceBrpcAdapter>(*streamCacheMasterWorkerSvc_);
-        RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcMasterWorkerScAdapter_.get()));
+        if (rpcAuthCapture_) {
+            RETURN_IF_NOT_OK(RegisterRpcAuthService(
+                *rpcServer_, *brpcMasterWorkerScAdapter_, *MasterWorkerSCServiceAuth::descriptor(),
+                akSkManager_, rpcAuthServices_));
+        } else {
+            RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcMasterWorkerScAdapter_.get()));
+        }
     } else {
         RpcServiceCfg cfg;
         cfg.numRegularSockets_ = std::max(FLAGS_sc_regular_socket_num, LIGHTWEIGHT_SERVICE_THREAD_NUM);
@@ -847,7 +905,13 @@ Status WorkerOCServer::InitWorkerService()
     RETURN_IF_NOT_OK(workerSvc_->Init());
     if (rpcServer_ && rpcServer_->IsBrpc()) {
         brpcWorkerAdapter_ = std::make_unique<WorkerServiceBrpcAdapter>(*workerSvc_);
-        RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcWorkerAdapter_.get()));
+        if (rpcAuthCapture_) {
+            RETURN_IF_NOT_OK(RegisterRpcAuthService(
+                *rpcServer_, *brpcWorkerAdapter_, *WorkerServiceAuth::descriptor(),
+                akSkManager_, rpcAuthServices_));
+        } else {
+            RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcWorkerAdapter_.get()));
+        }
     } else {
         RpcServiceCfg cfg;
         cfg.numRegularSockets_ = std::max(FLAGS_rpc_thread_num, LIGHTWEIGHT_SERVICE_THREAD_NUM);
@@ -899,7 +963,13 @@ Status WorkerOCServer::InitMasterOCService()
     RETURN_IF_NOT_OK(objCacheMasterSvc_->Init());
     if (rpcServer_ && rpcServer_->IsBrpc()) {
         brpcMasterOcAdapter_ = std::make_unique<master::MasterOCServiceBrpcAdapter>(*objCacheMasterSvc_);
-        RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcMasterOcAdapter_.get()));
+        if (rpcAuthCapture_) {
+            RETURN_IF_NOT_OK(RegisterRpcAuthService(
+                *rpcServer_, *brpcMasterOcAdapter_, *master::MasterOCServiceAuth::descriptor(),
+                akSkManager_, rpcAuthServices_));
+        } else {
+            RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcMasterOcAdapter_.get()));
+        }
     } else {
         RpcServiceCfg cfg;
         cfg.numRegularSockets_ = std::max(FLAGS_rpc_thread_num, LIGHTWEIGHT_SERVICE_THREAD_NUM);
@@ -915,7 +985,13 @@ Status WorkerOCServer::InitMasterSCService()
     RETURN_IF_NOT_OK(streamCacheMasterSvc_->Init());
     if (rpcServer_ && rpcServer_->IsBrpc()) {
         brpcMasterScAdapter_ = std::make_unique<master::MasterSCServiceBrpcAdapter>(*streamCacheMasterSvc_);
-        RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcMasterScAdapter_.get()));
+        if (rpcAuthCapture_) {
+            RETURN_IF_NOT_OK(RegisterRpcAuthService(
+                *rpcServer_, *brpcMasterScAdapter_, *master::MasterSCServiceAuth::descriptor(),
+                akSkManager_, rpcAuthServices_));
+        } else {
+            RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcMasterScAdapter_.get()));
+        }
     } else {
         RpcServiceCfg cfg;
         cfg.numRegularSockets_ = std::max(FLAGS_rpc_thread_num, LIGHTWEIGHT_SERVICE_THREAD_NUM);
@@ -950,10 +1026,21 @@ Status WorkerOCServer::InitUtOCService()
 Status WorkerOCServer::CreateAndInitPerfService()
 {
     perfService_ = std::make_unique<PerfServiceImpl>(hostPort_, akSkManager_);
-    RpcServiceCfg cfg;
-    cfg.numRegularSockets_ = RPC_NUM_BACKEND;
-    cfg.numStreamSockets_ = 0;
-    builder_.AddService(perfService_.get(), cfg);
+    if (rpcServer_ && rpcServer_->IsBrpc()) {
+        brpcPerfAdapter_ = std::make_unique<PerfServiceBrpcAdapter>(*perfService_);
+        if (rpcAuthCapture_) {
+            RETURN_IF_NOT_OK(RegisterRpcAuthService(
+                *rpcServer_, *brpcPerfAdapter_, *PerfServiceAuth::descriptor(),
+                akSkManager_, rpcAuthServices_));
+        } else {
+            RETURN_IF_NOT_OK(rpcServer_->AddBrpcService(brpcPerfAdapter_.get()));
+        }
+    } else {
+        RpcServiceCfg cfg;
+        cfg.numRegularSockets_ = RPC_NUM_BACKEND;
+        cfg.numStreamSockets_ = 0;
+        builder_.AddService(perfService_.get(), cfg);
+    }
     return Status::OK();
 }
 #endif
@@ -981,6 +1068,10 @@ Status WorkerOCServer::InitAkSk()
         ClearStr(FLAGS_tenant_secret_key);
         ClearStr(FLAGS_system_data_key);
     });
+    const bool hasCredentials = !FLAGS_system_access_key.empty() || !FLAGS_system_secret_key.empty()
+                                || !FLAGS_tenant_access_key.empty() || !FLAGS_tenant_secret_key.empty();
+    CHECK_FAIL_RETURN_STATUS(FLAGS_enable_rpc_ak_sk || !hasCredentials, K_INVALID,
+                             "AK/SK credentials require enable_rpc_ak_sk=true at startup.");
     RETURN_IF_NOT_OK(akSkManager_->SetServerAkSk(AkSkType::SYSTEM, FLAGS_system_access_key, FLAGS_system_secret_key,
                                                  FLAGS_system_data_key));
     RETURN_IF_NOT_OK(akSkManager_->SetServerAkSk(AkSkType::TENANT, FLAGS_tenant_access_key, FLAGS_tenant_secret_key));
@@ -2418,6 +2509,15 @@ Status WorkerOCServer::Init()
     ImmutableStringPool::Instance().Init();
     intern::StringPool::InitAll();
     RETURN_IF_NOT_OK(InitAkSk());
+    std::shared_ptr<Signature> rpcSignature;
+    if (FLAGS_enable_rpc_ak_sk) {
+        AkSkData key;
+        RETURN_IF_NOT_OK(akSkManager_->SnapshotClientKey(key));
+        if (!key.NotComplete()) {
+            rpcSignature = akSkManager_;
+        }
+    }
+    RETURN_IF_NOT_OK(RpcStubCacheMgr::Instance().Init(FLAGS_max_rpc_session_num, hostPort_, rpcSignature));
     // The static members are destructed in the reverse order of their construction,
     // Below call guarantees that the destructor of Env is behind other Rocksdb singletons.
     (void)rocksdb::Env::Default();
@@ -2440,6 +2540,10 @@ Status WorkerOCServer::InitRpcAndMemoryRuntime()
     // triggers it lazily inside a multi-threaded context (TSAN: bthread worker pool spawn races
     // the spawning thread; silenced by //tools/tsan:default_suppressions).
     BrpcChannelFactory::EnsureGlobalInitialized();
+    if (FLAGS_enable_rpc_ak_sk) {
+        RETURN_IF_NOT_OK(RegisterRpcAuthCapture());
+        rpcAuthCapture_ = std::make_unique<RpcAuthDataFactory>();
+    }
 
     // Init shared memory
     uint64_t sharedMemoryBytes = FLAGS_shared_memory_size_mb * 1024ul * 1024ul;  // convert mb to bytes.
@@ -2458,7 +2562,6 @@ Status WorkerOCServer::InitClusterRuntimeAndServices()
 {
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(InitializeFastTransportManager(hostPort_),
                                      "Fast transport (URMA/RDMA) init failed");
-    RETURN_IF_NOT_OK(RpcStubCacheMgr::Instance().Init(FLAGS_max_rpc_session_num, hostPort_));
     InitSlotWorkerNamespace();
     if (IsSupportL2Storage(GetCurrentStorageType())) {
         persistenceApi_ = PersistenceApi::CreateShared();
@@ -2533,7 +2636,9 @@ Status WorkerOCServer::StartBrpcIfEnabled()
     if (rpcServer_) {
         TryInitJemallocStatsBvar();
         int brpcPort = bindHostPort_.Port();
-        RETURN_IF_NOT_OK_PRINT_ERROR_MSG(rpcServer_->StartBrpcServer(bindHostPort_.Host(), brpcPort),
+        RETURN_IF_NOT_OK_PRINT_ERROR_MSG(rpcServer_->StartBrpcServer(bindHostPort_.Host(), brpcPort,
+                                                                  BrpcLogPolicy::DISABLE_PROCESS_LOGGING,
+                                                                  rpcAuthCapture_.get()),
                                          "Failed to start brpc server");
     }
     return Status::OK();

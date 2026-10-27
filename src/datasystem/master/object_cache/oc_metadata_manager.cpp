@@ -3142,7 +3142,6 @@ Status OCMetadataManager::GIncreaseRemoteClientIdToMaster(const std::string &rem
     req.set_address(masterAddress_);
     req.set_remote_client_id(remoteClientId);
     req.set_redirect(checkRedirect);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     Status rc = [&api, &req, &rsp, &localAddr, this]() {
         Status res = WaitForClientIdRefMigration(*api, req, rsp);
         RETURN_IF_NOT_OK(res);
@@ -3153,7 +3152,6 @@ Status OCMetadataManager::GIncreaseRemoteClientIdToMaster(const std::string &rem
             api = std::make_unique<MasterMasterOCApi>(newMetaAddr, localAddr, akSkManager_);
             RETURN_IF_NOT_OK(api->Init());
             req.set_redirect(false);
-            RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
             rsp.Clear();
             res = api->GIncreaseMasterAppRef(req, rsp);
         }
@@ -3363,7 +3361,6 @@ Status OCMetadataManager::ReleaseGRefsToMaster(const std::string &remoteClientId
                              FormatString("Request timeout (%ld ms).", -remainingTime));
     req.set_timeout(remainingTime);
     req.set_remote_client_id(remoteClientId);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
         api->ReleaseGRefsOfRemoteClientId(req, rsp),
         FormatString("ReleaseGRefsToMaster failed. masterAddr:%s", masterAddr.ToString()));
@@ -4610,13 +4607,8 @@ void OCMetadataManager::TryGetObjectData(const std::string &objectKey, const Tbb
     req.set_try_lock(true);
     req.set_object_key(objectKey);
     req.set_version(accessor->second.meta.version());
-    Status status = akSkManager_->GenerateSignature(req);
-    if (status.IsError()) {
-        LOG(WARNING) << FormatString("[ObjectKey %s] Failed to generate signature, detail: %s", objectKey, status);
-        return;
-    }
     uint32_t curIndex = payloads.size();
-    status = localApi_->GetObjectRemote(req, rsp, tmpPayloads);
+    auto status = localApi_->GetObjectRemote(req, rsp, tmpPayloads);
     if (status.IsError() || tmpPayloads.empty()) {
         // If we meets K_UNKNOWN_ERROR, it means worker want us to erase the location because the object is bad.
         if (status.GetCode() == StatusCode::K_UNKNOWN_ERROR) {

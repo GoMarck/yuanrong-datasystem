@@ -99,7 +99,6 @@ Status WorkerRemoteMasterSCApi::CreateProducer(master::CreateProducerReqPb &req,
         opts.SetTimeout(timeout);
         RETURN_STATUS(GetStatusCodeByName(code), "inject status");
     });
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     RETURN_IF_NOT_OK(brpcSession_->CreateProducer(opts, req, rsp));
     INJECT_POINT("worker.CreateProducer.afterSendToMaster");
 
@@ -117,7 +116,6 @@ Status WorkerRemoteMasterSCApi::CloseProducer(master::CloseProducerReqPb &req, m
         opts.SetTimeout(timeout);
         RETURN_STATUS(GetStatusCodeByName(code), "inject status");
     });
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     RETURN_IF_NOT_OK(brpcSession_->CloseProducer(opts, req, rsp));
     INJECT_POINT("worker.CloseProducer.afterSendToMaster");
 
@@ -143,7 +141,6 @@ Status WorkerRemoteMasterSCApi::Subscribe(master::SubscribeReqPb &req, master::S
         opts.SetTimeout(0);
         return Status::OK();
     });
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     RETURN_IF_NOT_OK(brpcSession_->Subscribe(opts, req, rsp));
     INJECT_POINT("worker.Subscribe.afterSendToMaster");
     VLOG(SC_NORMAL_LOG_LEVEL) << FormatString("[%s, S:%s, C:%s] Add new consumer on master succeeded", LogPrefix(),
@@ -160,7 +157,6 @@ Status WorkerRemoteMasterSCApi::CloseConsumer(master::CloseConsumerReqPb &req, m
         opts.SetTimeout(timeout);
         RETURN_STATUS(GetStatusCodeByName(code), "inject status");
     });
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     RETURN_IF_NOT_OK(brpcSession_->CloseConsumer(opts, req, rsp));
     INJECT_POINT("worker.CloseConsumer.afterSendToMaster");
 
@@ -173,7 +169,6 @@ Status WorkerRemoteMasterSCApi::DeleteStream(master::DeleteStreamReqPb &req, mas
 {
     RpcOptions opts;
     CHECK_AND_SET_TIMEOUT(&GetRequestContext()->scTimeoutDuration, req, opts);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     RETURN_IF_NOT_OK(brpcSession_->DeleteStream(opts, req, rsp));
     VLOG(SC_NORMAL_LOG_LEVEL) << FormatString("[%s, S:%s] Delete stream succeeded.", LogPrefix(), req.stream_name());
     return Status::OK();
@@ -184,7 +179,6 @@ Status WorkerRemoteMasterSCApi::QueryGlobalProducersNum(master::QueryGlobalNumRe
 {
     RpcOptions opts;
     SET_RPC_TIMEOUT(&GetRequestContext()->scTimeoutDuration, opts);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     return brpcSession_->QueryGlobalProducersNum(opts, req, rsp);
 }
 
@@ -193,7 +187,6 @@ Status WorkerRemoteMasterSCApi::QueryGlobalConsumersNum(master::QueryGlobalNumRe
 {
     RpcOptions opts;
     SET_RPC_TIMEOUT(&GetRequestContext()->scTimeoutDuration, opts);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     return brpcSession_->QueryGlobalConsumersNum(opts, req, rsp);
 }
 
@@ -226,7 +219,6 @@ Status WorkerLocalMasterSCApi::CreateProducer(master::CreateProducerReqPb &req, 
         RETURN_STATUS(GetStatusCodeByName(code), "inject status");
     });
     req.set_timeout(opts.GetTimeout());
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     RETURN_IF_NOT_OK(masterSC_->CreateProducerImpl(nullptr, req, rsp));
     VLOG(SC_NORMAL_LOG_LEVEL) << FormatString("[%s, S:%s] Add new pub node on master success", LogPrefix(),
                                               req.producer_meta().stream_name());
@@ -238,7 +230,6 @@ Status WorkerLocalMasterSCApi::CloseProducer(master::CloseProducerReqPb &req, ma
     RpcOptions opts;
     SET_RPC_TIMEOUT(&GetRequestContext()->scTimeoutDuration, opts);
     req.set_timeout(opts.GetTimeout());
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     RETURN_IF_NOT_OK(masterSC_->CloseProducerImpl(nullptr, req, rsp));
 
     VLOG(SC_NORMAL_LOG_LEVEL) << FormatString("[%s] Closing %d producers on master success", LogPrefix(),
@@ -251,7 +242,6 @@ Status WorkerLocalMasterSCApi::Subscribe(master::SubscribeReqPb &req, master::Su
     RpcOptions opts;
     SET_RPC_TIMEOUT(&GetRequestContext()->scTimeoutDuration, opts);
     req.set_timeout(opts.GetTimeout());
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     RETURN_IF_NOT_OK(masterSC_->SubscribeImpl(nullptr, req, rsp));
     VLOG(SC_NORMAL_LOG_LEVEL) << FormatString("[%s, S:%s, C:%s] Add new consumer on master succeeded", LogPrefix(),
                                               req.consumer_meta().stream_name(), req.consumer_meta().consumer_id());
@@ -263,7 +253,6 @@ Status WorkerLocalMasterSCApi::CloseConsumer(master::CloseConsumerReqPb &req, ma
     RpcOptions opts;
     SET_RPC_TIMEOUT(&GetRequestContext()->scTimeoutDuration, opts);
     req.set_timeout(opts.GetTimeout());
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     RETURN_IF_NOT_OK(masterSC_->CloseConsumerImpl(nullptr, req, rsp));
     VLOG(SC_NORMAL_LOG_LEVEL) << FormatString("[%s, S:%s, C:%s] Delete consumer on master succeeded", LogPrefix(),
                                               req.consumer_meta().stream_name(), req.consumer_meta().consumer_id());
@@ -275,7 +264,6 @@ Status WorkerLocalMasterSCApi::DeleteStream(master::DeleteStreamReqPb &req, mast
     RpcOptions opts;
     SET_RPC_TIMEOUT(&GetRequestContext()->scTimeoutDuration, opts);
     req.set_timeout(opts.GetTimeout());
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     RETURN_IF_NOT_OK(masterSC_->DeleteStream(req, rsp));
     VLOG(SC_NORMAL_LOG_LEVEL) << FormatString("[%s, S:%s] Delete stream succeeded.", LogPrefix(), req.stream_name());
     return Status::OK();
@@ -284,14 +272,12 @@ Status WorkerLocalMasterSCApi::DeleteStream(master::DeleteStreamReqPb &req, mast
 Status WorkerLocalMasterSCApi::QueryGlobalProducersNum(master::QueryGlobalNumReqPb &req,
                                                        master::QueryGlobalNumRsqPb &rsp)
 {
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     return masterSC_->QueryGlobalProducersNum(req, rsp);
 }
 
 Status WorkerLocalMasterSCApi::QueryGlobalConsumersNum(master::QueryGlobalNumReqPb &req,
                                                        master::QueryGlobalNumRsqPb &rsp)
 {
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     return masterSC_->QueryGlobalConsumersNum(req, rsp);
 }
 

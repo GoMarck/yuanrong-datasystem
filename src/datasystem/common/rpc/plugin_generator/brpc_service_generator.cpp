@@ -96,6 +96,14 @@ void RpcGenerator::GenerateBrpcAdapter(io::Printer &printer, const google::proto
     vars["interface_name"] = "I" + svcName;
     vars["adapter_name"] = svcName + "BrpcAdapter";
 
+    vars["service_base"] = "google::protobuf::Service";
+    for (int i = 0; i < svc.method_count(); ++i) {
+        if (svc.method(i)->client_streaming() && !svc.method(i)->server_streaming()) {
+            vars["service_base"] = "::datasystem::BrpcSingleStreamService";
+            break;
+        }
+    }
+
     // Build method descriptor entries for GetDescriptor/GetRequestPrototype/GetResponsePrototype
     std::string methodDescriptors;
     for (int i = 0; i < svc.method_count(); ++i) {
@@ -111,7 +119,7 @@ void RpcGenerator::GenerateBrpcAdapter(io::Printer &printer, const google::proto
     }
 
     std::string impl =
-        "class $adapter_name$ : public google::protobuf::Service {\n"
+        "class $adapter_name$ : public $service_base$ {\n"
         "public:\n"
         "    typedef $interface_name$ Interface;\n"
         "    explicit $adapter_name$($interface_name$ &impl) : impl_(impl) {}\n"
@@ -847,47 +855,45 @@ void RpcGenerator::ImplementBrpcCallMethodClientStream(io::Printer &printer,
     std::map<std::string, std::string> vars;
     vars["indent"] = indent;
     vars["methodName"] = method.name();
+    vars["methodFullName"] = method.full_name();
     vars["inputTypeName"] = method.input_type()->name();
     vars["outputTypeName"] = method.output_type()->name();
     vars["optRecvPayload1"] = HasPayloadRecvOption(method) ? ", outPayload" : "";
 
-    // Client-streaming (stream->unary): server reads N requests from the
-    // brpc stream, then returns a single response via the RPC response body.
     std::string impl =
-        "$indent$// Client-streaming via BrpcServerReaderImpl\n"
-        "$indent$auto* rsp = dynamic_cast<$outputTypeName$*>(response);\n"
-        "$indent$if (rsp == nullptr) {\n"
-        "$indent$    cntl->SetFailed(\"Response type mismatch for $methodName$\");\n"
+        "$indent$auto* req = dynamic_cast<const $inputTypeName$*>(request);\n"
+        "$indent$if (req == nullptr) {\n"
+        "$indent$    cntl->SetFailed(\"Request type mismatch for $methodName$\");\n"
         "$indent$    return;\n"
         "$indent$}\n";
     if (HasPayloadRecvOption(method)) {
-        impl +=
-        "$indent$std::vector<::datasystem::RpcMessage> outPayload;\n";
+        impl += "$indent$std::vector<::datasystem::RpcMessage> outPayload;\n";
     }
     impl +=
-        "$indent$auto pimpl =\n"
-        "$indent$    std::make_shared<::datasystem::BrpcServerReaderImpl<$inputTypeName$>>(cntl,\n"
-        "\"$methodFullName$\");\n"
-        "$indent$// Arm self-keepalive: shared_from_this() requires the object to already be\n"
-        "$indent$// managed by a shared_ptr, so it cannot run in the ctor. Must run after\n"
-        "$indent$// make_shared and before pimpl is moved into ServerReader.\n"
-        "$indent$pimpl->Init();\n"
-        "$indent$// Sync adapter's scTimeoutDuration to RequestContext before pimpl is moved.\n"
+        "$indent$auto pimpl = std::make_shared<::datasystem::BrpcServerReaderImpl<$inputTypeName$>>(\n"
+        "$indent$    cntl, *req, \"$methodFullName$\");\n"
+        "$indent$auto init = pimpl->Init(*cntl);\n"
+        "$indent$if (init.IsError()) {\n"
+        "$indent$    cntl->SetFailed(init.ToString());\n"
+        "$indent$    return;\n"
+        "$indent$}\n"
+        "$indent$::datasystem::BrpcSingleStreamService::CallScope call(*this, pimpl);\n"
+        "$indent$if (!call.IsActive()) {\n"
+        "$indent$    pimpl->Close();\n"
+        "$indent$    cntl->SetFailed(\"Client-streaming service is stopping\");\n"
+        "$indent$    return;\n"
+        "$indent$}\n"
         "$indent$::datasystem::GetRequestContext()->scTimeoutDuration = pimpl->GetScTimeoutDuration();\n"
-        "$indent$auto reader =\n"
-        "$indent$    std::make_shared<::datasystem::ServerReader<$inputTypeName$>>(std::move(pimpl));\n"
+        "$indent$auto reader = std::make_shared<::datasystem::ServerReader<$inputTypeName$>>(\n"
+        "$indent$    std::shared_ptr<::datasystem::BrpcServerReaderImpl<$inputTypeName$>>(pimpl));\n"
         "$indent${\n";
     impl += BuildScTimeoutDurationInitSnippet();
     impl +=
         "$indent$}\n"
+        "$indent$done_guard.release()->Run();\n"
         "$indent$$outputTypeName$ reply;\n"
-        "$indent$::datasystem::Status st = impl_.$methodName$(reader, reply$optRecvPayload1$);\n"
-        "$indent$if (st.IsError()) {\n"
-        "$indent$    cntl->SetFailed(st.GetMsg() + \"\\x01\" \"DS_ERR:\" + "
-        "std::to_string(static_cast<int>(st.GetCode())) + \"\\x02\");\n"
-        "$indent$} else {\n"
-        "$indent$    rsp->CopyFrom(reply);\n"
-        "$indent$}\n";
+        "$indent$auto st = impl_.$methodName$(reader, reply$optRecvPayload1$);\n"
+        "$indent$(void)pimpl->Complete(reply, st);\n";
     printer.Print(vars, impl.c_str());
 }
 

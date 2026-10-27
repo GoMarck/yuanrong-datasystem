@@ -25,6 +25,25 @@
 
 namespace datasystem {
 
+Status AkSkManager::VerifySignatureFromDigest(const std::string &signature, uint64_t timestamp,
+                                             const std::string &accessKey, const AkSkDigest &digest)
+{
+    std::shared_lock<std::shared_timed_mutex> lock(mutex_);
+    if (serverKeyMap_.empty()) {
+        return Status::OK();
+    }
+    const auto key = serverKeyMap_.find(accessKey);
+    CHECK_FAIL_RETURN_STATUS(key != serverKeyMap_.end(), K_NOT_AUTHORIZED, "The AK/SK authorized failed.");
+    std::string expected;
+    RETURN_IF_NOT_OK(GetSignatureFromDigest(key->second, digest, expected));
+    CHECK_FAIL_RETURN_STATUS(signature == expected, K_NOT_AUTHORIZED, "The AK/SK authorized failed.");
+    const auto now = static_cast<uint64_t>(GetSystemClockTimeStampUs());
+    const auto difference = now > timestamp ? now - timestamp : timestamp - now;
+    CHECK_FAIL_RETURN_STATUS(difference <= static_cast<uint64_t>(requestExpireTimeSec_) * SECOND_TO_US,
+                             K_NOT_AUTHORIZED, "The AK/SK authorized failed.");
+    return Status::OK();
+}
+
 Status AkSkManager::VerifySignatureAndTimestamp(const std::string &signature, uint64_t timestamp,
                                                 const std::string &accessKey, const char *canonicalStr,
                                                 size_t canonicalSize)
@@ -105,10 +124,16 @@ Status AkSkManager::SetClientAkSk(const std::string &accessKey, SensitiveValue s
         return Status::OK();
     }
     std::lock_guard<std::shared_timed_mutex> lock(mutex_);
+    AkSkData next;
+    next.dataKey = clientKey_.dataKey;
+    CHECK_FAIL_RETURN_STATUS(next.dataKey.GetSize() == clientKey_.dataKey.GetSize(), K_OUT_OF_MEMORY,
+                             "Failed to retain client key data.");
     if (!dataKey.Empty()) {
-        RETURN_IF_NOT_OK(CopyDk(std::move(dataKey), clientKey_));
+        RETURN_IF_NOT_OK(CopyDk(std::move(dataKey), next));
     }
-    return CopyAkSk(accessKey, std::move(secretKey), AkSkType::CLIENT, clientKey_);
+    RETURN_IF_NOT_OK(CopyAkSk(accessKey, std::move(secretKey), AkSkType::CLIENT, next));
+    clientKey_ = std::move(next);
+    return Status::OK();
 }
 
 Status AkSkManager::SetServerAkSk(AkSkType type, const std::string &accessKey, SensitiveValue secretKey,

@@ -271,7 +271,6 @@ Status WorkerLivenessCheck::CheckRocksDbService()
     }
     master::LivenessCheckReqPb req;
     master::LivenessCheckRspPb rsp;
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     auto rc = workerOcServer_->GetOcMetaSvc()->LivenessCheck(req, rsp);
     if (rc.IsError()) {
         RETURN_STATUS_LOG_ERROR(K_WORKER_ABNORMAL,
