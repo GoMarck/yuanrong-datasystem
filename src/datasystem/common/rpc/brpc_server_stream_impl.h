@@ -23,9 +23,8 @@
  *   brpc::StreamWrite, then closes the stream via Finish().
  *
  * BrpcServerReaderImpl<R> (client-streaming / stream-to-unary):
- *   Server accepts a brpc stream, reads N request messages via
- *   StreamInputHandler::on_received_messages, then the service returns a
- *   single response written to cntl->response_attachment() via WritePb<W>().
+ *   Server owns the first request from the RPC body and reads later requests
+ *   from the stream. The final response or error returns on the same stream.
  */
 #ifndef DATASYSTEM_COMMON_RPC_BRPC_SERVER_STREAM_IMPL_H
 #define DATASYSTEM_COMMON_RPC_BRPC_SERVER_STREAM_IMPL_H
@@ -47,6 +46,7 @@
 #include "datasystem/common/log/trace.h"
 #include "datasystem/common/rpc/brpc_perf_trace.h"
 #include "datasystem/common/rpc/rpc_message.h"
+#include "datasystem/common/rpc/brpc_single_stream.h"
 #include "datasystem/common/rpc/timeout_duration.h"
 #include "datasystem/utils/status.h"
 
@@ -222,17 +222,16 @@ private:
 // BrpcServerReaderImpl<R> — client-streaming (stream→unary)
 // ============================================================================
 template <typename R>
-class BrpcServerReaderImpl : public brpc::StreamInputHandler,
+class BrpcServerReaderImpl : public BrpcSingleStreamCall, public brpc::StreamInputHandler,
                             public std::enable_shared_from_this<BrpcServerReaderImpl<R>> {
 public:
-    explicit BrpcServerReaderImpl(brpc::Controller *cntl, std::string methodName)
-        : cntl_(cntl),
+    BrpcServerReaderImpl(brpc::Controller *cntl, const R &firstRequest, std::string methodName)
+        : firstRequest_(std::make_unique<R>(firstRequest)),
           streamId_(brpc::INVALID_STREAM_ID),
           finished_(false),
           readReady_(false),
           streamEnd_(false),
           readError_(false),
-          execStarted_(false),
           traceRecorded_(false),
           trace_(Trace::Instance().GetTraceID(), std::move(methodName))
     {
@@ -241,8 +240,8 @@ public:
                                 BrpcTraceGetTid(),
                                 sched_getcpu(), static_cast<unsigned long long>(bthread_self()));
         // P3: Store scTimeoutDuration per-adapter so it survives bthread M:N migration.
-        if (cntl_ != nullptr) {
-            int64_t deadlineUs = cntl_->deadline_us();
+        if (cntl != nullptr) {
+            int64_t deadlineUs = cntl->deadline_us();
             if (deadlineUs > 0) {
                 struct timeval tv;
                 gettimeofday(&tv, nullptr);
@@ -258,33 +257,37 @@ public:
             }
         }
 
-        brpc::StreamOptions options;
-        options.handler = this;
-        int rc = brpc::StreamAccept(&streamId_, *cntl, &options);
-        if (rc != 0) {
-            LOG(ERROR) << "BrpcServerReaderImpl: StreamAccept failed (rc=" << rc << ")";
-            cntl->SetFailed("BrpcServerReaderImpl: StreamAccept failed");
+        deadline_ = butil::microseconds_from_now(kStreamReadTimeoutSec * 1000000LL);
+        if (cntl != nullptr && cntl->deadline_us() > 0) {
+            deadline_.tv_sec = cntl->deadline_us() / 1000000;
+            deadline_.tv_nsec = (cntl->deadline_us() % 1000000) * 1000;
         }
     }
 
-    // Arm self-keepalive. MUST be called once after the object is managed by a
-    // shared_ptr (shared_from_this() is UB inside the constructor). The generated
-    // stub calls this right after make_shared<BrpcServerReaderImpl>.
-    void Init()
+    Status Init(brpc::Controller &controller)
     {
         keepalive_ = this->shared_from_this();
+        brpc::StreamOptions options;
+        options.handler = this;
+        if (brpc::StreamAccept(&streamId_, controller, &options) != 0) {
+            keepalive_.reset();
+            RETURN_STATUS(K_RUNTIME_ERROR, "Failed to accept client-streaming stream.");
+        }
+        return Status::OK();
     }
 
     // Non-blocking close: triggers brpc to fire on_closed asynchronously, which
     // drops the self-keepalive so this object can be destroyed safely once brpc
     // is done with the raw handler pointer. Called by the ServerReader wrapper dtor.
-    void Close()
+    void Close() override
     {
         brpc::StreamId id = brpc::INVALID_STREAM_ID;
         {
             std::lock_guard<bthread::Mutex> lock(readMtx_);
             id = streamId_;
             streamId_ = brpc::INVALID_STREAM_ID;
+            readError_ = true;
+            readCond_.notify_all();
         }
         if (id != brpc::INVALID_STREAM_ID) {
             brpc::StreamClose(id);
@@ -309,7 +312,22 @@ public:
         {
             std::lock_guard<bthread::Mutex> lock(readMtx_);
             for (size_t i = 0; i < size; ++i) {
-                pendingMessages_.push_back(*messages[i]);
+                if (messages[i] == nullptr || writesEnded_) {
+                    readError_ = true;
+                    continue;
+                }
+                if (messages[i]->equals(SINGLE_STREAM_END_WRITES)) {
+                    writesEnded_ = true;
+                } else {
+                    char kind = 0;
+                    if (messages[i]->copy_to(&kind, 1) != 1 || kind != SINGLE_STREAM_DATA) {
+                        readError_ = true;
+                        continue;
+                    }
+                    butil::IOBuf message(*messages[i]);
+                    message.pop_front(1);
+                    pendingMessages_.push_back(std::move(message));
+                }
             }
             readReady_ = true;
         }
@@ -328,6 +346,8 @@ public:
         readCond_.notify_one();
     }
 
+    void on_failed(brpc::StreamId id, int, const std::string &) override { on_idle_timeout(id); }
+
     void on_closed(brpc::StreamId id) override
     {
         (void)id;
@@ -336,6 +356,7 @@ public:
         {
             std::lock_guard<bthread::Mutex> lock(readMtx_);
             streamEnd_ = true;
+            readError_ = readError_ || !writesEnded_;
             readCond_.notify_one();
         }
         // Drop self-keepalive LAST (on_closed is brpc's final callback). If this
@@ -344,11 +365,10 @@ public:
         keepalive_.reset();
     }
 
-    Status SendStatus(const Status &rc)
+    Status SendStatus(const Status &status)
     {
-        if (rc.IsError()) {
-            cntl_->SetFailed(rc.GetMsg() + "\x01" "DS_ERR:" +
-                std::to_string(static_cast<int>(rc.GetCode())) + "\x02");
+        if (pendingStatus_.IsOk() && status.IsError()) {
+            pendingStatus_ = status;
         }
         return Status::OK();
     }
@@ -360,12 +380,23 @@ public:
         }
 
         std::unique_lock<bthread::Mutex> lock(readMtx_);
-        if (streamEnd_ && pendingMessages_.empty()) {
+        if (readError_) {
+            RETURN_STATUS(K_RPC_CANCELLED, "Client-streaming request cancelled.");
+        }
+        if (firstRequest_) {
+            pb.Swap(firstRequest_.get());
+            firstRequest_.reset();
+            trace_.MarkServerExecStart();
+            return Status::OK();
+        }
+        if (writesEnded_ && pendingMessages_.empty()) {
             RETURN_STATUS(StatusCode::K_RPC_STREAM_END, "Stream ended");
         }
 
-        while (!readReady_ && !readError_ && !streamEnd_) {
-            readCond_.wait(lock);
+        while (!readReady_ && !readError_ && !writesEnded_ && !streamEnd_) {
+            if (readCond_.wait_until(lock, deadline_) == ETIMEDOUT) {
+                RETURN_STATUS(K_RPC_DEADLINE_EXCEEDED, "Client-streaming request deadline exceeded.");
+            }
         }
 
         if (readError_) {
@@ -373,7 +404,7 @@ public:
         }
 
         if (pendingMessages_.empty()) {
-            if (streamEnd_) {
+            if (writesEnded_) {
                 RETURN_STATUS(StatusCode::K_RPC_STREAM_END, "Stream ended");
             }
             RETURN_STATUS(StatusCode::K_RUNTIME_ERROR, "Unexpected empty message queue");
@@ -390,10 +421,6 @@ public:
         if (!pb.ParseFromString(serialized)) {
             RETURN_STATUS(StatusCode::K_RUNTIME_ERROR, "Failed to parse protobuf from stream message");
         }
-        bool expected = false;
-        if (execStarted_.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
-            trace_.MarkServerExecStart();
-        }
         return Status::OK();
     }
 
@@ -404,23 +431,50 @@ public:
         if (!pb.SerializeToString(&serialized)) {
             RETURN_STATUS(StatusCode::K_RUNTIME_ERROR, "Failed to serialize final response");
         }
-        butil::IOBuf buf;
-        buf.append(serialized);
-        trace_.MarkServerExecEnd();
-        cntl_->response_attachment().append(buf);
-        RecordTraceOnce();
+        butil::IOBuf pending;
+        CHECK_FAIL_RETURN_STATUS(pending.append(&SINGLE_STREAM_DATA, 1) == 0 &&
+                                     pending.append(serialized) == 0, K_OUT_OF_MEMORY,
+                                 "Failed to buffer client-streaming response.");
+        pendingReply_.swap(pending);
+        hasReply_ = true;
         return Status::OK();
+    }
+
+    template <typename W>
+    Status Complete(const W &reply, const Status &status)
+    {
+        auto end = WaitForWritesEnd();
+        if (end.IsError()) {
+            Close();
+            return end;
+        }
+        RETURN_IF_NOT_OK(SendStatus(status));
+        if (pendingStatus_.IsOk() && !hasReply_) {
+            pendingStatus_ = WritePb(reply);
+        }
+        if (pendingStatus_.IsError()) {
+            pendingReply_.clear();
+            if (pendingReply_.append("\x01" "DS_ERR:" + std::to_string(static_cast<int>(pendingStatus_.GetCode())) +
+                                     "\x02" + pendingStatus_.GetMsg()) != 0) {
+                Close();
+                RETURN_STATUS(K_OUT_OF_MEMORY, "Failed to buffer client-streaming error.");
+            }
+        }
+        brpc::StreamId id;
+        {
+            std::lock_guard<bthread::Mutex> lock(readMtx_);
+            id = streamId_;
+        }
+        auto sent = WriteSingleStreamFrame(id, pendingReply_, deadline_);
+        trace_.MarkServerExecEnd();
+        Close();
+        RecordTraceOnce();
+        return sent;
     }
 
     Status Finish()
     {
-        if (finished_.exchange(true)) {
-            return Status::OK();
-        }
-        if (streamId_ != brpc::INVALID_STREAM_ID) {
-            brpc::StreamClose(streamId_);
-            streamId_ = brpc::INVALID_STREAM_ID;
-        }
+        finished_.store(true);
         return Status::OK();
     }
 
@@ -448,7 +502,27 @@ public:
     const TimeoutDuration& GetScTimeoutDuration() const { return scTimeoutDuration_; }
 
 private:
-    brpc::Controller *cntl_;
+    Status WaitForWritesEnd()
+    {
+        // The client sends its end marker after CallMethod returns. Closing earlier
+        // can recycle the request stream before BRPC finishes handling the handshake.
+        std::unique_lock<bthread::Mutex> lock(readMtx_);
+        while (!writesEnded_ && !readError_ && !streamEnd_) {
+            pendingMessages_.clear();
+            if (readCond_.wait_until(lock, deadline_) == ETIMEDOUT) {
+                RETURN_STATUS(K_RPC_DEADLINE_EXCEEDED, "Client-streaming writes deadline exceeded.");
+            }
+        }
+        CHECK_FAIL_RETURN_STATUS(writesEnded_ && !readError_, K_RPC_CANCELLED,
+                                 "Client-streaming writes interrupted.");
+        return Status::OK();
+    }
+
+    std::unique_ptr<R> firstRequest_;
+    timespec deadline_{};
+    butil::IOBuf pendingReply_;
+    bool hasReply_ = false;
+    Status pendingStatus_;
     brpc::StreamId streamId_;
     std::atomic<bool> finished_;
 
@@ -457,6 +531,7 @@ private:
     std::deque<butil::IOBuf> pendingMessages_;
     bool readReady_;
     bool streamEnd_;
+    bool writesEnded_ = false;
     bool readError_;
     // See BrpcClientReaderImpl for the keepalive/destroyed/closeNotifier rationale
     // (handler must outlive brpc's final on_closed callback).
@@ -466,7 +541,6 @@ private:
         std::make_shared<std::atomic<bool>>(false);
     std::shared_ptr<BrpcServerReaderImpl<R>> keepalive_;
     TimeoutDuration scTimeoutDuration_;
-    std::atomic<bool> execStarted_;
     std::atomic<bool> traceRecorded_;
     BrpcPerfTrace trace_;
 

@@ -1716,7 +1716,7 @@ public:
     std::vector<std::pair<std::string, std::string>> delayReleaseContexts;
 };
 
-TEST(WorkerRpcClientTest, SignsFinalReadRequestsBeforeRpc)
+TEST(WorkerRpcClientTest, DispatchesReadRequestsWithoutBodySignatures)
 {
     auto signature = std::make_shared<Signature>("access-1", SensitiveValue("secret-1"));
     AuthBoundaryWorkerRpcClient client(signature);
@@ -1728,8 +1728,8 @@ TEST(WorkerRpcClientTest, SignsFinalReadRequestsBeforeRpc)
 
     ASSERT_TRUE(client.InvokeGetObject(dataRequest, dataResponse, payloads).IsOk());
     EXPECT_EQ(client.getObjectInvokeCount, 1);
-    EXPECT_EQ(client.invokedDataRequest.access_key(), "access-1");
-    EXPECT_FALSE(client.invokedDataRequest.signature().empty());
+    EXPECT_TRUE(client.invokedDataRequest.access_key().empty());
+    EXPECT_TRUE(client.invokedDataRequest.signature().empty());
     EXPECT_EQ(client.invokedDataRequest.urma_info().seg_va(), 123u);
 
     QueryAndGetReqPb metadataRequest;
@@ -1739,8 +1739,8 @@ TEST(WorkerRpcClientTest, SignsFinalReadRequestsBeforeRpc)
     std::vector<RpcMessage> metadataPayloads;
     ASSERT_TRUE(client.InvokeQueryAndGet(metadataRequest, metadataResponse, metadataPayloads).IsOk());
     EXPECT_EQ(client.metadataInvokeCount, 1);
-    EXPECT_EQ(client.invokedMetadataRequest.access_key(), "access-1");
-    EXPECT_FALSE(client.invokedMetadataRequest.signature().empty());
+    EXPECT_TRUE(client.invokedMetadataRequest.access_key().empty());
+    EXPECT_TRUE(client.invokedMetadataRequest.signature().empty());
     EXPECT_TRUE(client.invokedMetadataRequest.data_request().has_tcp());
 
     ExistReqPb existRequest;
@@ -1752,11 +1752,11 @@ TEST(WorkerRpcClientTest, SignsFinalReadRequestsBeforeRpc)
     EXPECT_EQ(client.existInvokeCount, 1);
     EXPECT_EQ(client.existRpcTimeout, 800);
     EXPECT_EQ(client.invokedExistRequest.client_id(), "client-1");
-    EXPECT_EQ(client.invokedExistRequest.access_key(), "access-1");
-    EXPECT_FALSE(client.invokedExistRequest.signature().empty());
+    EXPECT_TRUE(client.invokedExistRequest.access_key().empty());
+    EXPECT_TRUE(client.invokedExistRequest.signature().empty());
 }
 
-TEST(WorkerRpcClientTest, ClientGetUsesSignedWorkerOcServiceRequest)
+TEST(WorkerRpcClientTest, ClientGetPreservesWorkerOcServiceRequest)
 {
     ApiDeadlineGuard deadline(1000);
     auto signature = std::make_shared<Signature>("access-1", SensitiveValue("secret-1"));
@@ -1772,13 +1772,13 @@ TEST(WorkerRpcClientTest, ClientGetUsesSignedWorkerOcServiceRequest)
     EXPECT_EQ(client.clientGetInvokeCount, 1);
     EXPECT_EQ(client.invokedClientGetRequest.client_id(), "endpoint-client");
     EXPECT_EQ(client.invokedClientGetRequest.tenant_id(), "tenant-1");
-    EXPECT_EQ(client.invokedClientGetRequest.access_key(), "access-1");
-    EXPECT_FALSE(client.invokedClientGetRequest.signature().empty());
+    EXPECT_TRUE(client.invokedClientGetRequest.access_key().empty());
+    EXPECT_TRUE(client.invokedClientGetRequest.signature().empty());
     EXPECT_EQ(client.getObjectInvokeCount, 0);
     EXPECT_EQ(client.batchGetObjectInvokeCount, 0);
 }
 
-TEST(WorkerRpcClientTest, ShmMaintenanceHeartbeatUsesSignedWorkerServiceRequest)
+TEST(WorkerRpcClientTest, ShmMaintenanceHeartbeatPreservesWorkerServiceRequest)
 {
     auto signature = std::make_shared<Signature>("access-1", SensitiveValue("secret-1"));
     AuthBoundaryWorkerRpcClient client(signature);
@@ -1795,8 +1795,8 @@ TEST(WorkerRpcClientTest, ShmMaintenanceHeartbeatUsesSignedWorkerServiceRequest)
     EXPECT_EQ(client.invokedShmHeartbeatRequest.client_id(), "endpoint-client");
     EXPECT_EQ(client.invokedShmHeartbeatRequest.token(), "token-1");
     EXPECT_EQ(client.invokedShmHeartbeatRequest.released_worker_fds(0), 17);
-    EXPECT_EQ(client.invokedShmHeartbeatRequest.access_key(), "access-1");
-    EXPECT_FALSE(client.invokedShmHeartbeatRequest.signature().empty());
+    EXPECT_TRUE(client.invokedShmHeartbeatRequest.access_key().empty());
+    EXPECT_TRUE(client.invokedShmHeartbeatRequest.signature().empty());
 }
 
 class ReadFailureWorkerRpcClient final : public FakeWorkerRpcClient {
@@ -2176,7 +2176,7 @@ TEST(ShmConnectionTest, FailedTryAcquirePreservesCauseAndBacksOffReconnect)
     EXPECT_EQ(acquired, nullptr);
 }
 
-TEST(WorkerRpcClientTest, ShmDisconnectUsesBoundedSignedWorkerServiceRequest)
+TEST(WorkerRpcClientTest, ShmDisconnectUsesBoundedWorkerServiceRequest)
 {
     BrpcChannelConfig config;
     config.timeout_ms = 60'000;
@@ -2193,8 +2193,8 @@ TEST(WorkerRpcClientTest, ShmDisconnectUsesBoundedSignedWorkerServiceRequest)
     EXPECT_LE(client.shmDisconnectRpcTimeout, 1000);
     EXPECT_EQ(client.invokedShmDisconnectRequest.client_id(), "endpoint-client");
     EXPECT_EQ(client.invokedShmDisconnectRequest.token(), "token-1");
-    EXPECT_EQ(client.invokedShmDisconnectRequest.access_key(), "access-1");
-    EXPECT_FALSE(client.invokedShmDisconnectRequest.signature().empty());
+    EXPECT_TRUE(client.invokedShmDisconnectRequest.access_key().empty());
+    EXPECT_TRUE(client.invokedShmDisconnectRequest.signature().empty());
 }
 
 class QueuedFdWorkerRpcClient final : public FakeWorkerRpcClient {
@@ -2371,7 +2371,7 @@ TEST(WorkerRpcClientTest, ExistUsesSubTimeoutBelowChannelTimeout)
     EXPECT_EQ(client.existRpcTimeout, 1000);
 }
 
-TEST(WorkerRpcClientTest, BatchGetSignsAggregateRequestAndPreservesInputOrder)
+TEST(WorkerRpcClientTest, BatchGetPreservesAggregateRequestAndInputOrder)
 {
     auto signature = std::make_shared<Signature>("access-1", SensitiveValue("secret-1"));
     AuthBoundaryWorkerRpcClient client(signature);
@@ -2388,8 +2388,8 @@ TEST(WorkerRpcClientTest, BatchGetSignsAggregateRequestAndPreservesInputOrder)
 
     EXPECT_EQ(client.batchGetObjectInvokeCount, 1);
     EXPECT_GT(client.batchGetRpcTimeout, 0);
-    EXPECT_EQ(client.invokedBatchGetRequest.access_key(), "access-1");
-    EXPECT_FALSE(client.invokedBatchGetRequest.signature().empty());
+    EXPECT_TRUE(client.invokedBatchGetRequest.access_key().empty());
+    EXPECT_TRUE(client.invokedBatchGetRequest.signature().empty());
     ASSERT_EQ(client.invokedBatchGetRequest.requests_size(), 2);
     EXPECT_EQ(client.invokedBatchGetRequest.requests(0).object_key(), "first-key");
     EXPECT_EQ(client.invokedBatchGetRequest.requests(1).object_key(), "second-key");
@@ -2435,7 +2435,7 @@ TEST(WorkerRpcClientTest, BatchGetRejectsEmptyRequestBeforeRpc)
     EXPECT_EQ(client.batchGetObjectInvokeCount, 0);
 }
 
-TEST(WorkerRpcClientTest, SignsCreateAndSetBeforeRpc)
+TEST(WorkerRpcClientTest, DispatchesCreateAndSetWithoutBodySignatures)
 {
     auto signature = std::make_shared<Signature>("access-1", SensitiveValue("secret-1"));
     AuthBoundaryWorkerRpcClient client(signature);
@@ -2445,8 +2445,8 @@ TEST(WorkerRpcClientTest, SignsCreateAndSetBeforeRpc)
     createRequest.set_object_key("create-key");
     CreateRspPb createResponse;
     ASSERT_TRUE(client.InvokeCreate(100, createRequest, createResponse, workerVersion).IsOk());
-    EXPECT_EQ(client.invokedCreateRequest.access_key(), "access-1");
-    EXPECT_FALSE(client.invokedCreateRequest.signature().empty());
+    EXPECT_TRUE(client.invokedCreateRequest.access_key().empty());
+    EXPECT_TRUE(client.invokedCreateRequest.signature().empty());
     EXPECT_EQ(client.invokedCreateRequest.object_key(), "create-key");
 
     PublishReqPb publishRequest;
@@ -2454,23 +2454,23 @@ TEST(WorkerRpcClientTest, SignsCreateAndSetBeforeRpc)
     PublishRspPb publishResponse;
     std::vector<MemView> payloads;
     ASSERT_TRUE(client.InvokeSet(100, publishRequest, payloads, publishResponse, workerVersion).IsOk());
-    EXPECT_EQ(client.invokedSetRequest.access_key(), "access-1");
-    EXPECT_FALSE(client.invokedSetRequest.signature().empty());
+    EXPECT_TRUE(client.invokedSetRequest.access_key().empty());
+    EXPECT_TRUE(client.invokedSetRequest.signature().empty());
     EXPECT_EQ(client.invokedSetRequest.object_key(), "publish-key");
 
     MultiCreateReqPb multiCreateRequest;
     multiCreateRequest.add_object_key("multi-create-key");
     MultiCreateRspPb multiCreateResponse;
     ASSERT_TRUE(client.InvokeMultiCreate(100, multiCreateRequest, multiCreateResponse, workerVersion).IsOk());
-    EXPECT_EQ(client.invokedMultiCreateRequest.access_key(), "access-1");
-    EXPECT_FALSE(client.invokedMultiCreateRequest.signature().empty());
+    EXPECT_TRUE(client.invokedMultiCreateRequest.access_key().empty());
+    EXPECT_TRUE(client.invokedMultiCreateRequest.signature().empty());
 
     MultiPublishReqPb multiSetRequest;
     multiSetRequest.add_object_info()->set_object_key("multi-set-key");
     MultiPublishRspPb multiSetResponse;
     ASSERT_TRUE(client.InvokeMultiSet(100, multiSetRequest, payloads, multiSetResponse, workerVersion).IsOk());
-    EXPECT_EQ(client.invokedMultiSetRequest.access_key(), "access-1");
-    EXPECT_FALSE(client.invokedMultiSetRequest.signature().empty());
+    EXPECT_TRUE(client.invokedMultiSetRequest.access_key().empty());
+    EXPECT_TRUE(client.invokedMultiSetRequest.signature().empty());
 
     TransportRequestContext context{ "client-1", "token-1", "tenant-1" };
     ASSERT_TRUE(client.InvokeDecreaseReference(context, ShmKey::Intern("shm-1")).IsOk());
@@ -2481,8 +2481,8 @@ TEST(WorkerRpcClientTest, SignsCreateAndSetBeforeRpc)
     EXPECT_EQ(client.invokedDecreaseReferenceRequest.tenant_id(), "tenant-1");
     EXPECT_TRUE(client.invokedDecreaseReferenceRequest.is_routed());
     EXPECT_FALSE(client.invokedDecreaseReferenceRequest.delay_release());
-    EXPECT_EQ(client.invokedDecreaseReferenceRequest.access_key(), "access-1");
-    EXPECT_FALSE(client.invokedDecreaseReferenceRequest.signature().empty());
+    EXPECT_TRUE(client.invokedDecreaseReferenceRequest.access_key().empty());
+    EXPECT_TRUE(client.invokedDecreaseReferenceRequest.signature().empty());
 
     ASSERT_TRUE(client.InvokeDecreaseReference(context, ShmKey::Intern("shm-2"), true).IsOk());
     EXPECT_EQ(client.decreaseReferenceInvokeCount, 2);
@@ -2579,7 +2579,7 @@ TEST(WorkerRpcClientTest, BoundsRpcTimeoutByApiDeadline)
     EXPECT_EQ(client.metadataInvokeCount, 1);
     EXPECT_GT(client.metadataRpcTimeout, 0);
     EXPECT_LE(client.metadataRpcTimeout, 100);
-    EXPECT_EQ(client.invokedMetadataRequest.access_key(), "access-1");
+    EXPECT_TRUE(client.invokedMetadataRequest.access_key().empty());
 
     ExistReqPb existRequest;
     existRequest.add_object_keys("key");
@@ -2627,7 +2627,7 @@ TEST(WorkerRpcClientTest, InvokesGetHashRingWithVersionAndTimeout)
     ASSERT_TRUE(client.InvokeGetHashRing(42, ring).IsOk());
     EXPECT_EQ(client.hashRingInvokeCount, 1);
     EXPECT_EQ(client.invokedHashRingRequest.version(), 42ul);
-    EXPECT_FALSE(client.invokedHashRingRequest.signature().empty());
+    EXPECT_TRUE(client.invokedHashRingRequest.signature().empty());
 }
 
 TEST(ExistRequestBuilderTest, RejectsEmptyKeys)
@@ -2663,7 +2663,7 @@ TEST(ExistRequestBuilderTest, BuildsRequestWithAuthFields)
     EXPECT_TRUE(request.is_routed());
 }
 
-TEST(WorkerRpcClientTest, HashRingRefreshSignsRequestAndUsesControlTimeoutOutsideApiDeadline)
+TEST(WorkerRpcClientTest, HashRingRefreshUsesControlTimeoutOutsideApiDeadline)
 {
     ApiDeadlineGuard deadline(-1, InUs{});
     auto signature = std::make_shared<Signature>("access-1", SensitiveValue("secret-1"));
@@ -2673,8 +2673,8 @@ TEST(WorkerRpcClientTest, HashRingRefreshSignsRequestAndUsesControlTimeoutOutsid
     ASSERT_TRUE(client.InvokeGetHashRing(17, response).IsOk());
     EXPECT_EQ(client.hashRingCount, 1);
     EXPECT_EQ(client.hashRingVersion, 17u);
-    EXPECT_EQ(client.invokedHashRingRequest.access_key(), "access-1");
-    EXPECT_FALSE(client.invokedHashRingRequest.signature().empty());
+    EXPECT_TRUE(client.invokedHashRingRequest.access_key().empty());
+    EXPECT_TRUE(client.invokedHashRingRequest.signature().empty());
     EXPECT_GT(client.hashRingRpcTimeout, 0);
     EXPECT_EQ(response.version(), 18u);
 }

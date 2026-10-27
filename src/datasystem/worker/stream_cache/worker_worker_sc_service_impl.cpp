@@ -306,7 +306,6 @@ Status WorkerWorkerSCServiceImpl::PushElementsCursors(
     RETURN_IF_NOT_OK(serverApi->Read(pushReqPb));
     RETURN_IF_NOT_OK(serverApi->ReceivePayload(payloads));
     VLOG(1) << FormatString("Preparing to receive pushed data. streamName: %s", pushReqPb.stream_name());
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(akSkManager_->VerifySignatureAndTimestamp(pushReqPb), "AK/SK failed");
     TraceGuard traceGuard = Trace::Instance().SetTraceNewID(pushReqPb.trace_id());
     RETURN_IF_NOT_OK(PushElementsCursorsHelper(pushReqPb, payloads, pushRspPb));
     point.RecordAndReset(PerfKey::PUSH_CURSOR_RESPONSE);
@@ -355,7 +354,6 @@ Status WorkerWorkerSCServiceImpl::PushSharedPageCursors(
     std::vector<RpcMessage> payloads;
     RETURN_IF_NOT_OK(serverApi->Read(pushReqPb));
     RETURN_IF_NOT_OK(serverApi->ReceivePayload(payloads));
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(akSkManager_->VerifySignatureAndTimestamp(pushReqPb), "AK/SK failed");
     TraceGuard traceGuard = Trace::Instance().SetTraceNewID(pushReqPb.trace_id());
     // Group requests by stream name, and also record the indexes so the response is still in order.
     std::unordered_map<std::string, PushSharedPageTuple> streamDataMap;

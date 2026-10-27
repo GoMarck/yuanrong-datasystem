@@ -118,7 +118,6 @@ Status WorkerQueryAndGetImpl::ReadAndAuthenticate(
 {
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(serverApi->Read(request), "Read QueryAndGet request failed");
     RETURN_RUNTIME_ERROR_IF_NULL(akSkManager_);
-    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(akSkManager_->VerifySignatureAndTimestamp(request), "AK/SK failed.");
     return Status::OK();
 }
 

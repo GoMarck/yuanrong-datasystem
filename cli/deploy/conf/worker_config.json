@@ -223,6 +223,10 @@
         "value": "10000",
         "description": "The sleep time between iterations of observability collector scan, default value is 10000ms(Must be greater than 0)."
     },
+    "enable_rpc_ak_sk": {
+        "value": "false",
+        "description": "Enable request AK/SK authentication at worker startup. Requires restarting the worker; keep false during an unauthenticated rolling upgrade."
+    },
     "system_access_key": {
         "value": "",
         "description": "The access key for system component AK/SK authentication."

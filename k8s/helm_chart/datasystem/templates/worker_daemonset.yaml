@@ -155,6 +155,7 @@ spec:
         - -max_client_num={{ $.Values.global.resources.datasystemWorker.maxClientNum }}
         - -client_reconnect_wait_s={{ $.Values.global.reliability.clientReconnectWaitS }}
         - -heartbeat_interval_ms={{ $.Values.global.reliability.heartbeatIntervalMs }}
+        - -enable_rpc_ak_sk={{ $.Values.global.akSk.enableRpcAkSk }}
         - -system_access_key={{ $.Values.global.akSk.systemAccessKey }}
         - -system_secret_key={{ $.Values.global.akSk.systemSecretKey }}
         - -system_data_key={{ $.Values.global.akSk.systemDataKey }}

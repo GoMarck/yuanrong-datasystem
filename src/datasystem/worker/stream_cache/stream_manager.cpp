@@ -1290,7 +1290,6 @@ Status StreamManager::SendBlockProducerReq(const std::string &remoteWorkerAddr)
     RpcOptions opts;
     SET_RPC_TIMEOUT(&GetRequestContext()->scTimeoutDuration, opts);
     req.set_timeout(opts.GetTimeout());
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     // Send only. No need to wait for any reply, and let clientApi goes out of scope by itself.
     RETURN_IF_NOT_OK(clientApi->Write(req));
     // Wait for the reply to ensure ordering
@@ -1373,7 +1372,6 @@ Status StreamManager::SendUnBlockProducerReq(const std::string &remoteWorkerAddr
     UnblockProducerReqPb req;
     req.set_stream_name(streamName_);
     req.set_worker_addr(workerAddr_);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     // Wait for the reply to ensure ordering
     RETURN_IF_NOT_OK(clientApi->Write(req));
     UnblockProducerRspPb rsp;

@@ -16,6 +16,8 @@
  */
 #include "datasystem/master/stream_cache/sc_metadata_manager.h"
 
+#include "datasystem/common/util/request_context.h"
+
 #include <chrono>
 #include <cstdint>
 #include <thread>
@@ -968,7 +970,6 @@ Status SCMetadataManager::CheckMetadataImpl(const HostPort &workerAddr,
     GetMetadataAllStreamReqPb req;
     std::vector<GetStreamMetadataRspPb> metaRsp;
     req.set_master_address(masterAddress_.ToString());
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     if (localApi) {
         GetMetadataAllStreamRspPb rsp;
         RETURN_IF_NOT_OK_APPEND_MSG(localApi->QueryMetadata(req, rsp), "QueryMetadata send to worker failed");
@@ -1003,7 +1004,6 @@ Status SCMetadataManager::QueryTopologyMetadata(const HostPort &workerAddr,
     RETURN_IF_NOT_OK(rpcSessionManager_->GetRpcSession(workerAddr, api, akSkManager_));
     GetMetadataAllStreamReqPb req;
     req.set_master_address(masterAddress_.ToString());
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(req));
     if (auto *localApi = dynamic_cast<MasterLocalWorkerSCApi *>(api.get()); localApi != nullptr) {
         GetMetadataAllStreamRspPb rsp;
         RETURN_IF_NOT_OK_APPEND_MSG(localApi->QueryMetadata(req, rsp), "QueryMetadata send to worker failed");

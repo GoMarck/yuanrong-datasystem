@@ -479,6 +479,7 @@ global:
     ocWorkerWorkerParallelNums: 16
 
   akSk:
+    enableRpcAkSk: false
     # The access key used by the system.
     systemAccessKey: ""
     # The secret key used by the system.

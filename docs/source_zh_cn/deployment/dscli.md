@@ -1628,6 +1628,7 @@ URMA 内部固定使用轮询完成模式（单次最多 16 条）、4 个 Clien
 
 | 配置项 | 类型 | 默认值 | 是否支持动态修改 | 描述 |
 |-----|------|---------|-----|-------------|
+| enable_rpc_ak_sk | bool | `false` | 否 | 启动时启用 RPC 请求 AK/SK 认证，修改后需重启 Worker。关闭时不可配置系统或租户 AK/SK。未启用认证的集群滚动升级期间保持关闭，升级完成后再统一启用；客户端首次启用需重建客户端。 |
 | system_access_key | string | `""` | 否 | 系统访问密钥 |
 | system_secret_key | string | `""` | 否 | 系统密钥 |
 | tenant_access_key | string | `""` | 否 | 租户访问密钥 |

@@ -831,7 +831,6 @@ Status RemoteWorker::FillExclusivePushReqHelper(const std::string &streamName, c
         ++it;
     } while (it != dataLst.end());
     pushReqPb.set_chunk_size(chunkSz);
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(pushReqPb));
     return Status::OK();
 }
 
@@ -904,7 +903,6 @@ Status RemoteWorker::FillSharedPushReqHelper(const std::string &producerId, std:
         requestReady = true;
     } while (it != dataLst.end());
     CHECK_FAIL_RETURN_STATUS(requestReady, K_NOT_READY, "All element views are skipped, request is not ready");
-    RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(pushReqPb));
     return Status::OK();
 }
 

@@ -390,7 +390,7 @@ TEST_F(KVCacheClientEvict2WorkerTest, TestLastLocalCopyEvictRemovesMeta)
     DS_ASSERT_OK(cluster_->GetWorkerAddr(1, worker1Addr));
     auto akSkManager = std::make_shared<AkSkManager>();
     DS_ASSERT_OK(akSkManager->SetClientAkSk("QTWAOYTTINDUT2QVKYUC", "MFyfvK41ba2giqM7**********KGpownRZlmVmHc"));
-    DS_ASSERT_OK(RpcStubCacheMgr::Instance().Init(100));
+    DS_ASSERT_OK(RpcStubCacheMgr::Instance().Init(100, HostPort(), akSkManager));
     worker::WorkerRemoteMasterOCApi masterApi(worker0Addr, worker1Addr, akSkManager);
     DS_ASSERT_OK(masterApi.Init());
     master::CreateCopyMetaReqPb copyReq;

@@ -57,7 +57,7 @@ public:
     int initTimeoutMs = 5000;
     std::string accessKey_ = "QTWAOYTTINDUT2QVKYUC";
     std::string secretKey_ = "MFyfvK41ba2giqM7**********KGpownRZlmVmHc";
-    std::unique_ptr<Signature> signature_ = std::make_unique<Signature>(accessKey_, secretKey_);
+    std::shared_ptr<Signature> signature_ = std::make_shared<Signature>(accessKey_, secretKey_);
 };
 
 class ShmWorkerTest : public ListenWorkerTest {
@@ -81,7 +81,7 @@ public:
 TEST_F(ShmWorkerTest, SHM_THRESHOLD)
 {
     auto workerApi = std::make_shared<ClientWorkerRemoteCommonApi>(workerHostPort_,
-                                                              HeartbeatType::SOCKET_HEARTBEAT, "", signature_.get());
+                                                              HeartbeatType::SOCKET_HEARTBEAT, "", signature_);
     DS_ASSERT_OK(workerApi->Init(initTimeoutMs, initTimeoutMs));
     auto threshold = 128 * 1024u;
     DS_ASSERT_TRUE(workerApi->shmThreshold_, threshold);
@@ -90,7 +90,7 @@ TEST_F(ShmWorkerTest, SHM_THRESHOLD)
 TEST_F(ListenWorkerTest, TestUDSHeartbeatCallback)
 {
     auto workerApi = std::make_shared<ClientWorkerRemoteCommonApi>(workerHostPort_,
-                                                              HeartbeatType::SOCKET_HEARTBEAT, "", signature_.get());
+                                                              HeartbeatType::SOCKET_HEARTBEAT, "", signature_);
     DS_ASSERT_OK(workerApi->Init(initTimeoutMs, initTimeoutMs));
     bool called = false;
 
@@ -113,7 +113,7 @@ TEST_F(ListenWorkerTest, TestUDSHeartbeatCallback)
 TEST_F(ListenWorkerTest, LEVEL1_TestUDSHeartbeatReconnect)
 {
     auto workerApi = std::make_shared<ClientWorkerRemoteCommonApi>(workerHostPort_,
-                                                              HeartbeatType::SOCKET_HEARTBEAT, "", signature_.get());
+                                                              HeartbeatType::SOCKET_HEARTBEAT, "", signature_);
     DS_ASSERT_OK(workerApi->Init(initTimeoutMs, initTimeoutMs));
 
     ListenWorker listenWorker(workerApi, workerApi->heartbeatType_);
@@ -129,7 +129,7 @@ TEST_F(ListenWorkerTest, LEVEL1_TestUDSHeartbeatReconnect)
 TEST_F(ListenWorkerTest, TestRPCHeartheat)
 {
     auto workerApi = std::make_shared<ClientWorkerRemoteCommonApi>(workerHostPort_,
-                                                             HeartbeatType::RPC_HEARTBEAT, "", signature_.get());
+                                                             HeartbeatType::RPC_HEARTBEAT, "", signature_);
     DS_ASSERT_OK(workerApi->Init(initTimeoutMs, initTimeoutMs));
     bool called = false;
 
@@ -157,7 +157,7 @@ TEST_F(ListenWorkerTest, TestRPCHeartheat)
 TEST_F(ListenWorkerTest, TestRecoveryFailureKeepsAdmissionClosedAndRetries)
 {
     auto workerApi = std::make_shared<ClientWorkerRemoteCommonApi>(workerHostPort_,
-                                                                  HeartbeatType::RPC_HEARTBEAT, "", signature_.get());
+                                                                  HeartbeatType::RPC_HEARTBEAT, "", signature_);
     DS_ASSERT_OK(workerApi->Init(initTimeoutMs, initTimeoutMs));
     ListenWorker listenWorker(workerApi, workerApi->heartbeatType_);
     DS_ASSERT_OK(listenWorker.StartListenWorker());
@@ -198,7 +198,7 @@ TEST_F(ListenWorkerTest, TestRecoveryFailureKeepsAdmissionClosedAndRetries)
 TEST_F(ListenWorkerTest, LEVEL1_TestRPCHeartheatReconnect)
 {
     auto workerApi = std::make_shared<ClientWorkerRemoteCommonApi>(workerHostPort_,
-                                                             HeartbeatType::RPC_HEARTBEAT, "", signature_.get());
+                                                             HeartbeatType::RPC_HEARTBEAT, "", signature_);
     DS_ASSERT_OK(workerApi->Init(initTimeoutMs, initTimeoutMs));
 
     cluster_->ShutdownNodes(WORKER);
@@ -210,7 +210,7 @@ TEST_F(ListenWorkerTest, LEVEL1_TestRPCHeartheatReconnect)
 TEST_F(ListenWorkerTest, TestNoHeartbeatTransformRPCHeartbeat)
 {
     auto workerApi = std::make_shared<ClientWorkerRemoteCommonApi>(workerHostPort_,
-                                                             HeartbeatType::NO_HEARTBEAT, "", signature_.get());
+                                                             HeartbeatType::NO_HEARTBEAT, "", signature_);
     DS_ASSERT_OK(workerApi->Init(initTimeoutMs, initTimeoutMs));
 
     ASSERT_TRUE(workerApi->heartbeatType_ == HeartbeatType::RPC_HEARTBEAT);
@@ -226,7 +226,7 @@ TEST_F(ListenWorkerTest, TestNoHeartbeatTransformRPCHeartbeat)
 TEST_F(ListenWorkerTest, TestRemoveCallback)
 {
     auto workerApi = std::make_shared<ClientWorkerRemoteCommonApi>(workerHostPort_,
-                                                             HeartbeatType::SOCKET_HEARTBEAT, "", signature_.get());
+                                                             HeartbeatType::SOCKET_HEARTBEAT, "", signature_);
     DS_ASSERT_OK(workerApi->Init(initTimeoutMs, initTimeoutMs));
     ListenWorker listenWorker(workerApi, workerApi->heartbeatType_);
 
@@ -239,9 +239,9 @@ TEST_F(ListenWorkerTest, TestRemoveCallback)
     auto callback2 = [&called2]() { called2 = true; };
 
     auto point1 = std::make_shared<ClientWorkerRemoteCommonApi>(workerHostPort_,
-                                                          HeartbeatType::SOCKET_HEARTBEAT, "", signature_.get());
+                                                          HeartbeatType::SOCKET_HEARTBEAT, "", signature_);
     auto point2 = std::make_shared<ClientWorkerRemoteCommonApi>(workerHostPort_,
-                                                          HeartbeatType::SOCKET_HEARTBEAT, "", signature_.get());
+                                                          HeartbeatType::SOCKET_HEARTBEAT, "", signature_);
     listenWorker.AddCallBackFunc(point1.get(), callback1);
     listenWorker.AddCallBackFunc(point2.get(), callback2);
     listenWorker.StartListenWorker(workerApi->socketFd_);
@@ -256,7 +256,7 @@ TEST_F(ListenWorkerTest, TestRemoveCallback)
 TEST_F(ListenWorkerTest, DISABLED_TestClientDetectWorkerCrashTwiceWithUDS)
 {
     auto workerApi = std::make_shared<ClientWorkerRemoteCommonApi>(workerHostPort_,
-                                                             HeartbeatType::SOCKET_HEARTBEAT, "", signature_.get());
+                                                             HeartbeatType::SOCKET_HEARTBEAT, "", signature_);
     DS_ASSERT_OK(workerApi->Init(initTimeoutMs, initTimeoutMs));
 
     ASSERT_TRUE(workerApi->heartbeatType_ == HeartbeatType::SOCKET_HEARTBEAT);
@@ -331,13 +331,13 @@ public:
     HostPort workerHostPort_;
     std::string accessKey_ = "QTWAOYTTINDUT2QVKYUC";
     std::string secretKey_ = "MFyfvK41ba2giqM7**********KGpownRZlmVmHc";
-    std::unique_ptr<Signature> signature_ = std::make_unique<Signature>(accessKey_, secretKey_);
+    std::shared_ptr<Signature> signature_ = std::make_shared<Signature>(accessKey_, secretKey_);
 };
 
 TEST_F(ListenWorkerWithUDSTest, TestNoHeartbeat)
 {
     auto workerApi = std::make_shared<ClientWorkerRemoteCommonApi>(workerHostPort_,
-                                                             HeartbeatType::NO_HEARTBEAT, "", signature_.get());
+                                                             HeartbeatType::NO_HEARTBEAT, "", signature_);
     int timeoutMs = 5000;
     DS_ASSERT_OK(workerApi->Init(timeoutMs, timeoutMs));
 
@@ -353,7 +353,7 @@ TEST_F(ListenWorkerWithUDSTest, TestNoHeartbeat)
 TEST_F(ListenWorkerWithUDSTest, TestHeartbeatTimeout)
 {
     auto workerApi = std::make_shared<ClientWorkerRemoteCommonApi>(workerHostPort_,
-                                                             HeartbeatType::RPC_HEARTBEAT, "", signature_.get());
+                                                             HeartbeatType::RPC_HEARTBEAT, "", signature_);
     int timeoutMs = 5000;
     DS_ASSERT_OK(workerApi->Init(timeoutMs, timeoutMs));
 
@@ -387,13 +387,13 @@ public:
     HostPort workerHostPort1_;
     std::string accessKey_ = "QTWAOYTTINDUT2QVKYUC";
     std::string secretKey_ = "MFyfvK41ba2giqM7**********KGpownRZlmVmHc";
-    std::unique_ptr<Signature> signature_ = std::make_unique<Signature>(accessKey_, secretKey_);
+    std::shared_ptr<Signature> signature_ = std::make_shared<Signature>(accessKey_, secretKey_);
 };
 
 TEST_F(ListenWorkerSwitchTest, SwitchTest)
 {
     auto workerApi = std::make_shared<ClientWorkerRemoteCommonApi>(workerHostPort_,
-                                                             HeartbeatType::RPC_HEARTBEAT, "", signature_.get());
+                                                             HeartbeatType::RPC_HEARTBEAT, "", signature_);
     int timeoutMs = 5000;
     DS_ASSERT_OK(workerApi->Init(timeoutMs, timeoutMs));
     auto asyncSwitchWorkerPool = std::make_shared<ThreadPool>(0, 1);
@@ -404,7 +404,7 @@ TEST_F(ListenWorkerSwitchTest, SwitchTest)
     DS_ASSERT_OK(listenWorker->CheckWorkerAvailable());
     datasystem::inject::Set("IsIdle", "return()");
     auto workerApi1 = std::make_shared<ClientWorkerRemoteCommonApi>(workerHostPort1_,
-                                                              HeartbeatType::RPC_HEARTBEAT, "", signature_.get());
+                                                              HeartbeatType::RPC_HEARTBEAT, "", signature_);
     sleep(8);  // wait for 8 s
     listenWorker =
         std::make_unique<ListenWorker>(workerApi1, workerApi1->heartbeatType_, 0, asyncSwitchWorkerPool.get());
@@ -413,7 +413,7 @@ TEST_F(ListenWorkerSwitchTest, SwitchTest)
 TEST_F(ListenWorkerSwitchTest, TestStandbyConnectionShutdownAndRestartConcurrently)
 {
     auto workerApi = std::make_shared<ClientWorkerRemoteCommonApi>(workerHostPort_,
-                                                             HeartbeatType::RPC_HEARTBEAT, "", signature_.get());
+                                                             HeartbeatType::RPC_HEARTBEAT, "", signature_);
     int timeoutMs = 5000;
     DS_ASSERT_OK(workerApi->Init(timeoutMs, timeoutMs));
     auto asyncSwitchWorkerPool = std::make_shared<ThreadPool>(0, 1);
@@ -459,13 +459,13 @@ public:
     HostPort workerHostPort1_;
     std::string accessKey_ = "QTWAOYTTINDUT2QVKYUC";
     std::string secretKey_ = "MFyfvK41ba2giqM7**********KGpownRZlmVmHc";
-    std::unique_ptr<Signature> signature_ = std::make_unique<Signature>(accessKey_, secretKey_);
+    std::shared_ptr<Signature> signature_ = std::make_shared<Signature>(accessKey_, secretKey_);
 };
 
 TEST_F(ListenWorkerRecoverLocalTest, TestRecoverNotCalledForLocalWorker)
 {
     auto workerApi = std::make_shared<ClientWorkerRemoteCommonApi>(workerHostPort1_,
-                                                             HeartbeatType::RPC_HEARTBEAT, "", signature_.get());
+                                                             HeartbeatType::RPC_HEARTBEAT, "", signature_);
     int timeoutMs = 5000;
     DS_ASSERT_OK(workerApi->Init(timeoutMs, timeoutMs));
     auto asyncSwitchWorkerPool = std::make_shared<ThreadPool>(0, 1);
@@ -490,7 +490,7 @@ TEST_F(ListenWorkerRecoverLocalTest, TestRecoverNotCalledForLocalWorker)
 TEST_F(ListenWorkerRecoverLocalTest, TestRecoverSkippedWhenSwitched)
 {
     auto workerApi = std::make_shared<ClientWorkerRemoteCommonApi>(workerHostPort1_,
-                                                             HeartbeatType::RPC_HEARTBEAT, "", signature_.get());
+                                                             HeartbeatType::RPC_HEARTBEAT, "", signature_);
     int timeoutMs = 5000;
     DS_ASSERT_OK(workerApi->Init(timeoutMs, timeoutMs));
     auto asyncSwitchWorkerPool = std::make_shared<ThreadPool>(0, 1);
@@ -516,7 +516,7 @@ TEST_F(ListenWorkerRecoverLocalTest, TestRecoverSkippedWhenSwitched)
 TEST_F(ListenWorkerRecoverLocalTest, TestRecoverSuccessMarksSwitched)
 {
     auto workerApi = std::make_shared<ClientWorkerRemoteCommonApi>(workerHostPort1_,
-                                                             HeartbeatType::RPC_HEARTBEAT, "", signature_.get());
+                                                             HeartbeatType::RPC_HEARTBEAT, "", signature_);
     int timeoutMs = 5000;
     DS_ASSERT_OK(workerApi->Init(timeoutMs, timeoutMs));
     auto asyncSwitchWorkerPool = std::make_shared<ThreadPool>(0, 1);

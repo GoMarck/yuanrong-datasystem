@@ -113,6 +113,7 @@ public:
     // used by ak/sk authorize
     std::string systemAccessKey = "QTWAOYTTINDUT2QVKYUC";
     std::string systemSecretKey = "MFyfvK41ba2giqM7**********KGpownRZlmVmHc";
+    bool enableRpcAkSk = true;
     std::string tenantAccessKey;
     std::string tenantSecretKey;
     std::string injectActions;
