@@ -179,6 +179,8 @@ ds_cc_library(
         "worker_oc_service_create_impl.h",
     ],
     deps = [
+        "//src/datasystem/common/rdma/npu:remote_h2d_manager",
+        "//src/datasystem/common/object_cache:buffer_composer",
         "//include/datasystem/object:object_headers",
         "//include/datasystem/utils:utils_headers",
         "//src/datasystem/common/iam:common_iam",

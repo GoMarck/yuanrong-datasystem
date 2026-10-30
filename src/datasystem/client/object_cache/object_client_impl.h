@@ -822,6 +822,12 @@ private:
     /**
      * @brief The core synchronous implementation shared by MSetD2H and AsyncMSetD2H.
      */
+    Status MSetD2HRouted(const std::vector<std::string> &keys, const std::vector<DeviceBlobList> &blobs,
+                         const SetParam &param, std::vector<std::string> *confirmedKeys);
+    Status MSetD2HLocal(const HostPort &worker, const std::vector<std::string> &keys,
+                        const std::vector<const DeviceBlobList *> &blobs, client::TransportCreateParam createParam,
+                        client::TransportSetParam setParam, std::vector<std::string> *confirmedKeys);
+
     Status MSetD2HImpl(const std::vector<std::string> &objectKeys, const std::vector<DeviceBlobList> &devBlobList,
                        const SetParam &setParam, std::vector<std::string> *outLocalSetKeys);
 

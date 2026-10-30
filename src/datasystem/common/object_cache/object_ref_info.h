@@ -499,6 +499,16 @@ public:
      */
     Status RemoveClient(const ClientKey &clientId);
 
+    static constexpr uint64_t MAX_HIXL_WRITE_BYTES = 256ULL * 1024 * 1024;
+    static constexpr size_t MAX_HIXL_WRITE_ALLOCATIONS = 1024;
+    Status ReserveHixlWriteBudget(uint64_t bytes, size_t count);
+    void ReleaseHixlWriteBudget(uint64_t bytes, size_t count);
+    // Protect consumes the reservation only on success; the caller releases it on failure.
+    Status ProtectHixlWrites(const ClientKey &clientId, const std::vector<std::shared_ptr<ShmUnit>> &units,
+                             uint64_t reservedBytes, size_t reservedCount);
+    Status CompleteHixlWrites(const ClientKey &clientId, const std::vector<ShmKey> &ids,
+                              std::vector<std::shared_ptr<ShmUnit>> &completed);
+
     void ClientTableGetOrInsert(const ClientKey &clientId, TbbMemoryClientRefTable::const_accessor &accessor);
 
     void InitShmRefForClient(const ClientKey &clientId, bool supportMultiShmRefCount);
@@ -598,6 +608,14 @@ private:
     TbbMemoryClientRefTable clientRefTable_;
     // The map is shared memory id and the client ids referenced by this object.
     TbbMemoryObjectRefTable shmRefTable_;
+    struct HixlWriteOwner {
+        ClientKey clientId;
+        std::shared_ptr<ShmUnit> unit;
+    };
+    std::mutex hixlWriteMutex_;
+    std::unordered_map<ShmKey, HixlWriteOwner> hixlWrites_;
+    uint64_t hixlWriteBytes_ = 0;
+    size_t hixlWriteAllocations_ = 0;
     struct MaybeExpiredShmItemCmp {
         bool operator()(const MaybeExpiredShmItem &lhs, const MaybeExpiredShmItem &rhs) const
         {

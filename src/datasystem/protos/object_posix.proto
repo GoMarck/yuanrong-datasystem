@@ -71,6 +71,16 @@ message WorkerRedirectPb {
   repeated string candidate_addresses = 2;
 }
 
+message HixlWriteLayoutPb {
+  repeated uint64 blob_sizes = 1;
+}
+
+message HixlWriteTargetPb {
+  uint64 address = 1;
+  uint64 size = 2;
+  uint64 header_size = 3;
+}
+
 message CreateRspPb {
   WorkerRedirectPb worker_redirect = 7;
   // not set for noshm
@@ -80,6 +90,7 @@ message CreateRspPb {
   string shm_id = 4;
   uint64 metadata_size = 5;
   UrmaRemoteAddrPb urma_info = 6;
+  HixlWriteTargetPb hixl_target = 30;
   repeated uint32 latency_phase_us = 20;
   uint32 latency_tick_dropped_count = 21; // Stores total dropped tick+phase count. See FormatLatencySummary for breakdown.
 }
@@ -103,11 +114,13 @@ message MultiCreateReqPb {
   // Compatibility invariant: future signed request fields must use numbers greater than 103 so old workers
   // preserve the canonical AK/SK serialization order when they ignore unknown fields.
   repeated string allocation_ids = 103;
+  repeated HixlWriteLayoutPb hixl_layouts = 104;
 }
 
 message MultiCreateRspPb {
   repeated CreateRspPb results = 1;
   repeated bool exists = 2;
+  string hixl_endpoint = 3;
 }
 
 // For the meaning of the value, see 'ExistenceOpt' enum class.
@@ -181,6 +194,7 @@ message MultiPublishReqPb {
   // Whether the caller needs indexes confirmed published by this request. The high field number preserves the
   // serialization order used by old peers during AK/SK verification when this field is unknown to them.
   bool return_local_published_indexes = 103;
+  bool hixl_write_complete = 104;
 }
 
 message MultiPublishRspPb {

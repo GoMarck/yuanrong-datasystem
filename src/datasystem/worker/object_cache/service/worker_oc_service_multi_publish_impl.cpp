@@ -139,6 +139,13 @@ Status WorkerOcServiceMultiPublishImpl::MultiPublishImpl(const MultiPublishReqPb
     RETURN_IF_NOT_OK(
         WorkerOcServiceCrudCommonApi::CheckShmUnitByTenantId(tenantId, clientId, shmUnits, memoryRefTable_));
 
+    // Keep completed allocations alive until publication exits, including client-death races.
+    std::vector<std::shared_ptr<ShmUnit>> completedHixlWrites;
+    if (req.hixl_write_complete()) {
+        CHECK_FAIL_RETURN_STATUS(req.is_routed() && shmUnits.size() == static_cast<size_t>(req.object_info_size()),
+                                 K_INVALID, "HIXL completion requires routed allocations");
+        RETURN_IF_NOT_OK(memoryRefTable_->CompleteHixlWrites(clientId, shmUnits, completedHixlWrites));
+    }
     RETURN_IF_NOT_OK(CheckIfL2CacheNeededAndWritable(supportL2Storage_, WriteMode(req.write_mode())));
 
     std::vector<std::string> namespaceUri;

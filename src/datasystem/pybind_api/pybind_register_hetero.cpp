@@ -170,13 +170,13 @@ PybindDefineRegisterer g_pybind_define_f_Future("Future", PRIORITY_LOW, [](const
             py::arg("timeoutMs") = DEFAULT_FUTURE_GET_TIMEOUT_MS);
 });
 
-PybindDefineRegisterer g_pybind_define_f_HeteroClient("HeteroClient", PRIORITY_LOW, [](const py::module *m) {
+PybindDefineRegisterer g_pybind_define_f_HeteroClient("HeteroClient", PRIORITY_MID, [](const py::module *m) {
     py::class_<HeteroClient, std::shared_ptr<HeteroClient>>(*m, "HeteroClient")
         .def(py::init([](const std::string &host, int32_t port, int32_t connectTimeoutMs, const std::string &token,
                          const std::string &clientPublicKey, const std::string &clientPrivateKey,
                          const std::string &serverPublicKey, const std::string &accessKey, const std::string &secretKey,
                          const std::string &tenantId, const bool enableCrossNodeConnection, int32_t reqTimeoutMs,
-                         bool enableRemoteH2D) {
+                         bool enableRemoteH2D, bool enableLocalCache, DataPlacementPolicy dataPlacementPolicy) {
             ConnectOptions connectOpts{
                 .host = host,
                 .port = port,
@@ -190,10 +190,16 @@ PybindDefineRegisterer g_pybind_define_f_HeteroClient("HeteroClient", PRIORITY_L
                 .secretKey = secretKey,
                 .tenantId = tenantId,
                 .enableCrossNodeConnection = enableCrossNodeConnection,
+                .enableLocalCache = enableLocalCache,
+                .dataPlacementPolicy = dataPlacementPolicy,
                 .enableRemoteH2D = enableRemoteH2D
             };
             return std::make_unique<HeteroClient>(connectOpts);
-        }))
+        }), py::arg("host"), py::arg("port"), py::arg("connectTimeoutMs"), py::arg("token"),
+            py::arg("clientPublicKey"), py::arg("clientPrivateKey"), py::arg("serverPublicKey"),
+            py::arg("accessKey"), py::arg("secretKey"), py::arg("tenantId"), py::arg("enableCrossNodeConnection"),
+            py::arg("reqTimeoutMs"), py::arg("enableRemoteH2D"), py::arg("enableLocalCache") = true,
+            py::arg("dataPlacementPolicy") = DataPlacementPolicy::PREFERRED_SAME_NODE)
         .def("init",
              [](HeteroClient &client) {
                  py::gil_scoped_release release;

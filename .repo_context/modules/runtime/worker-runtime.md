@@ -38,6 +38,16 @@
     routed requests with `is_routed=true` call `worker::AuthenticateRequest` using the signed request tenant, while
     legacy gateway requests retain the registered-client authentication path. Deploy workers with this routed-request
     branch before enabling routed Set or MSet in newer clients during rolling upgrades.
+  - routed HeteroClient HIXL D2RH is opt-in via `enable_hixl_d2rh=false` by default. Create's existing MultiCreate
+    handler prepares the composed Blob header and returns the host address and independent HIXL endpoint;
+    one `remote_h2d_device_ids` entry, HCCS, and a nonzero buffer pool are required. Existing MultiPublish consumes
+    the authenticated client's WRITE-complete flag, retaining local ShmUnit owners throughout publication.
+    `SharedMemoryRefTable::ProtectHixlWrites/CompleteHixlWrites` holds strong owners independently of normal client
+    ref cleanup; incomplete writes remain until process exit with a 256 MiB/1024-allocation per-Worker budget.
+    HIXL allocations disable aggregation; budget is reserved before allocator/eviction and canceled on failure.
+    Installing strong owners rolls back partial insertions on allocation errors before committing the reservation.
+    This is conservative quarantine, not a DMA fence or automatic failure recovery. Read
+    `tests/st/device/README_hixl_d2rh.md` before rollout/rollback and hardware fault testing.
   - global-reference decrease treats a missing worker-to-master API after a successful owner lookup as
     `K_RPC_UNAVAILABLE`; affected ids enter the existing RPC-failure path instead of being silently skipped during a
     connection rebuild window.

@@ -188,3 +188,14 @@ ds_cc_test(
         "@zmq",
     ],
 )
+
+ds_cc_test(
+    name = "hetero_d2rh_test",
+    srcs = ["hetero_d2rh_test.cpp"],
+    tags = ["manual"],
+    deps = DEVICE_COMMON_DEPS + [
+        "//src/datasystem/common/device/ascend:acl_device_manager",
+        "//src/datasystem/common/util:net_util",
+        "//src/datasystem/common/util:uuid_generator",
+    ],
+)

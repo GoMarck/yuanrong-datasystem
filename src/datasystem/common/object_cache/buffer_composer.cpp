@@ -26,26 +26,6 @@
 
 namespace datasystem {
 namespace object_cache {
-namespace {
-
-Status GetComposedBufferHeaderSizeChecked(size_t blobCount, uint32_t memoryAlignment, uint64_t &headerSize)
-{
-    CHECK_FAIL_RETURN_STATUS(memoryAlignment > 0 && (memoryAlignment & (memoryAlignment - 1)) == 0, K_INVALID,
-                             FormatString("memoryAlignment %u must be a non-zero power of two", memoryAlignment));
-    constexpr uint64_t kHeaderFieldCount = 2;
-    constexpr uint64_t kFieldSize = sizeof(uint64_t);
-    constexpr uint64_t kUint64Max = std::numeric_limits<uint64_t>::max();
-    CHECK_FAIL_RETURN_STATUS(blobCount <= kUint64Max / kFieldSize - kHeaderFieldCount, K_INVALID,
-                             "Composed buffer header size overflows uint64_t");
-    const auto rawHeaderSize = (static_cast<uint64_t>(blobCount) + kHeaderFieldCount) * kFieldSize;
-    const auto alignmentPadding = static_cast<uint64_t>(memoryAlignment) - 1;
-    CHECK_FAIL_RETURN_STATUS(rawHeaderSize <= kUint64Max - alignmentPadding, K_INVALID,
-                             "Aligned composed buffer header size overflows uint64_t");
-    headerSize = (rawHeaderSize + alignmentPadding) & ~alignmentPadding;
-    return Status::OK();
-}
-
-}  // namespace
 
 uint64_t GetComposedBufferHeaderSize(size_t blobCount, uint32_t memoryAlignment)
 {

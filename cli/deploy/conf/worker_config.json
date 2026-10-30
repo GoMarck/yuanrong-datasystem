@@ -755,6 +755,10 @@
         "value": "",
         "description": "File path of tls pwd, optional for yuanrong iam. Use standard characters only. if ca , cert, key is all empty, connect with yuanrong iam without tls."
     },
+    "enable_hixl_d2rh": {
+        "value": "false",
+        "description": "Enable synchronous routed HIXL D2RH writes. Requires an HIXL build, one remote_h2d_device_ids entry and a nonzero remote_h2d_hccs_buffer_pool. Default false."
+    },
     "remote_h2d_device_ids": {
         "value": "",
         "description": "The NPU device ids to be used for Remote H2D purposes given as a list of comma seperated values, default is none. Assigning values enables RemoteH2D."

@@ -76,6 +76,8 @@ public:
     /// \brief Pre-register device memory regions for RemoteH2D/HCCS transfers.
     ///     Call this before MGetH2D when the following MGetH2D destination blobs will be allocated from these regions.
     ///     Datasystem keeps the device memory registrations until the client shuts down.
+    ///     With enableLocalCache=false, register the fixed source arena once for synchronous HIXL D2RH writes
+    ///     on one device. Keep it allocated until shutdown; after a transfer error, keep it until process exit.
     /// \param[in] devPtrs Starting addresses of the device memory regions.
     /// \param[in] sizes Sizes of the device memory regions in bytes.
     /// \return K_OK on success; the error code otherwise.
@@ -87,6 +89,8 @@ public:
     /// \param[in] devBlobList Pointers to the HBM memory in a group of devices. Data is obtained from these pointers
     ///     and written to the key of the host. If the DeviceBlobList contains multiple HBM pointers, the data is
     ///     combined and written to the shared memory corresponding to the host key.
+    ///     With enableLocalCache=false, remote targets use HIXL D2RH (buffer pool required); same-host targets
+    ///     use shared memory and D2H. Empty blob placeholders are unsupported in this mode.
     /// \param[in] setParam Configuration parameters for the MSetD2H operation.
     /// \return K_OK when the operation completes successfully; the error code otherwise.
     Status MSetD2H(const std::vector<std::string> &keys, const std::vector<DeviceBlobList> &devBlobList,
@@ -98,7 +102,7 @@ public:
     /// \param[in] setParam Configuration parameters for the MSetD2H operation.
     /// \param[out] outLocalSetKeys Optional keys confirmed to be newly set on the connected Worker by this call.
     ///     The vector is cleared when the call begins. Existing local keys and unconfirmed publish results are
-    ///     excluded.
+    ///     excluded. With enableLocalCache=false, confirmations refer to the selected target Workers.
     ///     It may be empty when K_OK is returned if no key was newly set. If an error is returned after a trusted
     ///     publish response, it may contain keys confirmed successfully set by the partial operation; it remains empty
     ///     when no publish result was confirmed.
@@ -114,6 +118,7 @@ public:
     Status Delete(const std::vector<std::string> &keys, std::vector<std::string> &failedKeys);
 
     /// @brief For device object Async set multiple objects, and return before publish rpc called.
+    ///     Returns K_NOT_SUPPORTED in the future when enableLocalCache=false.
     /// \param[in] keys Keys in the host. Constraint: The number of keys cannot exceed 10,000.
     ///     For performance reasons, only the validity of the first key is validated.
     /// \param[in] devBlobList Pointers to the HBM memory in a group of devices. Data is obtained from these pointers

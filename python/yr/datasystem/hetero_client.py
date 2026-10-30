@@ -20,7 +20,7 @@ from typing import List
 
 from yr.datasystem.lib import libds_client_py as ds
 from yr.datasystem.util import Validator as validator
-from yr.datasystem.kv_client import SetParam
+from yr.datasystem.kv_client import SetParam, DataPlacementPolicy
 
 
 class Future:
@@ -92,6 +92,8 @@ class HeteroClient:
         req_timeout_ms(int): The timeout of request, when req_timeout_ms<=0, req_timeout_ms is the same with
         connect_timeout_ms.
         enable_remote_h2d(bool): Whether the remote h2d feature is enabled or not, default off.
+        enable_local_cache(bool): Use the bound Worker cache; False enables routed synchronous D2H writes.
+        data_placement_policy(DataPlacementPolicy): Placement for routed writes.
 
     Raises:
         TypeError: Raise a type error if the input parameter is invalid.
@@ -111,7 +113,9 @@ class HeteroClient:
         tenant_id="",
         enable_cross_node_connection=False,
         req_timeout_ms=0,
-        enable_remote_h2d=False
+        enable_remote_h2d=False,
+        enable_local_cache=True,
+        data_placement_policy=DataPlacementPolicy.PREFERRED_SAME_NODE
     ):
         """Constructor of the HeteroClient class
 
@@ -130,6 +134,9 @@ class HeteroClient:
             req_timeout_ms(int): The timeout of request, when req_timeout_ms<=0, req_timeout_ms is the same with
             connect_timeout_ms.
             enable_remote_h2d(bool): Whether the remote h2d feature is enabled or not, default off.
+            enable_local_cache(bool): Use the bound-worker cache by default. False routes synchronous D2H writes
+                through Transport; remote writes require a pre-registered HIXL arena and enabled target worker.
+            data_placement_policy(DataPlacementPolicy): Write placement when enable_local_cache is False.
 
         Raises:
             TypeError: Raise a type error if the input parameter is invalid.
@@ -147,6 +154,8 @@ class HeteroClient:
             ["tenant_id", tenant_id, str],
             ["enable_cross_node_connection", enable_cross_node_connection, bool],
             ["enable_remote_h2d", enable_remote_h2d, bool],
+            ["enable_local_cache", enable_local_cache, bool],
+            ["data_placement_policy", data_placement_policy, DataPlacementPolicy],
         ]
         validator.check_args_types(args)
         self._client = ds.HeteroClient(
@@ -162,7 +171,9 @@ class HeteroClient:
             tenant_id,
             enable_cross_node_connection,
             req_timeout_ms,
-            enable_remote_h2d
+            enable_remote_h2d,
+            enable_local_cache,
+            data_placement_policy.value
         )
 
     @staticmethod

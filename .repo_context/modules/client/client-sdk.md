@@ -517,9 +517,16 @@ handler. Clearing the Router handler synchronously excludes later callback acces
     (`py::arg("enableLocalCache") = true`, `py::arg("dataPlacementPolicy") = PREFERRED_SAME_NODE`)
     so existing positional callers remain compatible; `DataPlacementPolicy` is registered as a pybind
     enum (`ds.DataPlacementPolicy.PREFERRED_SAME_NODE / REQUIRED_SAME_NODE / PREFERRED_META_OWNER`).
-    `HeteroClient` does not currently expose either kwarg; the underlying `ObjectClientImpl` still
-    honors `ConnectOptions::enableLocalCache` for D2H/H2D paths, so a future `HeteroClient` kwarg can
-    be added without changing the C++ side.
+    `HeteroClient` exposes the same trailing kwargs. With `enableLocalCache=false`, synchronous `MSetD2H`
+    groups keys through the existing placement routing: same-host targets use SHM+D2H, remote targets use
+    concrete `transport/data_plane/hixl_transporter` with MultiCreate/HIXL WRITE/MultiPublish. Remote writes require
+    one fixed pre-registered source device arena and HIXL buffer-pool mode; async writes and empty blob placeholders
+    are unsupported. `DS_HIXL_D2RH_LOCAL_IP` overrides the SDK endpoint IP for a remote bound Worker. The new Worker
+    flag `enable_hixl_d2rh` defaults false. D2RH uses per-instance HIXL options from the environment without mutating
+    RH2D global flags; serial admission and Connect honor the remaining request deadline. HeteroClient pybind
+    registration runs after KVClient registers DataPlacementPolicy. A failed WRITE stops submissions and retains the engine/registration until
+    process exit; the caller must keep the source arena alive until then. Hardware timeout/fence semantics remain
+    unverified. Manual cases and constraints: `tests/st/device/README_hixl_d2rh.md`.
   - remote H2D toggle
   - optional `IServiceDiscovery`; the public implementations are ETCD-backed `ServiceDiscovery` and coordinator-backed `CoordinatorServiceDiscovery`
   - fast transport shared-memory size
@@ -573,11 +580,12 @@ handler. Clearing the Router handler synchronously excludes later callback acces
   `H2DObjectView` entries for local/remote source grouping; async calls retain their existing owning state copy.
   Same-node H2D prepares flat pointer/reference arrays without copying `DeviceBlobList::blobs`, while RH2D uses one
   flat backing allocation for all `P2pScatterEntry` destination pointers and sizes in a source group.
-- Synchronous `MSetD2H` filters existing objects with request-scoped non-owning `D2HObjectView`/descriptor references
+- With `enableLocalCache=true`, synchronous `MSetD2H` filters existing objects with request-scoped non-owning `D2HObjectView`/descriptor references
   and moves the selected Buffer owners instead of deep-copying `DeviceBlobList::blobs`; async calls build the same
   views from `AsyncMSetD2HState`'s owning copy. The D2H composer and ACL/CUDA resource managers consume these refs,
   while local/remote `MultiPublish` serializes protobuf `blob_sizes` directly from them with pre-reserved
-  `RepeatedField` capacity. D2H does not initialize RH2D/HIXL configuration.
+  `RepeatedField` capacity. This bound-worker D2H path does not initialize RH2D/HIXL configuration; routed D2RH
+  uses the separate pre-registration path described above.
 - Python exposes both ETCD-backed `ServiceDiscovery` and coordinator-backed `CoordinatorServiceDiscovery`. When a
   `KVClient` is constructed with either discovery wrapper, the Python layer passes the native `IServiceDiscovery`
   object from the wrapper's public `native_discovery` property into the pybind `KVClient` constructor so the C++

@@ -36,6 +36,11 @@ enum class HixlMemoryMode { BUFFER_POOL, ROCE_DIRECT, FABRIC_MEM };
 
 class HixlTransport : public RH2DTransportStrategy {
 public:
+    struct Options {
+        std::string bufferPool = "0:0";
+        bool csEnable = false;
+    };
+
     HixlTransport() = default;
 #ifdef WITH_TESTS
     HixlTransport(const DsHixlApi *api, bool skipDeviceBinding) : api_(api), skipDeviceBinding_(skipDeviceBinding)
@@ -45,8 +50,10 @@ public:
     ~HixlTransport() override;
 
     Status Init(const std::vector<int32_t> &deviceIds) override;
+    Status Init(const std::vector<int32_t> &deviceIds, const Options &options);
     Status GetConnectionIdentity(std::string *identity) override;
     Status Connect(const std::string &remoteIdentity, P2pKind kind, std::function<int()> *heartbeatCallback) override;
+    Status Connect(const std::string &remoteIdentity, int32_t timeoutMs);
     Status Disconnect(const std::string &remoteIdentity) override;
     Status DisconnectAll() override;
     Status RegisterMemory(void *addr, uint64_t size, P2pSegmentInfo *segInfo) override;
@@ -56,6 +63,9 @@ public:
     Status ScatterBatch(P2pScatterEntry *entries, uint32_t count, const std::string &remoteEndpoint,
                         std::shared_ptr<aclrtStream> stream) override;
     P2pLink LinkType() const override;
+    Status WriteBatch(const std::string &remoteEndpoint, const std::vector<DsHixlTransferDesc> &descriptors,
+                       int32_t timeoutMs);
+    bool UsesBufferPool() const { return bufferPoolEnabled_; }
 
     // Setter for HCCS local IP. Must be called before Init().
     void SetLocalEndpoint(const std::string &ep, bool isClient = false);
@@ -74,7 +84,7 @@ private:
         DsHixlMemHandle handle;
     };
 
-    Status InitializeSingleDevice(int32_t devId, const std::string &bufferPool, DsHixlEngineHandle &engine,
+    Status InitializeSingleDevice(int32_t devId, const Options &options, DsHixlEngineHandle &engine,
                                   std::string &endpoint);
     void DestroyEngine(DsHixlEngineHandle engine) const;
     Status ValidateDeviceMemoryRegistrationInputs(const std::vector<void *> &addrs,

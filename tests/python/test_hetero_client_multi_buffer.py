@@ -16,7 +16,7 @@
 import unittest
 
 from yr.datasystem.hetero_client import HeteroClient
-from yr.datasystem.kv_client import SetParam
+from yr.datasystem.kv_client import SetParam, DataPlacementPolicy
 from yr.datasystem.lib import libds_client_py as ds
 
 
@@ -51,6 +51,21 @@ class _NativeClient:
     def batch_is_exist(self, *args):
         self.exist_args = args
         return self.exist_result
+
+
+class TestHeteroClientConstruction(unittest.TestCase):
+    def test_native_legacy_arguments_use_registered_default_policy(self):
+        client = ds.HeteroClient(
+            "127.0.0.1", 1, 9000, "", "", "", "", "", "", "", False, 0, False
+        )
+        self.assertIsInstance(client, ds.HeteroClient)
+
+    def test_python_constructor_accepts_routed_options(self):
+        client = HeteroClient(
+            "127.0.0.1", 1, enable_local_cache=False,
+            data_placement_policy=DataPlacementPolicy.PREFERRED_META_OWNER
+        )
+        self.assertIsInstance(client._client, ds.HeteroClient)
 
 
 class TestHeteroClientMultiBuffer(unittest.TestCase):

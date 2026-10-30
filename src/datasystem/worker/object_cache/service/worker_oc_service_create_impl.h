@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -33,6 +34,7 @@
 #include "datasystem/worker/object_cache/service/worker_oc_service_crud_common_api.h"
 
 namespace datasystem {
+class HixlTransport;
 namespace object_cache {
 
 class WorkerOcServiceCreateImpl : public WorkerOcServiceCrudCommonApi {
@@ -72,7 +74,11 @@ private:
     void ReleaseReservations(const std::vector<ShmKey> &reservations);
 
     Status FillCreateResponse(const ClientKey &clientId, const std::shared_ptr<ShmUnit> &shmUnit,
-                              size_t metadataSize, CreateRspPb &resp);
+                              size_t metadataSize, CreateRspPb &resp, bool hixlWrite = false);
+
+    Status PrepareHixlWrite(MultiCreateReqPb &req, MultiCreateRspPb &resp);
+    Status FillHixlTarget(const MultiCreateReqPb &req, int index, const std::shared_ptr<ShmUnit> &unit,
+                          CreateRspPb &resp);
 
     Status AuthenticateCreateRequest(const CreateReqPb &req, std::string &tenantId);
 
@@ -144,6 +150,8 @@ private:
     std::shared_ptr<AkSkManager> akSkManager_{ nullptr };
 
     HostPort localAddress_;
+    std::mutex hixlMutex_;
+    std::shared_ptr<HixlTransport> hixlTransport_;
 };
 
 }  // namespace object_cache

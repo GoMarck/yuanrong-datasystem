@@ -19,6 +19,12 @@
 #include "datasystem/common/util/validator.h"
 #include "datasystem/worker/object_cache/service/worker_oc_service_create_impl.h"
 
+#include <securec.h>
+#include "datasystem/common/object_cache/buffer_composer.h"
+#ifdef ASCEND_HIXL_AVAILABLE
+#include "datasystem/common/rdma/npu/hixl_transport.h"
+#include "datasystem/common/rdma/npu/remote_h2d_manager.h"
+#endif
 #include "datasystem/common/flags/flags.h"
 #include "datasystem/common/flags/common_flags.h"
 #include "datasystem/common/log/log.h"
@@ -39,6 +45,7 @@
 #include "datasystem/worker/authenticate.h"
 
 DS_DECLARE_uint64(oc_shm_transfer_threshold_kb);
+DS_DECLARE_uint32(memory_alignment);
 
 namespace datasystem {
 namespace object_cache {
@@ -147,16 +154,17 @@ void WorkerOcServiceCreateImpl::ReleaseReservations(const std::vector<ShmKey> &r
 
 Status WorkerOcServiceCreateImpl::FillCreateResponse(const ClientKey &clientId,
                                                      const std::shared_ptr<ShmUnit> &shmUnit,
-                                                     size_t metadataSize, CreateRspPb &resp)
+                                                     size_t metadataSize, CreateRspPb &resp, bool hixlWrite)
 {
     (void)clientId;
+    (void)hixlWrite;
     resp.set_store_fd(shmUnit->GetFd());
     resp.set_mmap_size(shmUnit->GetMmapSize());
     resp.set_offset(shmUnit->GetOffset());
     resp.set_shm_id(shmUnit->GetId());
     resp.set_metadata_size(metadataSize);
 #ifdef USE_URMA
-    if (!ClientShmEnabled(clientId) && IsUrmaEnabled()) {
+    if (!hixlWrite && !ClientShmEnabled(clientId) && IsUrmaEnabled()) {
         RETURN_IF_NOT_OK(FillRequestUrmaInfo(localAddress_, shmUnit->GetPointer(), shmUnit->GetOffset(), metadataSize,
                                              resp, shmUnit->GetNumaId()));
     }
@@ -345,11 +353,82 @@ Status WorkerOcServiceCreateImpl::FillMultiCreateShmUnits(
             shmUnits[index]->id = requestShmIds[index];
         }
         point.RecordAndReset(PerfKey::WORKER_MULTI_CREATE_FILL_SUB_RSP);
-        results[index] = FillCreateResponse(clientId, shmUnits[index], metadataSize, subRsp[index]);
+        results[index] = FillCreateResponse(clientId, shmUnits[index], metadataSize, subRsp[index],
+                                                   req.hixl_layouts_size() > 0);
+        if (results[index].IsOk() && req.hixl_layouts_size() > 0) {
+            results[index] = FillHixlTarget(req, index, shmUnits[index], subRsp[index]);
+        }
         if (results[index].IsError()) {
             shmUnits[index].reset();
         }
     }
+    return Status::OK();
+}
+
+Status WorkerOcServiceCreateImpl::PrepareHixlWrite(MultiCreateReqPb &req, MultiCreateRspPb &resp)
+{
+    CHECK_FAIL_RETURN_STATUS(FLAGS_enable_hixl_d2rh && req.is_routed(), K_NOT_SUPPORTED,
+                             "HIXL D2RH writes are disabled");
+    CHECK_FAIL_RETURN_STATUS(FLAGS_remote_h2d_link_type == "HCCS", K_NOT_SUPPORTED,
+                             "D2RH requires remote_h2d_link_type=HCCS");
+    CHECK_FAIL_RETURN_STATUS(req.hixl_layouts_size() == req.object_key_size(), K_INVALID,
+                             "HIXL layout count must match object count");
+#ifdef ASCEND_HIXL_AVAILABLE
+    {
+        std::lock_guard<std::mutex> lock(hixlMutex_);
+        if (hixlTransport_ == nullptr) {
+            RETURN_IF_NOT_OK(RemoteH2DManager::Instance().GetInitStatus());
+            std::vector<int32_t> devices;
+            RETURN_IF_NOT_OK(RemoteH2DManager::Instance().GetWorkerDeviceIds(&devices));
+            CHECK_FAIL_RETURN_STATUS(devices.size() == 1, K_NOT_SUPPORTED,
+                                     "D2RH requires exactly one remote_h2d_device_ids entry");
+            auto transport = std::make_shared<HixlTransport>();
+            transport->SetLocalEndpoint(localAddress_.Host());
+            RETURN_IF_NOT_OK(transport->Init(devices));
+            CHECK_FAIL_RETURN_STATUS(transport->UsesBufferPool(), K_NOT_SUPPORTED,
+                                     "D2RH currently requires the HIXL buffer pool");
+            hixlTransport_ = std::move(transport);
+        }
+        std::string endpoint;
+        RETURN_IF_NOT_OK(hixlTransport_->GetConnectionIdentity(&endpoint));
+        resp.set_hixl_endpoint(endpoint);
+    }
+    uint64_t batchBytes = 0;
+    for (int i = 0; i < req.object_key_size(); ++i) {
+        const auto &sizes = req.hixl_layouts(i).blob_sizes();
+        std::vector<uint64_t> header;
+        uint64_t size = 0;
+        RETURN_IF_NOT_OK(BuildComposedBufferHeader({ sizes.begin(), sizes.end() }, FLAGS_memory_alignment,
+                                                   header, size));
+        CHECK_FAIL_RETURN_STATUS(size <= SharedMemoryRefTable::MAX_HIXL_WRITE_BYTES - batchBytes, K_INVALID,
+                                 "HIXL batch exceeds the protected memory budget");
+        batchBytes += size;
+        req.set_data_size(i, size);
+    }
+    return Status::OK();
+#else
+    (void)resp;
+    RETURN_STATUS(K_NOT_SUPPORTED, "D2RH requires a build with HIXL support");
+#endif
+}
+
+Status WorkerOcServiceCreateImpl::FillHixlTarget(const MultiCreateReqPb &req, int index,
+                                                 const std::shared_ptr<ShmUnit> &unit, CreateRspPb &resp)
+{
+    const auto &sizes = req.hixl_layouts(index).blob_sizes();
+    std::vector<uint64_t> header;
+    uint64_t size = 0;
+    RETURN_IF_NOT_OK(BuildComposedBufferHeader({ sizes.begin(), sizes.end() }, FLAGS_memory_alignment,
+                                               header, size));
+    CHECK_FAIL_RETURN_STATUS(size == req.data_size(index), K_INVALID, "HIXL object layout changed");
+    auto *data = static_cast<uint8_t *>(unit->GetPointer()) + GetMetadataSize();
+    const auto headerSize = header.size() * sizeof(uint64_t);
+    CHECK_FAIL_RETURN_STATUS(memcpy_s(data, size, header.data(), headerSize) == EOK, K_RUNTIME_ERROR,
+                             "Failed to compose HIXL object header");
+    auto *target = resp.mutable_hixl_target();
+    target->set_address(reinterpret_cast<uintptr_t>(data));
+    target->set_size(size);
+    target->set_header_size(headerSize);
     return Status::OK();
 }
 
@@ -365,7 +444,30 @@ Status WorkerOcServiceCreateImpl::MultiCreateImpl(const MultiCreateReqPb &req, c
     RETURN_IF_NOT_OK(ReserveMultiAllocationIds(req, requestShmIds, reservations));
     std::vector<uint32_t> shmIndexMapping(req.object_key_size(), std::numeric_limits<uint32_t>::max());
     std::vector<std::shared_ptr<ShmOwner>> shmOwners;
-    RETURN_IF_NOT_OK(AggregateAllocateHelper(req, tenantId, shmOwners, shmIndexMapping));
+    uint64_t hixlBudgetBytes = 0;
+    size_t hixlBudgetCount = 0;
+    bool releaseHixlBudget = false;
+    Raii cancelHixlBudget([&]() {
+        if (releaseHixlBudget) {
+            memoryRefTable_->ReleaseHixlWriteBudget(hixlBudgetBytes, hixlBudgetCount);
+        }
+    });
+    if (req.hixl_layouts_size() > 0) {
+        for (int i = 0; i < objectSize; ++i) {
+            if (!req.skip_check_existence() && resp.exists(i)) {
+                continue;
+            }
+            const auto size = req.data_size(i) + GetMetadataSize();
+            CHECK_FAIL_RETURN_STATUS(size <= SharedMemoryRefTable::MAX_HIXL_WRITE_BYTES - hixlBudgetBytes,
+                                     K_OUT_OF_MEMORY, "HIXL batch exceeds the protected memory budget");
+            hixlBudgetBytes += size;
+            ++hixlBudgetCount;
+        }
+        RETURN_IF_NOT_OK(memoryRefTable_->ReserveHixlWriteBudget(hixlBudgetBytes, hixlBudgetCount));
+        releaseHixlBudget = true;
+    } else {
+        RETURN_IF_NOT_OK(AggregateAllocateHelper(req, tenantId, shmOwners, shmIndexMapping));
+    }
     std::vector<CreateRspPb> subRsp(objectSize);
     std::vector<Status> results(objectSize);
 
@@ -379,9 +481,12 @@ Status WorkerOcServiceCreateImpl::MultiCreateImpl(const MultiCreateReqPb &req, c
         RETURN_IF_NOT_OK(result);
     }
     point.RecordAndReset(PerfKey::WORKER_MULTI_CREATE_ADD_SHM_UNITS);
-    // Before this point, local shared_ptr owners release every allocation on error. AddShmUnits is the single
-    // ownership-transfer point, and no status-returning operation follows it, so the caller never needs to roll back
-    // memoryRefTable_ entries for a returned error.
+    // Install HIXL protection before exposing addresses; earlier failures retain only local owners.
+    // No status-returning operation follows the transfer to the reference tables.
+    if (req.hixl_layouts_size() > 0) {
+        RETURN_IF_NOT_OK(memoryRefTable_->ProtectHixlWrites(clientId, shmUnits, hixlBudgetBytes, hixlBudgetCount));
+        releaseHixlBudget = false;
+    }
     memoryRefTable_->AddShmUnits(clientAccessor, shmUnits, req.request_timeout(),
                                  !ClientShmEnabled(clientAccessor->first));
 
@@ -433,7 +538,16 @@ Status WorkerOcServiceCreateImpl::MultiCreate(const MultiCreateReqPb &req, Multi
         CheckExistence(req, tenantId, resp);
     }
     point.RecordAndReset(PerfKey::WORKER_MULTI_CREATE_IMPL);
-    Status rc = MultiCreateImpl(req, tenantId, resp);
+    Status rc;
+    if (req.hixl_layouts_size() > 0) {
+        auto hixlReq = req;
+        rc = PrepareHixlWrite(hixlReq, resp);
+        if (rc.IsOk()) {
+            rc = MultiCreateImpl(hixlReq, tenantId, resp);
+        }
+    } else {
+        rc = MultiCreateImpl(req, tenantId, resp);
+    }
     if (rc.IsError()) {
         resp.Clear();
     }
