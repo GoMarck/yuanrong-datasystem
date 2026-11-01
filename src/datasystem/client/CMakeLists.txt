@@ -53,6 +53,7 @@ list(APPEND CLIENT_SRCS
         object_cache/transport/data_plane/data_plane_executor.cpp
         object_cache/transport/data_plane/client_ub_probe_cooldown.cpp
         object_cache/transport/data_plane/data_plane_manager.cpp
+        object_cache/transport/data_plane/hixl_transporter.cpp
         object_cache/transport/data_plane/shm_connection.cpp
         object_cache/transport/data_plane/shm_receive_buffer_owner.cpp
         object_cache/transport/data_plane/shm_send_buffer_owner.cpp
@@ -138,6 +139,10 @@ target_link_libraries(datasystem_static PRIVATE "${CLIENT_DEPEND_LIBS}")
 add_library(datasystem SHARED ${CLIENT_SRCS})
 target_compile_options(datasystem PRIVATE "-fvisibility=hidden")
 target_link_libraries(datasystem PRIVATE "${CLIENT_DEPEND_LIBS}")
+if (ASCEND_HIXL_HCCS_SUPPORTED)
+    target_compile_definitions(datasystem_static PRIVATE ASCEND_HIXL_AVAILABLE)
+    target_compile_definitions(datasystem PRIVATE ASCEND_HIXL_AVAILABLE)
+endif ()
 add_custom_command(TARGET datasystem POST_BUILD
     COMMAND ${CMAKE_COMMAND}
         -D ELF_FILE=$<TARGET_FILE:datasystem>

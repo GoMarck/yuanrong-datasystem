@@ -69,7 +69,8 @@ uint64_t CalculateDataSize(const std::vector<uint64_t> &sizes)
 
 HeteroClient::HeteroClient(const ConnectOptions &connectOptions)
 {
-    impl_ = std::make_shared<object_cache::ObjectClientImpl>(connectOptions);
+    impl_ = std::make_shared<object_cache::ObjectClientImpl>(
+        connectOptions, object_cache::ObjectClientImpl::DeviceAccessMode::BOUND_READ_ROUTED_WRITE);
 }
 
 HeteroClient::~HeteroClient()

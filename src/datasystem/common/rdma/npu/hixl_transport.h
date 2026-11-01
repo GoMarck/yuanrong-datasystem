@@ -24,8 +24,11 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "datasystem/common/rdma/npu/hixl_plugin_api.h"
@@ -36,6 +39,11 @@ enum class HixlMemoryMode { BUFFER_POOL, ROCE_DIRECT, FABRIC_MEM };
 
 class HixlTransport : public RH2DTransportStrategy {
 public:
+    struct Options {
+        std::string bufferPool = "0:0";
+        bool csEnable = false;
+    };
+
     HixlTransport() = default;
 #ifdef WITH_TESTS
     HixlTransport(const DsHixlApi *api, bool skipDeviceBinding) : api_(api), skipDeviceBinding_(skipDeviceBinding)
@@ -45,8 +53,15 @@ public:
     ~HixlTransport() override;
 
     Status Init(const std::vector<int32_t> &deviceIds) override;
+    Status Init(const std::vector<int32_t> &deviceIds, const Options &options);
     Status GetConnectionIdentity(std::string *identity) override;
+    Status GetDeviceEndpoint(int32_t devId, std::string &endpoint) const;
     Status Connect(const std::string &remoteIdentity, P2pKind kind, std::function<int()> *heartbeatCallback) override;
+    Status Connect(const std::string &remoteIdentity, int32_t timeoutMs);
+    Status RetainWriteConnection(const std::string &remoteIdentity, int32_t timeoutMs);
+    Status ReleaseWriteConnection(const std::string &remoteIdentity);
+    Status CheckReady() const;
+    Status CheckReady(int32_t timeoutMs) const;
     Status Disconnect(const std::string &remoteIdentity) override;
     Status DisconnectAll() override;
     Status RegisterMemory(void *addr, uint64_t size, P2pSegmentInfo *segInfo) override;
@@ -56,6 +71,9 @@ public:
     Status ScatterBatch(P2pScatterEntry *entries, uint32_t count, const std::string &remoteEndpoint,
                         std::shared_ptr<aclrtStream> stream) override;
     P2pLink LinkType() const override;
+    Status WriteBatch(const std::string &remoteEndpoint, const std::vector<DsHixlTransferDesc> &descriptors,
+                       int32_t timeoutMs);
+    bool UsesBufferPool() const { return bufferPoolEnabled_; }
 
     // Setter for HCCS local IP. Must be called before Init().
     void SetLocalEndpoint(const std::string &ep, bool isClient = false);
@@ -65,6 +83,17 @@ private:
         uintptr_t addr;
         uint64_t size;
         DsHixlMemHandle handle;
+        uint64_t references = 0;
+    };
+
+    struct WriteConnection {
+        uint64_t references = 0;
+        bool disconnectPending = false;
+    };
+
+    struct DeviceMemoryReference {
+        std::pair<uintptr_t, uint64_t> range;
+        uint64_t references = 0;
     };
 
     struct RegisteredHostMemory {
@@ -74,14 +103,18 @@ private:
         DsHixlMemHandle handle;
     };
 
-    Status InitializeSingleDevice(int32_t devId, const std::string &bufferPool, DsHixlEngineHandle &engine,
+    Status InitializeSingleDevice(int32_t devId, const Options &options, DsHixlEngineHandle &engine,
                                   std::string &endpoint);
     void DestroyEngine(DsHixlEngineHandle engine) const;
+    Status CheckReadyLocked() const;
+    Status ConnectImpl(const std::string &remoteIdentity, int32_t timeoutMs, bool retainForWrite);
+    Status DisconnectLocked(const std::string &remoteIdentity);
     Status ValidateDeviceMemoryRegistrationInputs(const std::vector<void *> &addrs,
                                                   const std::vector<uint64_t> &sizes) const;
     static std::string FormatDeviceMemoryRanges(const std::vector<RegisteredDeviceMemory> &registrations);
     Status RegisterDeviceMemoryLocked(uintptr_t addr, uint64_t size);
-    Status ReleaseDeviceMemoryLocked(uintptr_t addr);
+    Status ReleaseDeviceMemoryLocked(uintptr_t addr, uint64_t size);
+    Status ReleaseDeviceMemoryReferenceLocked(uintptr_t addr);
     bool HasRegisteredDeviceMemoryLocked(uintptr_t addr, uint64_t size) const;
     bool HasRegisteredHostMemoryLocked(int32_t devId, uintptr_t addr, uint64_t size) const;
     void ClearRegisteredDeviceMemory();
@@ -101,9 +134,14 @@ private:
     HixlMemoryMode hixlMemoryMode_ = HixlMemoryMode::BUFFER_POOL;
     bool bufferPoolEnabled_ = false;
     std::unordered_set<std::string> activeEndpoints_;
-    std::mutex connMutex_;
-    // Serializes HIXL TransferSync and the lifetime of cached HIXL registrations.
-    std::mutex transferMutex_;
+    // Transfers share a lifecycle lease; teardown and registration changes require exclusive access.
+    mutable std::shared_timed_mutex lifecycleMutex_;
+    // Connection bookkeeping also takes this mutex when holding a shared lifecycle lease.
+    std::timed_mutex connectionMutex_;
+    std::mutex temporaryRegistrationMutex_;
+    std::atomic<bool> transferFailed_{ false };
+    std::unordered_map<std::string, WriteConnection> writeConnections_;
+    std::unordered_map<uintptr_t, DeviceMemoryReference> deviceMemoryReferences_;
     std::vector<RegisteredDeviceMemory> registeredDeviceMemories_;
     std::vector<RegisteredHostMemory> registeredHostMemories_;
     const DsHixlApi *api_ = nullptr;

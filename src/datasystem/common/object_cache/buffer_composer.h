@@ -21,8 +21,11 @@
 #define DATASYSTEM_COMMON_OBJECT_CACHE_BUFFER_COMPOSER_H
 
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <vector>
+
+#include "datasystem/common/util/status_helper.h"
 
 #include "datasystem/hetero/device_common.h"
 #include "datasystem/object/buffer.h"
@@ -69,6 +72,44 @@ struct BlobListInfo {
  * @return The aligned header size.
  */
 uint64_t GetComposedBufferHeaderSize(size_t blobCount, uint32_t memoryAlignment);
+
+inline Status GetComposedBufferHeaderSizeChecked(size_t blobCount, uint32_t memoryAlignment, uint64_t &headerSize)
+{
+    CHECK_FAIL_RETURN_STATUS(memoryAlignment > 0 && (memoryAlignment & (memoryAlignment - 1)) == 0, K_INVALID,
+                             FormatString("memoryAlignment %u must be a non-zero power of two", memoryAlignment));
+    constexpr uint64_t kHeaderFieldCount = 2;
+    constexpr uint64_t kFieldSize = sizeof(uint64_t);
+    constexpr uint64_t kUint64Max = std::numeric_limits<uint64_t>::max();
+    CHECK_FAIL_RETURN_STATUS(blobCount <= kUint64Max / kFieldSize - kHeaderFieldCount, K_INVALID,
+                             "Composed buffer header size overflows uint64_t");
+    const auto rawHeaderSize = (static_cast<uint64_t>(blobCount) + kHeaderFieldCount) * kFieldSize;
+    const auto alignmentPadding = static_cast<uint64_t>(memoryAlignment) - 1;
+    CHECK_FAIL_RETURN_STATUS(rawHeaderSize <= kUint64Max - alignmentPadding, K_INVALID,
+                             "Aligned composed buffer header size overflows uint64_t");
+    headerSize = (rawHeaderSize + alignmentPadding) & ~alignmentPadding;
+    return Status::OK();
+}
+
+inline Status BuildComposedBufferHeader(const std::vector<uint64_t> &blobSizes, uint32_t memoryAlignment,
+                                 std::vector<uint64_t> &header, uint64_t &composedSize)
+{
+    CHECK_FAIL_RETURN_STATUS(!blobSizes.empty(), K_INVALID, "Blob sizes cannot be empty");
+    uint64_t headerSize = 0;
+    RETURN_IF_NOT_OK(GetComposedBufferHeaderSizeChecked(blobSizes.size(), memoryAlignment, headerSize));
+    CHECK_FAIL_RETURN_STATUS(headerSize <= SIZE_MAX, K_INVALID, "Composed header exceeds size_t");
+    header.assign(headerSize / sizeof(uint64_t), 0);
+    header[0] = blobSizes.size();
+    header[1] = headerSize;
+    composedSize = headerSize;
+    for (size_t i = 0; i < blobSizes.size(); ++i) {
+        CHECK_FAIL_RETURN_STATUS(blobSizes[i] > 0 && composedSize <= UINT64_MAX - blobSizes[i], K_INVALID,
+                                 "Invalid blob size or composed size overflow");
+        composedSize += blobSizes[i];
+        constexpr size_t headerFieldCount = 2;
+        header[i + headerFieldCount] = composedSize;
+    }
+    return Status::OK();
+}
 
 /**
  * @brief Prepare the data sizes by user data list

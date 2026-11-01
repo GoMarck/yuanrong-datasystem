@@ -16,7 +16,9 @@
 #include <cstdlib>
 #include <cstdint>
 #include <functional>
+#include <set>
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -33,9 +35,11 @@ struct FakeHixlState {
     int finalizeCalls = 0;
     int destroyCalls = 0;
     int connectCalls = 0;
+    int32_t connectTimeoutMs = 0;
     int disconnectCalls = 0;
     int failInitializeAt = 0;
     std::string bufferPool;
+    std::string globalResourceConfig;
 };
 
 FakeHixlState g_state;
@@ -71,14 +75,17 @@ DsHixlResult InitializeEngine(DsHixlEngineHandle, DsHixlStringView, const DsHixl
         std::string key(options[i].key.data, options[i].key.size);
         if (key == "BufferPool") {
             g_state.bufferPool.assign(options[i].value.data, options[i].value.size);
+        } else if (key == "GlobalResourceConfig") {
+            g_state.globalResourceConfig.assign(options[i].value.data, options[i].value.size);
         }
     }
     return g_state.initializeCalls == g_state.failInitializeAt ? DS_HIXL_RUNTIME_ERROR : DS_HIXL_OK;
 }
 
-DsHixlResult ConnectEngine(DsHixlEngineHandle, DsHixlStringView, int32_t, uint32_t *)
+DsHixlResult ConnectEngine(DsHixlEngineHandle, DsHixlStringView, int32_t timeoutMs, uint32_t *)
 {
     ++g_state.connectCalls;
+    g_state.connectTimeoutMs = timeoutMs;
     return DS_HIXL_OK;
 }
 
@@ -203,6 +210,88 @@ TEST_F(HixlTransportPluginTest, ConnectionAndCleanupAreIdempotent)
     EXPECT_EQ(g_state.disconnectCalls, 1);
     EXPECT_EQ(g_state.finalizeCalls, 1);
     EXPECT_EQ(g_state.destroyCalls, 1);
+}
+
+TEST_F(HixlTransportPluginTest, ExplicitOptionsDoNotMutateProcessFlags)
+{
+    FLAGS_remote_h2d_hccs_buffer_pool = "4:8";
+    HixlTransport first(&FAKE_API, true);
+    first.SetLocalEndpoint("127.0.0.1", true);
+    ASSERT_TRUE(first.Init({ 0 }, { "2:16", false }).IsOk());
+    EXPECT_EQ(g_state.bufferPool, "2:16");
+    EXPECT_EQ(FLAGS_remote_h2d_hccs_buffer_pool, "4:8");
+    HixlTransport second(&FAKE_API, true);
+    second.SetLocalEndpoint("127.0.0.1", true);
+    ASSERT_TRUE(second.Init({ 0 }, { "3:32", false }).IsOk());
+    EXPECT_EQ(g_state.bufferPool, "3:32");
+    EXPECT_EQ(FLAGS_remote_h2d_hccs_buffer_pool, "4:8");
+}
+
+TEST_F(HixlTransportPluginTest, ConnectHonorsCallerBudget)
+{
+    HixlTransport transport(&FAKE_API, true);
+    transport.SetLocalEndpoint("127.0.0.1");
+    ASSERT_TRUE(transport.Init({ 0 }).IsOk());
+    ASSERT_TRUE(transport.Connect("127.0.0.1:12345", 100).IsOk());
+    EXPECT_EQ(g_state.connectTimeoutMs, 100);
+    EXPECT_EQ(transport.Connect("127.0.0.1:12346", 0).GetCode(), K_RPC_DEADLINE_EXCEEDED);
+    EXPECT_EQ(g_state.connectCalls, 1);
+}
+
+TEST_F(HixlTransportPluginTest, ClientUsesAllocatedDeviceCommPort)
+{
+    HixlTransport transport(&FAKE_API, true);
+    transport.SetLocalEndpoint("127.0.0.1", true);
+    ASSERT_TRUE(transport.Init({ 0 }, { "4:8", false }).IsOk());
+    std::string endpoint;
+    ASSERT_TRUE(transport.GetConnectionIdentity(&endpoint).IsOk());
+    const auto port = endpoint.substr(endpoint.rfind(':') + 1);
+    EXPECT_NE(port, "16666");
+    EXPECT_EQ(g_state.globalResourceConfig, "{\"comm_resource_config.listen_port\":\"" + port + "\"}");
+}
+
+TEST_F(HixlTransportPluginTest, WorkerKeepsFixedDeviceCommPort)
+{
+    HixlTransport transport(&FAKE_API, true);
+    transport.SetLocalEndpoint("127.0.0.1");
+    ASSERT_TRUE(transport.Init({ 0 }, { "4:8", false }).IsOk());
+    EXPECT_EQ(g_state.globalResourceConfig, "{\"comm_resource_config.listen_port\":\"26666\"}");
+}
+
+TEST_F(HixlTransportPluginTest, InvalidExplicitPoolDoesNotCreateEngine)
+{
+    HixlTransport transport(&FAKE_API, true);
+    transport.SetLocalEndpoint("127.0.0.1");
+    EXPECT_EQ(transport.Init({ 0 }, { "4:0", false }).GetCode(), K_INVALID);
+    EXPECT_EQ(g_state.createCalls, 0);
+}
+
+TEST_F(HixlTransportPluginTest, SixteenWorkerDevicesShareRoundRobinEndpoints)
+{
+    constexpr int32_t deviceCount = 16;
+    std::vector<int32_t> devices;
+    for (int32_t device = 0; device < deviceCount; ++device) {
+        devices.push_back(device);
+    }
+    HixlTransport transport(&FAKE_API, true);
+    transport.SetLocalEndpoint("127.0.0.1");
+    ASSERT_TRUE(transport.Init(devices, { "4:8", false }).IsOk());
+    std::vector<std::string> endpoints;
+    for (int32_t device = 0; device < deviceCount; ++device) {
+        std::string endpoint;
+        ASSERT_TRUE(transport.GetConnectionIdentity(&endpoint).IsOk());
+        endpoints.push_back(endpoint);
+    }
+    EXPECT_EQ(std::set<std::string>(endpoints.begin(), endpoints.end()).size(), devices.size());
+    for (const auto &expected : endpoints) {
+        std::string endpoint;
+        ASSERT_TRUE(transport.GetConnectionIdentity(&endpoint).IsOk());
+        EXPECT_EQ(endpoint, expected);
+    }
+    EXPECT_EQ(g_state.createCalls, deviceCount);
+    ASSERT_TRUE(transport.DisconnectAll().IsOk());
+    EXPECT_EQ(g_state.finalizeCalls, deviceCount);
+    EXPECT_EQ(g_state.destroyCalls, deviceCount);
 }
 
 }  // namespace
