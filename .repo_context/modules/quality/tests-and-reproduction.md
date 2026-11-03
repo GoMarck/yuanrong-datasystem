@@ -739,3 +739,15 @@ Host selection is opt-in through `--host-filter` JSON (`include`/`exclude` array
 - Focused regressions: `ObjRefTableTest.Hixl*` (reservation/backpressure, concurrent quota, owner lifetime and
   bad_alloc rollback), `HixlTransportPluginTest` explicit options/Connect budget cases, and Python constructor/import
   coverage in `tests/python/test_hetero_client_multi_buffer.py`. These cases are authored but unexecuted.
+
+## Optional Python transfer benchmarks
+
+- bench/yuanrong_multi_buffer_bench.py defaults to PREFERRED_META_OWNER for synchronous D2RH placement;
+  registers fixed aligned local NPU arenas for put and HiXL remote H2D get. HIXL config maps to SDK HCCS
+  environment before native import; Workers must separately enable D2RH and compatible buffer pools.
+- bench/buffer_validation.py supplies opt-in --verify-data full-content patterns and destination poisoning
+  for Yuanrong and Mooncake (including HTTP workload propagation). API latency excludes verification;
+  stage wall throughput includes its overhead, reported under verification. Patterned put/get require matching seed.
+- case_runner/examples/d2rh_validation orchestrates pre-deployed two-node correctness checks.
+- Host-only regression: python3 -m unittest discover -s bench -p 'test_buffer_validation.py' -v.
+  No native SDK/NPU performance or link coverage is implied by these tests or content verification.

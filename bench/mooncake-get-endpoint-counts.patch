@@ -1,0 +1,105 @@
+From: liuyan <feiyu0923@foxmail.com>
+Subject: [PATCH] feat: log Mooncake PUT and GET key counts by replica endpoint
+
+Apply after vllm-ascend-v0.30.0rc2-kvc-latency-stats-git-am-1029-2.patch.
+Query all keys in batches of 256 after PUT or GET timing completes. Count only
+successful transfer entries using single-replica metadata; isolate diagnostics
+from the transfer result. Missing or ambiguous replicas count as unknown.
+
+Signed-off-by: liuyan <feiyu0923@foxmail.com>
+---
+diff --git a/vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_backend.py b/vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_backend.py
+--- a/vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_backend.py
++++ b/vllm_ascend/distributed/kv_transfer/kv_pool/ascend_store/backend/mooncake_backend.py
+@@ -32,6 +32,7 @@
+ DEFAULT_GLOBAL_SEGMENT_SIZE = 1073741824  # 1.0 GiB
+ DEFAULT_LOCAL_BUFFER_SIZE = 1073741824  # 1.0 GiB
+ DEFAULT_TENANT_ID = "default"
++REPLICA_QUERY_BATCH_SIZE = 512
+ MOONCAKE_LAYERWISE_CLIENT_METHODS = (
+     "batch_put_session_start",
+     "batch_put_from_multi_buffer_ranges",
+@@ -46,6 +47,60 @@
+ 
+ def _sum_transfer_bytes(sizes: list[list[int]]) -> int:
+     return sum(sum(size_group) for size_group in sizes)
++
++
++def _log_endpoint_counts(store: Any, keys: list[str], results: list[int], operation: str) -> None:
++    """Attribute successful entries using a post-transfer single-replica snapshot.
++
++    This is diagnostic metadata, not a trace of the actual transfer source.
++    Query every key, but exclude failed transfer entries from endpoint counts.
++    Repeated input keys count once per transfer entry, matching the result vector.
++    """
++    if not keys:
++        return
++    start_time = time.perf_counter()
++    endpoint_counts: dict[str, int] = {}
++    failed_keys = 0
++    unknown_keys = 0
++    for start in range(0, len(keys), REPLICA_QUERY_BATCH_SIZE):
++        batch = keys[start : start + REPLICA_QUERY_BATCH_SIZE]
++        try:
++            replicas_by_key = store.batch_get_replica_desc(batch)
++        except Exception as exc:
++            logger.warning("Mooncake %s replica query failed: batch_start=%d, error=%s", operation, start, exc)
++            replicas_by_key = {}
++        for offset, key in enumerate(batch, start):
++            if offset >= len(results):
++                unknown_keys += 1
++                continue
++            if results[offset] < 0:
++                failed_keys += 1
++                continue
++            try:
++                replicas = replicas_by_key.get(key, [])
++                if len(replicas) != 1:
++                    unknown_keys += 1
++                    continue
++                endpoint = replicas[0].get_memory_descriptor().buffer_descriptor.transport_endpoint
++                if not isinstance(endpoint, str) or not endpoint:
++                    unknown_keys += 1
++                    continue
++            except Exception:
++                # Missing/evicted keys, SSD replicas, or unsupported descriptors
++                # must not turn a successful data transfer into a failure.
++                unknown_keys += 1
++                continue
++            endpoint_counts[endpoint] = endpoint_counts.get(endpoint, 0) + 1
++    logger.info(
++        "Mooncake %s_endpoint_counts keys=%d, failed_keys=%d, unknown_keys=%d, "
++        "endpoint_key_counts=%s, replica_query_ms=%.3f",
++        operation,
++        len(keys),
++        failed_keys,
++        unknown_keys,
++        json.dumps(endpoint_counts, sort_keys=True),
++        (time.perf_counter() - start_time) * 1000,
++    )
+ 
+ 
+ def _emit_whole_key_debug_event(direction: str, key_count: int) -> None:
+@@ -456,6 +511,11 @@
+             finally:
+                 elapsed_ms = (time.perf_counter() - start_time) * 1000
+                 logger.info("Mooncake store_kvc took %.3f ms, bytes=%d", elapsed_ms, _sum_transfer_bytes(sizes))
++            res = list(res)
++            try:
++                _log_endpoint_counts(self.store, keys, res, "put")
++            except Exception:
++                logger.warning("Mooncake PUT endpoint statistics failed; preserving PUT results.", exc_info=True)
+             failed_codes = [int(value) for value in res if value < 0]
+             failed_count = len(failed_codes)
+             if failed_count:
+@@ -506,6 +566,10 @@
+                 elapsed_ms = (time.perf_counter() - start_time) * 1000
+                 logger.info("Mooncake load_kvc took %.3f ms, bytes=%d", elapsed_ms, _sum_transfer_bytes(sizes))
+             res_list = list(res)
++            try:
++                _log_endpoint_counts(self.store, keys, res_list, "get")
++            except Exception:
++                logger.warning("Mooncake GET endpoint statistics failed; preserving GET results.", exc_info=True)
+             failed_codes = [int(value) for value in res_list if value < 0]
+             failed_count = len(failed_codes)
+             error_codes = sorted(set(failed_codes))
