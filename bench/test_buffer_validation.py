@@ -211,6 +211,65 @@ class ValidationTests(unittest.TestCase):
         self.assertLessEqual(b.address + b.registration_size,
                              b.allocation.data_ptr() + len(b.allocation.owner))
 
+    def test_expected_generated_once_per_batch_and_old_format_compatible(self):
+        b, a = buffer(), args()
+        keys = ["a", "b"]
+        expected = b"".join(part[3] for part in validation.chunks(keys, a.key_bytes, a.seed))
+        with patch.object(validation, "chunks", wraps=validation.chunks) as generated:
+            validation.fill(b, keys, a)
+            self.assertEqual(ctypes.string_at(b.address, 128), expected)
+            validation.fill(b, keys, a, poison=True)
+            ctypes.memmove(b.address, expected, len(expected))
+            validation.verify(b, keys, a)
+            self.assertEqual(generated.call_count, 1)
+            validation.fill(b, ["c", "d"], a)
+            self.assertEqual(generated.call_count, 2)
+
+    def test_device_batch_uses_one_upload_and_one_download(self):
+        calls = dict(upload=0, download=0, invert=0)
+        class Tensor:
+            def __init__(self, data, start=0, end=None):
+                self.data, self.start, self.end = data, start, len(data) if end is None else end
+            def __getitem__(self, span):
+                return Tensor(self.data, self.start + (span.start or 0), self.start + span.stop)
+            def copy_(self, source):
+                calls["upload"] += 1
+                self.data[self.start:self.end] = source
+            def bitwise_not_(self):
+                calls["invert"] += 1
+                self.data[self.start:self.end] = self.data[self.start:self.end].translate(validation.INVERT)
+            def cpu(self):
+                calls["download"] += 1
+                return self
+            def numpy(self):
+                return self
+            def tobytes(self):
+                return bytes(self.data[self.start:self.end])
+        memory = Tensor(bytearray(128))
+        torch = SimpleNamespace(uint8="uint8", frombuffer=lambda value, **kw: value,
+                                npu=SimpleNamespace(synchronize=lambda: None))
+        b, a = SimpleNamespace(torch=torch, memory=memory), args()
+        validation.fill(b, ["a", "b"], a)
+        saved = bytes(memory.data)
+        validation.fill(b, ["a", "b"], a, poison=True)
+        self.assertNotEqual(bytes(memory.data), saved)
+        memory.data[:] = saved
+        validation.verify(b, ["a", "b"], a)
+        self.assertEqual(calls, dict(upload=1, download=1, invert=1))
+
+    def test_progress_reports_first_and_final_batch(self):
+        import contextlib
+        import io
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            progress = validation.Progress("put", 0, 575)
+            progress.update(1, "prepare")
+            progress.update(1, "readback")
+            progress.update(575, "done")
+        self.assertIn("batch=1/575 stage=prepare", output.getvalue())
+        self.assertIn("batch=1/575 stage=readback", output.getvalue())
+        self.assertIn("batch=575/575 stage=done", output.getvalue())
+
     def test_http_passes_verification_flag(self):
         self.assertIn("verify_data", http.WORKLOAD_FIELDS)
         session = http.Session(SimpleNamespace(get_hostname=lambda: "reader"),

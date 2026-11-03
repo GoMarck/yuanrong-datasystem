@@ -751,3 +751,8 @@ Host selection is opt-in through `--host-filter` JSON (`include`/`exclude` array
 - case_runner/examples/d2rh_validation orchestrates pre-deployed two-node correctness checks.
 - Host-only regression: python3 -m unittest discover -s bench -p 'test_buffer_validation.py' -v.
   No native SDK/NPU performance or link coverage is implied by these tests or content verification.
+
+Verification caches only each worker's current batch expectation, preserving shake256-key-offset-v1.
+Device verification uses batch copies and in-place poison rather than per-MiB transfers.
+VERIFY_PROGRESS reports batch/stage without adding background threads. Host memory overhead scales
+with concurrency times batch payload, including the comparison download and byte copy, not dataset size.

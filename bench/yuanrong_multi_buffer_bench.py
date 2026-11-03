@@ -190,13 +190,16 @@ def phase(store, torch, args, config, param, buffers, keysets, attempted):
             buffer = buffers[index]
             samples = []
             gate.wait()
-            for keys in keysets[index]:
+            progress = validation.Progress(args.operation, index, len(keysets[index])) if args.verify_data else None
+            for batch_index, keys in enumerate(keysets[index], 1):
                 if args.operation == "put":
                     # A raised mset can already have published some keys. The
                     # exclusive, preflight-checked range is ours to clean.
                     attempted.extend(keys)
                 if args.verify_data:
+                    progress.update(batch_index, "prepare")
                     validation.fill(buffer, keys, args, poison=args.operation == "get")
+                    progress.update(batch_index, args.operation)
                 start = time.perf_counter_ns()
                 if args.operation == "put":
                     store.mset_d2h_from_multi_buffers(keys, buffer.ptrs, buffer.sizes, param)
@@ -210,12 +213,15 @@ def phase(store, torch, args, config, param, buffers, keysets, attempted):
                 samples.append(end - start)
                 if args.verify_data:
                     if args.operation == "put":
+                        progress.update(batch_index, "readback")
                         validation.fill(buffer, keys, args, poison=True)
                         failed = store.mget_h2d_from_multi_buffers(
                             keys, buffer.ptrs, buffer.sizes, config["get_sub_timeout_ms"])
                         if failed:
                             raise RuntimeError(f"Verification read failed keys: {failed}")
+                    progress.update(batch_index, "compare")
                     validation.verify(buffer, keys, args)
+                    progress.update(batch_index, "done")
             return samples, time.perf_counter()
         except BaseException:
             gate.abort()  # also unblock startup if set_device fails in one worker

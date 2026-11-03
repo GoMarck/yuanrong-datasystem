@@ -317,9 +317,12 @@ def phase(store, args, config, buffers, keysets, operation, owned=None):
             gate.wait()
         except threading.BrokenBarrierError:
             return [], time.perf_counter()
-        for keys in keysets[index]:
+        progress = validation.Progress(operation, index, len(keysets[index])) if args.verify_data else None
+        for batch_index, keys in enumerate(keysets[index], 1):
             if args.verify_data:
+                progress.update(batch_index, "prepare")
                 validation.fill(buffer, keys, args, poison=operation == "get")
+                progress.update(batch_index, operation)
             start = time.perf_counter_ns()
             if operation == "put":
                 result = store.batch_put_from_multi_buffers(
@@ -335,10 +338,13 @@ def phase(store, args, config, buffers, keysets, operation, owned=None):
             samples.append(end - start)
             if args.verify_data:
                 if operation == "put":
+                    progress.update(batch_index, "readback")
                     validation.fill(buffer, keys, args, poison=True)
                     readback = store.batch_get_into_multi_buffers(keys, buffer.ptrs, buffer.sizes, False)
                     check_results("verification read", readback, len(keys), args.key_bytes)
+                progress.update(batch_index, "compare")
                 validation.verify(buffer, keys, args)
+                progress.update(batch_index, "done")
         return samples, time.perf_counter()
 
     with ThreadPoolExecutor(max_workers=len(buffers)) as pool:

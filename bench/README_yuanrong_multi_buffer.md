@@ -170,3 +170,9 @@ python3 -m unittest discover -s bench -p 'test_buffer_validation.py' -v
 ```
 
 这些是标准库 Host fake 回归，不导入 NPU/原生 SDK，不代表真实链路和性能已验证。
+
+校验实现按每个线程当前 batch 缓存一份期望数据，fill/poison/compare 不重复生成 SHAKE256；
+NPU 按整批上传和下载，put 后在设备侧取反 poison。数据模式仍为 shake256-key-offset-v1，
+旧的 --verify-data 数据集保持兼容。额外 Host 内存按并发 × batch 大小增长，不缓存整个数据集；
+整批比较时还需下载缓冲区及 bytes 副本。VERIFY_PROGRESS 输出 worker/batch/stage，首批逐阶段、
+后续约每 5 秒及末批完成时输出；阻塞中的原生调用返回前不会产生新的进度。
