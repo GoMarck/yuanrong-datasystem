@@ -46,6 +46,8 @@ class BatchVerifier:
             actual = ctypes.string_at(buffer.address, len(self.expected))
         else:
             actual = buffer.memory[:len(self.expected)].cpu().numpy().tobytes()
+        if len(actual) != len(self.expected):
+            raise RuntimeError(f"Data size mismatch: expected={len(self.expected)} actual={len(actual)}")
         if actual != self.expected:
             offset = next(i for i, (a, b) in enumerate(zip(actual, self.expected)) if a != b)
             slot, byte = divmod(offset, self.key_bytes)
@@ -90,6 +92,93 @@ class Progress:
 def annotate(stats, args):
     stats["verification"] = dict(enabled=args.verify_data,
                                  verified_keys=stats["keys"] if args.verify_data else 0,
+                                 verified_bytes=stats["payload_bytes"] if args.verify_data else 0,
+                                 verified_blocks=stats["keys"] * args.blocks_per_key if args.verify_data else 0,
                                  pattern="shake256-key-offset-v1" if args.verify_data else "constant-01",
                                  wall_includes_validation=args.verify_data)
     return stats
+
+
+class ApiCalls:
+    def __init__(self):
+        self.data = dict(attempts=0, successes=0, errors=0, requested_keys=0,
+                         successful_keys=0, requested_payload_bytes=0,
+                         successful_payload_bytes=0, latencies_ns=[])
+
+    def invoke(self, keys, payload_bytes, call, validate=None):
+        data = self.data
+        data["attempts"] += 1
+        data["requested_keys"] += len(keys)
+        data["requested_payload_bytes"] += payload_bytes
+        start = time.perf_counter_ns()
+        try:
+            result = call()
+        except BaseException:
+            data["latencies_ns"].append(time.perf_counter_ns() - start)
+            data["errors"] += 1
+            raise
+        elapsed = time.perf_counter_ns() - start
+        data["latencies_ns"].append(elapsed)
+        try:
+            if validate is not None:
+                validate(result)
+        except BaseException:
+            data["errors"] += 1
+            raise
+        data["successes"] += 1
+        data["successful_keys"] += len(keys)
+        data["successful_payload_bytes"] += payload_bytes
+        return result, elapsed
+
+
+def require_no_failed_keys(failed):
+    if failed:
+        raise RuntimeError(f"Read failed keys: {failed}")
+
+
+def check_blob_layout(result, keys, args):
+    failed, metadata = result
+    require_no_failed_keys(failed)
+    if len(metadata) != len(keys):
+        raise RuntimeError(f"Metadata count mismatch: expected={len(keys)} actual={len(metadata)}")
+    expected = [args.key_bytes // args.blocks_per_key] * args.blocks_per_key
+    for key, info in zip(keys, metadata):
+        actual = list(info.blob_size_list)
+        if actual != expected:
+            raise RuntimeError(f"Blob layout mismatch: key={key} expected={expected} actual={actual}")
+
+
+def finalize_api_calls(report, aggregate=True):
+    for phase in report.get("phases", []):
+        for worker in phase["workers"]:
+            for data in worker.values():
+                values = sorted(value / 1e6 for value in data["latencies_ns"])
+                def percentile(percent):
+                    position = (len(values) - 1) * percent / 100
+                    lower = int(position)
+                    upper = min(lower + 1, len(values) - 1)
+                    return values[lower] + (values[upper] - values[lower]) * (position - lower)
+                data["latency_ms"] = dict(
+                    sum=sum(values), avg=sum(values) / len(values) if values else 0,
+                    max=max(values, default=0),
+                    **{f"p{p}": percentile(p) if values else 0 for p in (50, 90, 99)})
+
+        if not aggregate:
+            continue
+        grouped = {}
+        for worker in phase["workers"]:
+            for name, data in worker.items():
+                group = grouped.setdefault(name, dict(attempts=0, successes=0, errors=0,
+                                                      requested_keys=0, successful_keys=0,
+                                                      requested_payload_bytes=0, successful_payload_bytes=0,
+                                                      latencies_ns=[]))
+                for field in group:
+                    if field == "latencies_ns":
+                        group[field].extend(data[field])
+                    else:
+                        group[field] += data[field]
+        # Reuse the same latency reducer for the aggregated call roles.
+        if grouped:
+            finalize_api_calls(dict(phases=[dict(workers=[grouped])]), aggregate=False)
+            phase["summary"] = {name: {key: value for key, value in data.items() if key != "latencies_ns"}
+                                for name, data in grouped.items()}

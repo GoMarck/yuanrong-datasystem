@@ -539,6 +539,11 @@ handler. Clearing the Router handler synchronously excludes later callback acces
     registers DataPlacementPolicy. A failed WRITE stops submissions and retains the engine/registration until
     process exit; the caller must keep the source arena alive until then. Hardware timeout/fence semantics remain
     unverified. Manual cases and constraints: `tests/st/device/README_hixl_d2rh.md`.
+    SDK HiXL transfer metrics (`hixl_d2rh_write_*`, `hixl_rh2d_read_*`) count native submitted batches,
+    transfer return errors, successful descriptor bytes and call latency. They exclude pre-submit connection errors
+    and local SHM traffic, include warmup/verification calls, and do not imply publication success.
+    Rebuilt SDKs emit them through typed metrics to kv_metrics.log (JSON monitor enabled) or INFO;
+    benchmark usage and API/transport accounting boundaries are in bench/README_yuanrong_multi_buffer.md.
   - remote H2D toggle
   - optional `IServiceDiscovery`; the public implementations are ETCD-backed `ServiceDiscovery` and coordinator-backed `CoordinatorServiceDiscovery`
   - fast transport shared-memory size

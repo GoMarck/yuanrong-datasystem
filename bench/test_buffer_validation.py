@@ -23,18 +23,21 @@ def buffer():
     address = ctypes.addressof(memory)
     return SimpleNamespace(memory=memory, torch=None, address=address,
                            size=128, registration_size=128,
-                           ptrs=[[address, address + 32], [address + 64, address + 96]],
-                           sizes=[[32, 32], [32, 32]])
+                           ptrs=[[address + i for i in (0, 16, 32, 48)],
+                                 [address + i for i in (64, 80, 96, 112)]],
+                           sizes=[[16] * 4, [16] * 4])
 
 
 class Store:
     def __init__(self, corrupt=False):
         self.data = {}
+        self.layouts = {}
         self.corrupt = corrupt
         self.reads = 0
 
     def mset_d2h_from_multi_buffers(self, keys, ptrs, sizes, param):
         for key, addresses, lengths in zip(keys, ptrs, sizes):
+            self.layouts[key] = list(lengths)
             self.data[key] = b"".join(ctypes.string_at(p, n) for p, n in zip(addresses, lengths))
 
     def mget_h2d_from_multi_buffers(self, keys, ptrs, sizes, timeout):
@@ -48,6 +51,9 @@ class Store:
                 ctypes.memmove(p, payload[offset:offset + n], n)
                 offset += n
         return []
+
+    def get_meta_info(self, keys, is_dev_key):
+        return [], [SimpleNamespace(blob_size_list=self.layouts[key]) for key in keys]
 
     def set_device(self):
         pass
@@ -269,6 +275,70 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("batch=1/575 stage=prepare", output.getvalue())
         self.assertIn("batch=1/575 stage=readback", output.getvalue())
         self.assertIn("batch=575/575 stage=done", output.getvalue())
+
+    def test_layout_rejects_same_total_wrong_partition_and_extra_tail(self):
+        a = args()
+        for layout in ([32, 32], [16, 16, 16, 17], [16, 16, 16]):
+            with self.assertRaisesRegex(RuntimeError, "Blob layout mismatch"):
+                validation.check_blob_layout(([], [SimpleNamespace(blob_size_list=layout)]), ["a"], a)
+        with self.assertRaisesRegex(RuntimeError, "Metadata count mismatch"):
+            validation.check_blob_layout(([], []), ["a"], a)
+
+    def test_api_counts_include_failures_and_keep_bytes_separate(self):
+        calls = validation.ApiCalls()
+        calls.invoke(["a"], 64, lambda: None)
+        with self.assertRaisesRegex(RuntimeError, "Read failed"):
+            calls.invoke(["b"], 64, lambda: ["b"], validation.require_no_failed_keys)
+        self.assertEqual(calls.data["attempts"], 2)
+        self.assertEqual(calls.data["errors"], 1)
+        self.assertEqual(calls.data["successful_payload_bytes"], 64)
+        report = dict(phases=[dict(workers=[dict(measured=calls.data)])])
+        validation.finalize_api_calls(report)
+        self.assertIn("p99", calls.data["latency_ms"])
+
+    def test_api_exception_and_parallel_worker_summary(self):
+        one, two = validation.ApiCalls(), validation.ApiCalls()
+        one.invoke(["a"], 64, lambda: None)
+        with self.assertRaisesRegex(RuntimeError, "native failure"):
+            two.invoke(["b"], 64, lambda: (_ for _ in ()).throw(RuntimeError("native failure")))
+        phase = dict(workers=[dict(measured=one.data), dict(measured=two.data)])
+        validation.finalize_api_calls(dict(phases=[phase]))
+        result = phase["summary"]["measured"]
+        self.assertEqual((result["attempts"], result["successes"], result["errors"]), (2, 1, 1))
+        self.assertEqual(result["requested_payload_bytes"], 128)
+        self.assertEqual(result["successful_payload_bytes"], 64)
+        self.assertNotIn("latencies_ns", result)
+
+    def test_bad_metadata_stops_read_before_device_copy(self):
+        store, b, a, report = Store(), buffer(), args("get"), {}
+        store.get_meta_info = lambda *_: ([], [SimpleNamespace(blob_size_list=[64])] * 2)
+        torch = SimpleNamespace(npu=SimpleNamespace(set_device=lambda _: None))
+        with self.assertRaisesRegex(RuntimeError, "Blob layout mismatch"):
+            yr.phase(store, torch, a, {"get_sub_timeout_ms": 0}, None, [b],
+                     [[["a", "b"]]], [], report)
+        self.assertEqual(store.reads, 0)
+        records = report["phases"][0]["workers"][0]
+        self.assertEqual(records["measured"]["attempts"], 0)
+        self.assertEqual(records["size_check"]["errors"], 1)
+
+    def test_mooncake_statistics_separate_verification_readback(self):
+        stats, _ = self.phase("mc")
+        records = stats["api_metrics"]
+        self.assertEqual(records["measured"]["successful_payload_bytes"], 256)
+        self.assertEqual(records["verification_readback"]["successful_payload_bytes"], 256)
+        self.assertEqual(stats["verification"]["verified_blocks"], 16)
+
+    def test_yuanrong_measured_and_auxiliary_calls_separate(self):
+        store, b, a, report = Store(), buffer(), args(), {}
+        torch = SimpleNamespace(npu=SimpleNamespace(set_device=lambda _: None))
+        yr.phase(store, torch, a, {"get_sub_timeout_ms": 0}, None, [b],
+                 [[["a", "b"], ["c", "d"]]], [], report)
+        records = report["phases"][0]["workers"][0]
+        self.assertEqual(records["measured"]["attempts"], 2)
+        self.assertEqual(records["measured"]["successful_payload_bytes"], 256)
+        self.assertEqual(records["verification_readback"]["attempts"], 2)
+        self.assertEqual(records["size_check"]["attempts"], 2)
+        self.assertEqual(records["size_check"]["successful_payload_bytes"], 0)
 
     def test_http_passes_verification_flag(self):
         self.assertIn("verify_data", http.WORKLOAD_FIELDS)

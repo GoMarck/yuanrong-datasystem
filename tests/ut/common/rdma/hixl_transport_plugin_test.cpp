@@ -23,8 +23,12 @@
 #include <gtest/gtest.h>
 
 #include "datasystem/common/flags/flags.h"
+#include "datasystem/common/metrics/kv_metrics.h"
+#include "datasystem/common/util/raii.h"
 
 DS_DECLARE_string(remote_h2d_hccs_buffer_pool);
+DS_DECLARE_bool(log_monitor);
+DS_DECLARE_bool(json_log_monitor);
 
 namespace datasystem {
 namespace {
@@ -38,6 +42,7 @@ struct FakeHixlState {
     int32_t connectTimeoutMs = 0;
     int disconnectCalls = 0;
     int failInitializeAt = 0;
+    bool failTransfer = false;
     std::string bufferPool;
     std::string globalResourceConfig;
 };
@@ -109,7 +114,7 @@ DsHixlResult DeregisterMemory(DsHixlEngineHandle, DsHixlMemHandle, uint32_t *)
 
 DsHixlResult TransferSync(DsHixlEngineHandle, const DsHixlTransferRequest *, uint32_t *)
 {
-    return DS_HIXL_OK;
+    return g_state.failTransfer ? DS_HIXL_INVALID_ARGUMENT : DS_HIXL_OK;
 }
 
 const DsHixlApi FAKE_API = {
@@ -153,6 +158,40 @@ protected:
     bool hadRoceEnabled_ = false;
     std::string savedRoceEnabled_;
 };
+
+TEST_F(HixlTransportPluginTest, WriteMetricsCountCallsAndOnlySuccessfulBytes)
+{
+    const bool monitor = FLAGS_log_monitor;
+    const bool jsonMonitor = FLAGS_json_log_monitor;
+    Raii restore([monitor, jsonMonitor]() {
+        FLAGS_log_monitor = monitor;
+        FLAGS_json_log_monitor = jsonMonitor;
+        metrics::ResetKvMetricsForTest();
+    });
+    FLAGS_log_monitor = true;
+    FLAGS_json_log_monitor = false;
+    metrics::ResetKvMetricsForTest();
+    ASSERT_TRUE(metrics::InitKvMetrics().IsOk());
+    constexpr uintptr_t arena = 0x200000;
+    constexpr uint64_t arenaBytes = 2 * 1024 * 1024;
+    constexpr uint64_t payloadBytes = 16;
+    HixlTransport transport(&FAKE_API, true);
+    transport.SetLocalEndpoint("127.0.0.1", true);
+    ASSERT_TRUE(transport.Init({ 0 }, { "4:8", false }).IsOk());
+    ASSERT_TRUE(transport.PreRegisterDeviceMemory({ reinterpret_cast<void *>(arena) }, { arenaBytes }).IsOk());
+    const std::vector<DsHixlTransferDesc> descriptors{ { arena, arena + arenaBytes, payloadBytes } };
+    ASSERT_TRUE(transport.WriteBatch("127.0.0.2:30000", descriptors, 1000).IsOk());
+    g_state.failTransfer = true;
+    EXPECT_TRUE(transport.WriteBatch("127.0.0.2:30000", descriptors, 1000).IsError());
+    std::string summary;
+    for (const auto &line : metrics::DumpSummariesForTest()) {
+        summary += line;
+    }
+    EXPECT_NE(summary.find("\"name\":\"hixl_d2rh_write_request_total\",\"total\":2"), std::string::npos);
+    EXPECT_NE(summary.find("\"name\":\"hixl_d2rh_write_error_total\",\"total\":1"), std::string::npos);
+    EXPECT_NE(summary.find("\"name\":\"hixl_d2rh_write_success_bytes\",\"total\":16"), std::string::npos);
+    EXPECT_NE(summary.find("\"name\":\"hixl_d2rh_write_latency\",\"total\":{\"count\":2"), std::string::npos);
+}
 
 TEST_F(HixlTransportPluginTest, RoceEnvironmentDoesNotOverrideBufferPool)
 {

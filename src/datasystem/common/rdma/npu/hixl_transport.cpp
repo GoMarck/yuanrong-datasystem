@@ -32,6 +32,7 @@
 #include "datasystem/common/flags/flags.h"
 #include "datasystem/common/inject/inject_point.h"
 #include "datasystem/common/log/log.h"
+#include "datasystem/common/metrics/kv_metrics.h"
 #include "datasystem/common/device/ascend/acl_device_manager.h"
 #include "datasystem/common/rdma/npu/hixl_plugin_loader.h"
 #include "datasystem/common/rpc/timeout_duration.h"
@@ -44,6 +45,8 @@
 
 DS_DECLARE_string(remote_h2d_hccs_buffer_pool);
 DS_DECLARE_bool(hixl_cs_enable);
+DS_DECLARE_bool(log_monitor);
+DS_DECLARE_bool(json_log_monitor);
 
 namespace {
 
@@ -105,6 +108,36 @@ datasystem::Status HixlResultToStatus(DsHixlResult result, uint32_t vendorStatus
         return datasystem::Status(datasystem::StatusCode::K_NOT_SUPPORTED, message);
     }
     return datasystem::Status(datasystem::StatusCode::K_RUNTIME_ERROR, message);
+}
+
+DsHixlResult TransferWithMetrics(const DsHixlApi *api, DsHixlEngineHandle engine,
+                                const DsHixlTransferRequest &request, uint32_t &vendorStatus)
+{
+    if (!FLAGS_log_monitor && !FLAGS_json_log_monitor) {
+        return api->transfer_sync(engine, &request, &vendorStatus);
+    }
+    using datasystem::metrics::KvMetricId;
+    const bool write = request.operation == DS_HIXL_TRANSFER_WRITE;
+    const auto requests = write ? KvMetricId::HIXL_D2RH_WRITE_REQUEST_TOTAL : KvMetricId::HIXL_RH2D_READ_REQUEST_TOTAL;
+    const auto errors = write ? KvMetricId::HIXL_D2RH_WRITE_ERROR_TOTAL : KvMetricId::HIXL_RH2D_READ_ERROR_TOTAL;
+    const auto bytes = write ? KvMetricId::HIXL_D2RH_WRITE_SUCCESS_BYTES : KvMetricId::HIXL_RH2D_READ_SUCCESS_BYTES;
+    const auto latency = write ? KvMetricId::HIXL_D2RH_WRITE_LATENCY : KvMetricId::HIXL_RH2D_READ_LATENCY;
+    METRIC_INC(requests);
+    DsHixlResult result;
+    {
+        METRIC_TIMER(latency);
+        result = api->transfer_sync(engine, &request, &vendorStatus);
+    }
+    if (result != DS_HIXL_OK) {
+        METRIC_INC(errors);
+    } else {
+        uint64_t transferred = 0;
+        for (uint32_t i = 0; i < request.descriptorCount; ++i) {
+            transferred += request.descriptors[i].length;
+        }
+        METRIC_ADD(bytes, transferred);
+    }
+    return result;
 }
 
 // Allocate a random available ephemeral port. Tries up to K_MAX_PORT_ALLOC_ATTEMPTS times.
@@ -869,7 +902,7 @@ static Status FlushHixlBatch(Batch &batch)
                                    batch.descs.data(),
                                    static_cast<uint32_t>(batch.descs.size()),
                                    K_HIXL_TRANSFER_TIMEOUT_MS };
-    DsHixlResult result = batch.api->transfer_sync(batch.engine, &request, &vendorStatus);
+    DsHixlResult result = TransferWithMetrics(batch.api, batch.engine, request, vendorStatus);
     if (result != DS_HIXL_OK) { batch.transferFailed.store(true); }
     LOG_IF(ERROR, result != DS_HIXL_OK)
         << "HIXL READ failed; retain device arenas until process exit and restart the SDK process";
@@ -989,7 +1022,7 @@ Status HixlTransport::WriteBatch(const std::string &remoteEndpoint,
                                    descriptors.data(), static_cast<uint32_t>(descriptors.size()),
                                    static_cast<int32_t>(remaining) };
     INJECT_POINT("HixlTransport.WriteBatch");
-    const auto result = api_->transfer_sync(engines_.begin()->second, &request, &vendorStatus);
+    const auto result = TransferWithMetrics(api_, engines_.begin()->second, request, vendorStatus);
     if (result != DS_HIXL_OK) { transferFailed_.store(true); }
     LOG_IF(ERROR, result != DS_HIXL_OK)
         << "HIXL WRITE failed; retain device arenas until process exit and restart the SDK process";

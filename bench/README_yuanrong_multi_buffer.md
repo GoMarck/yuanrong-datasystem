@@ -145,6 +145,9 @@ python3 -m py_compile bench/yuanrong_multi_buffer_bench.py
 put 和 get 两端都加 `--verify-data`，使用相同 seed、key 前缀和布局（批大小、并发可以不同）。
 脚本按 seed/key/字节位置生成可重复数据；每次 put 完成后将缓冲区 poison，再读回并逐字节比较；
 每次 get 前也 poison，完成后验证本批全部 key，发现错 key、错 block、尾部损坏或未拷贝立即失败。
+校验模式还通过 `get_meta_info(keys, False)` 检查每个 key 保存的完整 `blob_size_list`：
+block 数量和每个 block 的长度必须精确匹配，避免仅比较目标容量而漏掉源对象的额外尾部。
+put 在写后、get 在读前执行此检查；元数据请求每批最多 10,000 key，耗时不计入待测 API 时延。
 错误包含 key/block/字节偏移，JSON status=failed，退出码非零。旧的全 0x01 数据集不能用于此模式。
 
 ```bash
@@ -176,3 +179,69 @@ NPU 按整批上传和下载，put 后在设备侧取反 poison。数据模式�
 旧的 --verify-data 数据集保持兼容。额外 Host 内存按并发 × batch 大小增长，不缓存整个数据集；
 整批比较时还需下载缓冲区及 bytes 副本。VERIFY_PROGRESS 输出 worker/batch/stage，首批逐阶段、
 后续约每 5 秒及末批完成时输出；阻塞中的原生调用返回前不会产生新的进度。
+
+## 调用量、字节数与 HiXL 性能
+
+benchmark 的 `results[].api_metrics` 汇总所有压测线程，并将三类调用分开：
+
+| 字段 | 内容 |
+|---|---|
+| `measured` | 正式 put/get API；预热放在独立的 `phases`，stage=warmup |
+| `verification_readback` | put 内容校验额外产生的 get，不计入正式 GET 次数 |
+| `size_check` | 校验元数据查询，payload 字节为 0 |
+
+各类包含 attempts/successes/errors、requested_keys/successful_keys、
+requested_payload_bytes/successful_payload_bytes、latency_ms（sum/avg/max/p50/p90/p99）。
+失败调用不计成功字节；部分失败批次也不计为整批成功。API 成功后发现内容错误仍使整个测试失败。
+`phases[].workers` 保留分线程数据和原始时延；失败阶段已发生的调用也保留在 phases。
+控制台 `BENCH_API_METRICS` 输出各阶段同口径汇总。`--output` 必须是文件路径：
+
+```bash
+# 在现有完整命令后指定：--verify-data --output "$dir/put.json"
+python3 - "$dir/put.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print('status:', d['status'])
+for row in d['results']:
+    print(row['operation'], row['concurrency'], row['api_metrics'], row['verification'])
+PY
+```
+
+这些是 API 有效载荷，不证明走了远端链路。新构建 SDK 在实际 HiXL `transfer_sync` 调用处
+提供以下 typed metrics；混合 SHM/HiXL 批次只统计其中真正提交给 HiXL 的部分：
+
+| 指标前缀（后接下列后缀） | 方向 |
+|---|---|
+| `hixl_d2rh_write_` | SDK NPU → 远端 Worker Host |
+| `hixl_rh2d_read_` | 远端 Worker Host → SDK NPU |
+
+| 后缀 | 含义 |
+|---|---|
+| `request_total` | 实际 HiXL 提交批次数，不是 key 数或 MSet/MGet 次数 |
+| `error_total` | HiXL 传输接口返回错误的次数；不含提交前的连接/参数错误 |
+| `success_bytes` | 传输返回成功的描述符长度之和，不含失败批次的未知部分字节 |
+| `latency` | 原生传输调用时延，微秒；count/avg_us/max_us/p50/p90/p99，含失败调用 |
+
+计数器 `total` 为进程累计量、`delta` 为本周期增量；直方图的 total/delta 分别为累计/周期分布，
+分位数由固定桶近似。`delta / (interval_ms/1000)` 为传输批次/s，
+`success_bytes.delta / (interval_ms/1000) / 1e9` 为成功载荷 GB/s。
+不要对多个周期的 total 求和；一个 cycle 可能分多行，按 part_index/part_count 收齐。
+计数包含同一 SDK 进程的预热和校验读回，不能与正式 API 次数直接相等比较；
+传输成功也不保证后续发布成功，测试最终 status 和内容校验仍须通过。
+
+SDK 进程启动前可配置：
+
+```bash
+export DATASYSTEM_CLIENT_LOG_DIR="$dir/sdk_logs"
+export DATASYSTEM_LOG_MONITOR_ENABLE=true
+export DATASYSTEM_LOG_MONITOR_INTERVAL_MS=1000
+# 使用包含新增 metrics 的 SDK wheel；按原命令运行 benchmark
+grep -E 'hixl_(d2rh_write|rh2d_read)_' "$dir/sdk_logs/kv_metrics.log"
+```
+
+`json_log_monitor` 默认 true，周期 JSON 写入 SDK log_dir 下 `kv_metrics.log`；
+若显式关闭 JSON、保留 log_monitor，则从 SDK INFO 的 metrics_summary 查找。
+全零指标可能省略，两个 monitor 都关闭则不采集。旧 SDK 没有这些指标，必须重新构建安装。
+这是 SDK 传输侧观测，不依赖 Worker access 的单值 transportType，也不新增逐请求日志。
+校验关闭时保留性能模式；只有 `status=ok` 且 verification.enabled=true、
+verified_keys/verified_blocks/verified_bytes 与测试规模一致，才表明本轮全内容和布局校验通过。

@@ -178,7 +178,13 @@ def cleanup(store, keys):
         raise RuntimeError(f"Yuanrong cleanup failed: {errors}")
 
 
-def phase(store, torch, args, config, param, buffers, keysets, attempted):
+def phase(store, torch, args, config, param, buffers, keysets, attempted, report=None, stage="measured"):
+    calls = [{name: validation.ApiCalls() for name in ("measured", "verification_readback", "size_check")}
+             for _ in keysets]
+    phase_info = dict(stage=stage, operation=args.operation, scope="sdk_api_payload",
+                      workers=[{name: metric.data for name, metric in worker.items()} for worker in calls])
+    if report is not None:
+        report.setdefault("phases", []).append(phase_info)
     started = []
     gate = threading.Barrier(
         len(keysets) + 1, action=lambda: started.append(time.perf_counter()))
@@ -196,29 +202,44 @@ def phase(store, torch, args, config, param, buffers, keysets, attempted):
                     # A raised mset can already have published some keys. The
                     # exclusive, preflight-checked range is ours to clean.
                     attempted.extend(keys)
+                metrics = calls[index]
+                def check_sizes():
+                    metadata_batch_limit = 10000
+                    for offset in range(0, len(keys), metadata_batch_limit):
+                        subset = keys[offset:offset + metadata_batch_limit]
+                        metrics["size_check"].invoke(
+                            subset, 0, lambda: store.get_meta_info(subset, False),
+                            lambda result: validation.check_blob_layout(result, subset, args))
                 if args.verify_data:
+                    if args.operation == "get":
+                        progress.update(batch_index, "size_check")
+                        check_sizes()
                     progress.update(batch_index, "prepare")
                     validation.fill(buffer, keys, args, poison=args.operation == "get")
                     progress.update(batch_index, args.operation)
-                start = time.perf_counter_ns()
+                payload = len(keys) * args.key_bytes
                 if args.operation == "put":
-                    store.mset_d2h_from_multi_buffers(keys, buffer.ptrs, buffer.sizes, param)
-                    failed = []
+                    _, elapsed = metrics["measured"].invoke(
+                        keys, payload,
+                        lambda: store.mset_d2h_from_multi_buffers(keys, buffer.ptrs, buffer.sizes, param))
                 else:
-                    failed = store.mget_h2d_from_multi_buffers(
-                        keys, buffer.ptrs, buffer.sizes, config["get_sub_timeout_ms"])
-                end = time.perf_counter_ns()
-                if failed:
-                    raise RuntimeError(f"mget_h2d_from_multi_buffers failed keys: {failed}")
-                samples.append(end - start)
+                    _, elapsed = metrics["measured"].invoke(
+                        keys, payload,
+                        lambda: store.mget_h2d_from_multi_buffers(
+                            keys, buffer.ptrs, buffer.sizes, config["get_sub_timeout_ms"]),
+                        validation.require_no_failed_keys)
+                samples.append(elapsed)
                 if args.verify_data:
                     if args.operation == "put":
+                        progress.update(batch_index, "size_check")
+                        check_sizes()
                         progress.update(batch_index, "readback")
                         validation.fill(buffer, keys, args, poison=True)
-                        failed = store.mget_h2d_from_multi_buffers(
-                            keys, buffer.ptrs, buffer.sizes, config["get_sub_timeout_ms"])
-                        if failed:
-                            raise RuntimeError(f"Verification read failed keys: {failed}")
+                        metrics["verification_readback"].invoke(
+                            keys, payload,
+                            lambda: store.mget_h2d_from_multi_buffers(
+                                keys, buffer.ptrs, buffer.sizes, config["get_sub_timeout_ms"]),
+                            validation.require_no_failed_keys)
                     progress.update(batch_index, "compare")
                     validation.verify(buffer, keys, args)
                     progress.update(batch_index, "done")
@@ -239,7 +260,11 @@ def phase(store, torch, args, config, param, buffers, keysets, attempted):
             raise
         results = [future.result() for future in futures]
     elapsed = max(end for _, end in results) - started[0]
-    return validation.annotate(summarize([x for samples, _ in results for x in samples], elapsed, args), args)
+    validation.finalize_api_calls(dict(phases=[phase_info]))
+    stats = validation.annotate(summarize([x for samples, _ in results for x in samples], elapsed, args), args)
+    stats["api_metrics"] = phase_info["summary"]
+    stats["verification"]["size_validation"] = "metadata_blob_layout" if args.verify_data else "not_checked"
+    return stats
 
 
 def run(store, torch, args, config, param, buffers, report):
@@ -257,7 +282,7 @@ def run(store, torch, args, config, param, buffers, report):
                     warm_attempted = []
                     try:
                         phase(store, torch, args, config, param, buffers,
-                              warm_keys, warm_attempted)
+                              warm_keys, warm_attempted, report, "warmup")
                     finally:
                         primary_error = sys.exc_info()[0] is not None
                         try:
@@ -270,8 +295,8 @@ def run(store, torch, args, config, param, buffers, report):
                 else:
                     warm_keys = [[batches[i % len(batches)] for i in range(args.warmup)]
                                  for batches in keysets]
-                    phase(store, torch, args, config, param, buffers, warm_keys, [])
-            stats = phase(store, torch, args, config, param, buffers, keysets, attempted)
+                    phase(store, torch, args, config, param, buffers, warm_keys, [], report, "warmup")
+            stats = phase(store, torch, args, config, param, buffers, keysets, attempted, report)
             # Sync/check only outside measured calls; the SDK APIs are synchronous.
             torch.npu.synchronize()
             if args.operation == "get" and not args.verify_data:
@@ -330,6 +355,8 @@ def main(argv=None):
                        "batch_is_exist", "delete"):
             if not callable(getattr(store, method, None)):
                 raise RuntimeError(f"Installed HeteroClient lacks {method}; upgrade the SDK")
+        if args.verify_data and not callable(getattr(store, "get_meta_info", None)):
+            raise RuntimeError("Full layout verification requires HeteroClient.get_meta_info")
         param = SetParam()
         param.write_mode = WriteMode.NONE_L2_CACHE_EVICT
         param.existence = ExistenceOpt.NX
@@ -350,6 +377,11 @@ def main(argv=None):
         # HeteroClient exposes no public close/unregister API in the reference
         # SDK. Keep buffers alive through client destruction and process exit.
         store = None
+        validation.finalize_api_calls(report)
+        for phase_info in report.get("phases", []):
+            print("BENCH_API_METRICS " + json.dumps(dict(
+                stage=phase_info["stage"], operation=phase_info["operation"],
+                scope=phase_info["scope"], metrics=phase_info["summary"])), flush=True)
         Path(args.output).write_text(json.dumps(report, indent=2) + "\n")
 
 

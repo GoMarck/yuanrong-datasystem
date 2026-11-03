@@ -78,6 +78,7 @@ ds_cc_library(
     ] + ASCEND_HIXL_HDRS,
     defines = ASCEND_HIXL_DEFINES,
     deps = [
+        "//src/datasystem/common/metrics:common_metrics",
         "//src/datasystem/client/hetero_cache:hetero_cache_headers",
         "//src/datasystem/common/device/ascend:acl_device_manager",
         "//src/datasystem/common/flags:ds_flags",

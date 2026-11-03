@@ -197,6 +197,7 @@ target_include_directories(hixl_transport_plugin_test BEFORE PRIVATE ${CMAKE_CUR
 target_link_libraries(hixl_transport_plugin_test PRIVATE
         ${DS_UT_HEAVY_LINK_START}
         GTest::gtest_main
+        common_metrics
         ${DS_UT_DEPEND_LIBS}
         ${DS_UT_COMMON_UTIL_EXTRA_LIBS}
         ${DS_UT_HEAVY_LINK_END}

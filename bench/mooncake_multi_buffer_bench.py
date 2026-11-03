@@ -300,6 +300,8 @@ def summarize(latencies_ns, elapsed, args):
 
 def phase(store, args, config, buffers, keysets, operation, owned=None):
     """Closed-loop concurrency; one synchronous API call in flight per worker."""
+    calls = [{name: validation.ApiCalls() for name in ("measured", "verification_readback")}
+             for _ in buffers]
     started = []
     gate = threading.Barrier(
         len(buffers) + 1, action=lambda: started.append(time.perf_counter()))
@@ -323,25 +325,25 @@ def phase(store, args, config, buffers, keysets, operation, owned=None):
                 progress.update(batch_index, "prepare")
                 validation.fill(buffer, keys, args, poison=operation == "get")
                 progress.update(batch_index, operation)
-            start = time.perf_counter_ns()
-            if operation == "put":
-                result = store.batch_put_from_multi_buffers(
-                    keys, buffer.ptrs, buffer.sizes, config)
-            else:
-                result = store.batch_get_into_multi_buffers(
-                    keys, buffer.ptrs, buffer.sizes, False)
-            end = time.perf_counter_ns()
-            if owned is not None and operation == "put":
-                owned.extend(key for key, rc in zip(keys, result) if rc == 0)
-            check_results(operation, result, len(keys),
-                          0 if operation == "put" else args.key_bytes)
-            samples.append(end - start)
+            def measured_call():
+                if operation == "put":
+                    return store.batch_put_from_multi_buffers(keys, buffer.ptrs, buffer.sizes, config)
+                return store.batch_get_into_multi_buffers(keys, buffer.ptrs, buffer.sizes, False)
+            def validate_measured(result):
+                if owned is not None and operation == "put":
+                    owned.extend(key for key, rc in zip(keys, result) if rc == 0)
+                check_results(operation, result, len(keys), 0 if operation == "put" else args.key_bytes)
+            _, elapsed = calls[index]["measured"].invoke(
+                keys, len(keys) * args.key_bytes, measured_call, validate_measured)
+            samples.append(elapsed)
             if args.verify_data:
                 if operation == "put":
                     progress.update(batch_index, "readback")
                     validation.fill(buffer, keys, args, poison=True)
-                    readback = store.batch_get_into_multi_buffers(keys, buffer.ptrs, buffer.sizes, False)
-                    check_results("verification read", readback, len(keys), args.key_bytes)
+                    calls[index]["verification_readback"].invoke(
+                        keys, len(keys) * args.key_bytes,
+                        lambda: store.batch_get_into_multi_buffers(keys, buffer.ptrs, buffer.sizes, False),
+                        lambda result: check_results("verification read", result, len(keys), args.key_bytes))
                 progress.update(batch_index, "compare")
                 validation.verify(buffer, keys, args)
                 progress.update(batch_index, "done")
@@ -359,7 +361,15 @@ def phase(store, args, config, buffers, keysets, operation, owned=None):
             raise
         results = [f.result() for f in futures]
     elapsed = max(end for _, end in results) - started[0]
-    return validation.annotate(summarize([x for samples, _ in results for x in samples], elapsed, args), args)
+    workers = [{name: metric.data for name, metric in worker.items()} for worker in calls]
+    phase_info = dict(workers=workers)
+    validation.finalize_api_calls(dict(phases=[phase_info]))
+    stats = validation.annotate(summarize([x for samples, _ in results for x in samples], elapsed, args), args)
+    stats["api_calls"] = workers
+    stats["api_metrics"] = phase_info["summary"]
+    stats["verification"]["size_validation"] = (
+        "api_returned_key_bytes" if operation == "get" or args.verify_data else "not_checked")
+    return stats
 
 
 def inspect_placement(store, keysets, local_endpoint, local_only):

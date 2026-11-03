@@ -233,3 +233,11 @@ NPU 按整批上传和下载，put 后在设备侧取反 poison。数据模式�
 旧的 --verify-data 数据集保持兼容。额外 Host 内存按并发 × batch 大小增长，不缓存整个数据集；
 整批比较时还需下载缓冲区及 bytes 副本。VERIFY_PROGRESS 输出 worker/batch/stage，首批逐阶段、
 后续约每 5 秒及末批完成时输出；阻塞中的原生调用返回前不会产生新的进度。
+
+结果 `api_metrics` 将 measured 和 verification_readback 分别汇总 attempts/successes/errors、
+请求/成功 key 数和 payload 字节数，以及 latency_ms（sum/avg/max/p50/p90/p99）；
+`api_calls` 保留分线程原始记录。put 的额外校验 get 不算作正式 GET 次数。
+这些是 Store API 数据量，不表示真实远端 HiXL 流量。get 和校验读回均逐 key 检查 API 返回的
+完整 key_bytes，--verify-data 再比较所有内容；verification 记录 verified_keys/blocks/bytes。
+Mooncake 此接口不提供 Yuanrong 的 blob 布局元数据查询，大小检查口径为 api_returned_key_bytes。
+未开启校验的 put 不进行读回/大小验证。仅成功完成的阶段输出这些统计；失败时检查顶层 status/error。
