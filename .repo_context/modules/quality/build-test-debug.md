@@ -270,10 +270,6 @@ Backed by `tests/kvtest/BUILD.bazel` and `tests/kvtest/build.sh`:
 - `tests/kvtest` is a standalone KVClient performance tool with its own `build.sh` supporting `-b cmake|bazel`,
   mirroring the main repo's build-system switch; **bazel is the default** (so the brpc control plane and
   bthread-backed pipeline/notify-pool workers are enabled out of the box);
-- the rc44 comparison entrypoint enables `client_config.full_access_log`: `src/common/client_config.h` applies
-  SDK request/access/diagnostic rates of 1.0 once after Init and before workload threads; failures abort startup.
-  `tests/kvtest/tests/cxx` CTest `client_config` covers this initialization and failure handling with SDK stubs;
-  it does not establish real SDK linkage or full runtime log coverage. Unset native configs keep the original Init path;
 - the CMake mode links against a pre-installed SDK (`-s/--sdk`, default `../../output/cpp`), while the Bazel mode
   builds `//tests/kvtest:kvtest` against the in-tree `//src/datasystem/client:datasystem`, producing a self-contained
   binary that does not need `libdatasystem.so` at runtime;

@@ -95,52 +95,10 @@ public:
     void UnRLatch() {}
 };
 
-class KVClientConfig {
-public:
-    std::unordered_map<std::string, std::string> args;
-    class Builder {
-    public:
-        Builder &UrmaSendLaneCountPerPeer(uint32_t count) {
-            args_["urma_send_lane_count_per_peer"] = std::to_string(count);
-            return *this;
-        }
-        Builder &LogMonitorEnable(bool enabled) {
-            args_["log_monitor"] = enabled ? "true" : "false";
-            return *this;
-        }
-        Builder &MonitorConfigPath(const std::string &path) {
-            args_["monitor_config_file"] = path;
-            return *this;
-        }
-        Status Build(KVClientConfig &config) const {
-            config.args = args_;
-            return Status::OK();
-        }
-    private:
-        std::unordered_map<std::string, std::string> args_;
-    };
-};
-
 class KVClient {
 public:
     KVClient() = default;
     Status Init() { return Status::OK(); }
-    Status Init(const KVClientConfig &config) {
-        initConfig = config.args;
-        ++initCalls;
-        return initStatus;
-    }
-    Status UpdateConfig(const std::string &config) {
-        updatedConfig = config;
-        ++updateCalls;
-        return updateStatus;
-    }
-    Status initStatus;
-    Status updateStatus;
-    int initCalls = 0;
-    int updateCalls = 0;
-    std::unordered_map<std::string, std::string> initConfig;
-    std::string updatedConfig;
     Status Set(const std::string &, const StringView &, const SetParam & = SetParam()) { return Status::OK(); }
     Status Set(const std::shared_ptr<Buffer> &buffer) {
         std::lock_guard<std::mutex> lock(mutex_);

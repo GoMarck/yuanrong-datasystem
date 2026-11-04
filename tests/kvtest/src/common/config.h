@@ -91,7 +91,6 @@ struct Config {
     bool enableJitter = true;               // randomize sleep to stagger requests
     bool enableCrossNodeConnection = true;  // allow failover to standby workers on other nodes
     bool enableLocalCache = false;          // enable SDK client local cache, default false
-    bool fullAccessLog = false;
     std::optional<uint32_t> urmaSendLaneCountPerPeer;
     datasystem::DataPlacementPolicy dataPlacementPolicy = datasystem::DataPlacementPolicy::PREFERRED_META_OWNER;
     int batchKeysCount = 1;  // batch 操作的 key 数量，1 = 单 key 兼容

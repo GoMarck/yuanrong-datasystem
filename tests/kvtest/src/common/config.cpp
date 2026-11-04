@@ -285,13 +285,6 @@ bool LoadConfig(const std::string &path, Config &cfg, const std::string &outputD
                 SLOG_ERROR("client_config must be an object");
                 return false;
             }
-            if (clientConfig.contains("full_access_log")) {
-                if (!clientConfig["full_access_log"].is_boolean()) {
-                    SLOG_ERROR("client_config.full_access_log must be boolean");
-                    return false;
-                }
-                cfg.fullAccessLog = clientConfig["full_access_log"].get<bool>();
-            }
             if (clientConfig.contains("urma_send_lane_count_per_peer")) {
                 const auto &laneCount = clientConfig["urma_send_lane_count_per_peer"];
                 if (!laneCount.is_number_unsigned()) {

@@ -33,7 +33,7 @@ class Rc44ComparisonTest(unittest.TestCase):
                                       root, '10.0.0.1:31511', 60)
             return json.loads((root / 'config.json').read_text())
 
-    def test_client_profile_keeps_interfaces_and_uses_full_ds_logs(self):
+    def test_client_profile_keeps_interfaces(self):
         for path in sorted((compare.ROOT / 'comparison').glob('scenario.*.json')):
             scenario = json.loads(path.read_text())
             for backend in compare.configured_systems(scenario):
@@ -47,7 +47,6 @@ class Rc44ComparisonTest(unittest.TestCase):
                         self.assertEqual(config['connect_options']['request_timeout_ms'], 20)
                         self.assertEqual(config['env']['DATASYSTEM_UB_GET_DATA_SIZE_BYTES'], '10485760')
                         self.assertEqual(config['env']['DATASYSTEM_ENABLE_LOAD_AWARE_SCHEDULER'], 'true')
-                        self.assertTrue(config['client_config']['full_access_log'])
                     else:
                         self.assertNotIn('client_config', config)
 

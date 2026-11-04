@@ -39,7 +39,7 @@ JF 心跳及发现线程属于已有 rc44 行为。仅改变部署与发现路�
 JF Pod 固定 1 CPU/1Gi，无 UB/RDMA 设备请求；worker、client 的设备、CPU 和内存预算沿用原场景。
 
 独立模式不安装 whl：直接上传 `kvtest` 所在包里的 `coordinator_test`、`worker_test` 和 `lib/`。
-建议与 dscli 场景使用相同 SDK。对比入口现已启用 `client_config.full_access_log=true`，需要重新编译 DS 包，才能在发压前关闭 SDK 日志采样；不能沿用不识别该选项的旧 kvtest 二进制。
+建议与 dscli 场景使用相同 SDK。client 日志初始化沿用 rc44 SDK 默认行为，对比工具不额外配置采样率。
 
 ## 执行命令
 

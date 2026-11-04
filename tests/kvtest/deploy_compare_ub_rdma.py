@@ -611,7 +611,6 @@ def configure_clients(run, scenario, plan, namespace, prefix, backend, case_dir,
     write_json(case_dir / 'execution.json', {'duration_seconds': duration, 'timing': 'rc44 controller wall time after deploy'})
     if backend == 'datasystem':
         config['connect_options']['request_timeout_ms'] = 20
-        config.setdefault('client_config', {})['full_access_log'] = True
         client = scenario['components'][backend]['client'].get('config', {})
         config['host_id_env_name'] = client.get('host_id_env_name', 'HOST_IP')
         for key in ('enable_local_cache', 'enable_cross_node_connection', 'connect_timeout_ms', 'request_timeout_ms',
