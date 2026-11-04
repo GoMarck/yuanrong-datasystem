@@ -113,7 +113,15 @@ RemoteH2DManager &RemoteH2DManager::Instance()
 
 Status RemoteH2DManager::SetClientRemoteH2DConfig(bool enableRemoteH2D, uint32_t devId, const std::string &localIp)
 {
-    // Note: The parameter needs to be consistent in the same client process.
+    static std::mutex configMutex;
+    static bool hixlConfigured = false;
+    std::lock_guard<std::mutex> lock(configMutex);
+    if (hixlConfigured) {
+        CHECK_FAIL_RETURN_STATUS(enableRemoteH2D && clientDeviceId_ == static_cast<int32_t>(devId)
+                                     && hccsLocalEndpointIp_ == localIp, K_NOT_SUPPORTED,
+                                 "A shared HIXL SDK process requires consistent device, IP and RH2D settings");
+        return Instance().GetInitStatus();
+    }
     LOG(INFO) << "[RH2D] Client config: enable=" << enableRemoteH2D << " devId=" << devId << " localIp=" << localIp;
     isClient_ = true;
     enableRemoteH2D_ = enableRemoteH2D;
@@ -147,6 +155,7 @@ Status RemoteH2DManager::SetClientRemoteH2DConfig(bool enableRemoteH2D, uint32_t
     if (enableRemoteH2D) {
         RETURN_IF_NOT_OK(Instance().GetInitStatus());
     }
+    hixlConfigured = enableRemoteH2D && FLAGS_remote_h2d_link_type == "HCCS";
     return Status::OK();
 }
 
@@ -282,7 +291,7 @@ Status RemoteH2DManager::P2PGetRootInfo(const std::string &key, RemoteH2DRootInf
 
     auto ctx = std::make_shared<RemoteH2DContext>();
     std::string identity;
-    RETURN_IF_NOT_OK(transport_->GetConnectionIdentity(&identity));
+    RETURN_IF_NOT_OK(GetConnectionIdentityForComm(key, identity));
     ctx->localIdentity = identity;
     accessor.entry->data = ctx;
     needRollback = false;
@@ -670,6 +679,60 @@ Status RemoteH2DManager::GetInitStatus() const
     return initStatus_;
 }
 
+Status RemoteH2DManager::GetConnectionIdentityForComm(const std::string &commId, std::string &identity)
+{
+#ifdef ASCEND_HIXL_AVAILABLE
+    if (!isClient_ && transport_->LinkType() == P2P_LINK_HCCS) {
+        int32_t devId = -1;
+        RETURN_IF_NOT_OK(GetDevIdForComm(commId, devId));
+        return static_cast<HixlTransport *>(transport_.get())->GetDeviceEndpoint(devId, identity);
+    }
+#else
+    (void)commId;
+#endif
+    return transport_->GetConnectionIdentity(&identity);
+}
+
+Status RemoteH2DManager::GetHixlWriteEndpoint(const std::string &commId, std::string &endpoint)
+{
+    RETURN_IF_NOT_OK(initStatus_);
+#ifdef ASCEND_HIXL_AVAILABLE
+    CHECK_FAIL_RETURN_STATUS(!isClient_ && IsRemoteH2DEnabled() && transport_ != nullptr, K_NOT_READY,
+                             "Worker RH2D transport is not initialized");
+    CHECK_FAIL_RETURN_STATUS(transport_->LinkType() == P2P_LINK_HCCS, K_NOT_SUPPORTED,
+                             "D2RH requires the HIXL transport");
+    auto *hixl = static_cast<HixlTransport *>(transport_.get());
+    CHECK_FAIL_RETURN_STATUS(hixl->UsesBufferPool(), K_NOT_SUPPORTED,
+                             "D2RH currently requires the HIXL buffer pool");
+    return GetConnectionIdentityForComm(commId, endpoint);
+#else
+    (void)commId;
+    (void)endpoint;
+    RETURN_STATUS(K_NOT_SUPPORTED, "D2RH requires a build with HIXL support");
+#endif
+}
+
+Status RemoteH2DManager::GetClientHixlTransport(int32_t deviceId, std::shared_ptr<HixlTransport> &transport)
+{
+    RETURN_IF_NOT_OK(initStatus_);
+#ifdef ASCEND_HIXL_AVAILABLE
+    CHECK_FAIL_RETURN_STATUS(isClient_ && enableRemoteH2D_ && !interrupted_.load() && transport_ != nullptr,
+                             K_NOT_READY,
+                             "Client RH2D transport is not initialized");
+    CHECK_FAIL_RETURN_STATUS(clientDeviceId_ == deviceId && transport_->LinkType() == P2P_LINK_HCCS,
+                             K_NOT_SUPPORTED, "Shared D2RH requires the same RH2D HIXL device");
+    auto hixl = std::static_pointer_cast<HixlTransport>(transport_);
+    RETURN_IF_NOT_OK(hixl->CheckReady());
+    CHECK_FAIL_RETURN_STATUS(hixl->UsesBufferPool(), K_NOT_SUPPORTED, "D2RH requires the HIXL buffer pool");
+    transport = std::move(hixl);
+    return Status::OK();
+#else
+    (void)deviceId;
+    (void)transport;
+    RETURN_STATUS(K_NOT_SUPPORTED, "D2RH requires a build with HIXL support");
+#endif
+}
+
 Status RemoteH2DManager::Uninit()
 {
     interrupted_.store(true);
@@ -680,6 +743,9 @@ Status RemoteH2DManager::Uninit()
     if (aclInitialized_) {
         LOG_IF_ERROR(SetDeviceIdx(), "Set device index failed at RemoteH2DManager uninitialization");
     }
+
+    CHECK_FAIL_RETURN_STATUS(transport_.use_count() <= 1, K_NOT_READY,
+                             "Shared RH2D transport is still in use by a D2RH client");
 
     {
         std::lock_guard<std::mutex> lock(heartbeatMutex_);
@@ -701,8 +767,7 @@ Status RemoteH2DManager::Uninit()
     commDevIdMap_.clear();
 
     if (transport_) {
-        LOG_IF_ERROR(transport_->DisconnectAll(),
-                     "Failed to disconnect all transport connections at RemoteH2DManager uninitialization");
+        RETURN_IF_NOT_OK(transport_->DisconnectAll());
     }
 
     if (aclInitialized_) {
@@ -763,6 +828,14 @@ Status RemoteH2DManager::ScatterBatch(P2pScatterEntry *entries, uint32_t size,
 Status RemoteH2DManager::GetDevIdForComm(const std::string &commId, int32_t &devId)
 {
     RETURN_IF_NOT_OK(initStatus_);
+    if (transport_ != nullptr && transport_->LinkType() == P2P_LINK_HCCS) {
+        CHECK_FAIL_RETURN_STATUS(!commId.empty(), K_INVALID, "HIXL client communicator ID is empty");
+        RETURN_IF_NOT_OK(GetWorkerDeviceIds());
+        CHECK_FAIL_RETURN_STATUS(!workerDeviceIds_.empty(), K_NOT_READY, "Worker device list is empty");
+        // One SDK engine must retain the same Worker engine for both READ and WRITE IPC imports.
+        devId = workerDeviceIds_[MurmurHash3_32(commId) % workerDeviceIds_.size()];
+        return Status::OK();
+    }
     devId = -1;
     {
         // fast path: use const accessor

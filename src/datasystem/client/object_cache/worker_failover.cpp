@@ -680,7 +680,8 @@ WorkerFailover::StandbySwitchAttemptResult WorkerFailover::TrySwitchToStandbyWor
                               owner_.tenantId_,
                               owner_.enableCrossNodeConnection_, owner_.embeddedClientWorkerApi_, owner_.worker_);
     candidateWorkerApi->SetMayAccessNonBoundWorker(
-        ClientMayAccessNonBoundWorker(owner_.enableLocalCache_, owner_.enableCrossNodeConnection_));
+        owner_.UseRoutedDeviceWrites()
+            || ClientMayAccessNonBoundWorker(owner_.enableLocalCache_, owner_.enableCrossNodeConnection_));
     candidateWorkerApi->isUseStandbyWorker_ = true;
     ConfigureUrmaDataPlaneFailureCallback(next, candidateWorkerApi);
     Status rc = candidateWorkerApi->Init(owner_.requestTimeoutMs_, owner_.connectTimeoutMs_,
@@ -952,7 +953,8 @@ Status WorkerFailover::PreparePreferredLocalWorker(const HostPort &localAddress,
                                            owner_.tenantId_,
                                                 owner_.enableCrossNodeConnection_, owner_.deviceId_);
     localWorkerApi->SetMayAccessNonBoundWorker(
-        ClientMayAccessNonBoundWorker(owner_.enableLocalCache_, owner_.enableCrossNodeConnection_));
+        owner_.UseRoutedDeviceWrites()
+            || ClientMayAccessNonBoundWorker(owner_.enableLocalCache_, owner_.enableCrossNodeConnection_));
     Status rc = localWorkerApi->Init(owner_.requestTimeoutMs_, owner_.connectTimeoutMs_, owner_.fastTransportMemSize_);
     if (rc.IsError()) {
         LOG(ERROR) << "[Switch] Init preferred same-node worker " << localAddress.ToString()

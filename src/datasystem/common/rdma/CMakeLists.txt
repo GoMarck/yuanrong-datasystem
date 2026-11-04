@@ -62,7 +62,7 @@ if (BUILD_HETERO AND BUILD_HETERO_NPU)
         list(APPEND URMA_SRCS
             npu/hixl_transport.cpp
             npu/hixl_plugin_loader.cpp)
-        list(APPEND URMA_DEPEND_LIBS common_ak_sk dl)
+        list(APPEND URMA_DEPEND_LIBS common_ak_sk common_metrics dl)
         add_subdirectory(npu/plugin)
     else()
         message(WARNING "cann_hixl not found or HIXL version is lower than 8.5.2, HCCS transport will be disabled")
