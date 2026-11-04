@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "nodes": {
+    "node1": {"ssh": "node1"},
+    "node2": {"ssh": "node2"}
+  },
+  "timeout": 3600,
+  "failure_collect_seconds": 60,
+  "collection_timeout": 120,
+  "targets": {
+    "host1": {"node": "node1"},
+    "host2": {"node": "node2"},
+    "vllm1": {"node": "node1", "container": "vllm_test1"},
+    "vllm2": {"node": "node2", "container": "vllm_test2"},
+    "bench": {"node": "node1", "container": "vllm_bench"}
+  },
+  "steps": [
+    {"run": [
+      {"id": "pre1", "target": "host1", "script": "pre_check.sh"},
+      {"id": "pre2", "target": "host2", "script": "pre_check.sh"}
+    ]},
+    {"run": [
+      {"id": "ds1", "target": "vllm1", "script": "start_ds1.sh"}
+    ]},
+    {"run": [
+      {"id": "ds2", "target": "vllm2", "script": "start_ds2.sh"}
+    ]},
+    {"start": [
+      {"id": "vllm1", "target": "vllm1", "script": "vllm_node1.sh"},
+      {"id": "vllm2", "target": "vllm2", "script": "vllm_node2.sh"}
+    ]},
+    {"wait_log": {"job": "vllm1", "source": "console", "contains": "READY"}, "timeout": 600},
+    {"run": [
+      {"id": "bench", "target": "bench", "script": "ais_bench_test.sh"}
+    ], "timeout": 1800}
+  ]
+}

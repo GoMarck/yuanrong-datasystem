@@ -739,3 +739,27 @@ Host selection is opt-in through `--host-filter` JSON (`include`/`exclude` array
 - Focused regressions: `ObjRefTableTest.Hixl*` (reservation/backpressure, concurrent quota, owner lifetime and
   bad_alloc rollback), `HixlTransportPluginTest` explicit options/Connect budget cases, and Python constructor/import
   coverage in `tests/python/test_hetero_client_multi_buffer.py`. These cases are authored but unexecuted.
+
+## Optional Python transfer benchmarks
+
+- bench/yuanrong_multi_buffer_bench.py defaults to PREFERRED_META_OWNER for synchronous D2RH placement;
+  registers fixed aligned local NPU arenas for put and HiXL remote H2D get. HIXL config maps to SDK HCCS
+  environment before native import; Workers must separately enable D2RH and compatible buffer pools.
+- bench/buffer_validation.py supplies opt-in --verify-data full-content patterns and destination poisoning
+  for Yuanrong and Mooncake (including HTTP workload propagation). API latency excludes verification;
+  stage wall throughput includes its overhead, reported under verification. Patterned put/get require matching seed.
+- Yuanrong verification additionally checks exact per-key blob_size_list through get_meta_info(keys, False),
+  before get or after put, chunked to the metadata API's 10,000-key limit. Mooncake checks each get return length.
+  api_metrics separates measured calls, verification readback, and Yuanrong metadata queries, with requested/success
+  payload bytes and latency summaries; it does not prove remote transport. Yuanrong phases retain failed-call evidence.
+- HiXL transport typed metrics use hixl_d2rh_write_* and hixl_rh2d_read_* for submitted native batches,
+  transfer errors, successful descriptor bytes and latency. Plugin fake UT WriteMetricsCountCallsAndOnlySuccessfulBytes
+  checks WRITE success/failure accounting; native compilation and NPU execution remain separate validation requirements.
+- case_runner/examples/d2rh_validation orchestrates pre-deployed two-node correctness checks.
+- Host-only regression: python3 -m unittest discover -s bench -p 'test_buffer_validation.py' -v.
+  No native SDK/NPU performance or link coverage is implied by these tests or content verification.
+
+Verification caches only each worker's current batch expectation, preserving shake256-key-offset-v1.
+Device verification uses batch copies and in-place poison rather than per-MiB transfers.
+VERIFY_PROGRESS reports batch/stage without adding background threads. Host memory overhead scales
+with concurrency times batch payload, including the comparison download and byte copy, not dataset size.

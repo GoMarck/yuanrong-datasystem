@@ -545,6 +545,7 @@ handler. Clearing the Router handler synchronously excludes later callback acces
     Rebuilt SDKs emit them through typed metrics to kv_metrics.log (JSON monitor enabled) or INFO.
     HeteroClient initializes the process-wide registry after successful client Init, once logging has resolved
     the log directory, matching KVClient/ObjectClient. This does not require an additional client instance.
+    Benchmark usage and API/transport accounting boundaries are in bench/README_yuanrong_multi_buffer.md.
   - remote H2D toggle
   - optional `IServiceDiscovery`; the public implementations are ETCD-backed `ServiceDiscovery` and coordinator-backed `CoordinatorServiceDiscovery`
   - fast transport shared-memory size
