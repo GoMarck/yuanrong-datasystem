@@ -18,12 +18,15 @@
 #include <tbb/concurrent_hash_map.h>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <limits>
 #include <thread>
 
 #include "ut/common.h"
 #include "datasystem/common/object_cache/object_ref_info.h"
 #include "datasystem/common/flags/flags.h"
+#include "datasystem/common/flags/common_flags.h"
+#include "datasystem/common/util/raii.h"
 #include "datasystem/common/string_intern/string_ref.h"
 #include "datasystem/common/util/random_data.h"
 #include "datasystem/common/object_cache/safe_table.h"
@@ -891,9 +894,56 @@ TEST_F(ObjRefTableTest, RecordMaybeExpiredShmStagingHandoffUnderConcurrency)
         }
     }
 }
+TEST_F(ObjRefTableTest, HixlBudgetConfigurationValidatesAndOverrides)
+{
+    constexpr auto envName = "DS_HIXL_D2RH_PROTECTED_MEMORY_MB";
+    const auto oldFlag = FLAGS_hixl_d2rh_protected_memory_mb;
+    const char *oldEnv = std::getenv(envName);
+    const bool wasSet = oldEnv != nullptr;
+    const std::string oldValue = wasSet ? oldEnv : "";
+    Raii restore([=]() {
+        FLAGS_hixl_d2rh_protected_memory_mb = oldFlag;
+        if (wasSet) {
+            setenv(envName, oldValue.c_str(), 1);
+        } else {
+            unsetenv(envName);
+        }
+    });
+    ASSERT_EQ(unsetenv(envName), 0);
+    constexpr uint64_t bytesPerMiB = 1024ULL * 1024;
+    FLAGS_hixl_d2rh_protected_memory_mb = 1024;
+    DS_ASSERT_OK(memRefTable_.InitHixlWriteBudget());
+    EXPECT_EQ(memRefTable_.GetHixlWriteLimitBytes(), 1024 * bytesPerMiB);
+    constexpr uint64_t batchBytes = 758 * bytesPerMiB;
+    DS_ASSERT_OK(memRefTable_.ReserveHixlWriteBudget(batchBytes, 112));
+    EXPECT_EQ(memRefTable_.ReserveHixlWriteBudget(batchBytes, 112).GetCode(), K_OUT_OF_MEMORY);
+    memRefTable_.ReleaseHixlWriteBudget(batchBytes, 112);
+    DS_ASSERT_OK(memRefTable_.ReserveHixlWriteBudget(batchBytes, 112));
+    memRefTable_.ReleaseHixlWriteBudget(batchBytes, 112);
+
+    ASSERT_EQ(setenv(envName, "2048", 1), 0);
+    DS_ASSERT_OK(memRefTable_.InitHixlWriteBudget());
+    EXPECT_EQ(memRefTable_.GetHixlWriteLimitBytes(), 2048 * bytesPerMiB);
+    FLAGS_hixl_d2rh_protected_memory_mb = 1;
+    EXPECT_EQ(memRefTable_.GetHixlWriteLimitBytes(), 2048 * bytesPerMiB);
+    for (const auto *value : { "", "0", "-1", "+1", " 1", "1x", "17592186044416", "18446744073709551616" }) {
+        ASSERT_EQ(setenv(envName, value, 1), 0);
+        EXPECT_EQ(memRefTable_.InitHixlWriteBudget().GetCode(), K_INVALID) << value;
+        EXPECT_EQ(memRefTable_.GetHixlWriteLimitBytes(), 2048 * bytesPerMiB);
+    }
+    ASSERT_EQ(unsetenv(envName), 0);
+    FLAGS_hixl_d2rh_protected_memory_mb = 0;
+    EXPECT_EQ(memRefTable_.InitHixlWriteBudget().GetCode(), K_INVALID);
+    FLAGS_hixl_d2rh_protected_memory_mb = std::numeric_limits<uint64_t>::max() / bytesPerMiB + 1;
+    EXPECT_EQ(memRefTable_.InitHixlWriteBudget().GetCode(), K_INVALID);
+    FLAGS_hixl_d2rh_protected_memory_mb = std::numeric_limits<uint64_t>::max() / bytesPerMiB;
+    DS_ASSERT_OK(memRefTable_.InitHixlWriteBudget());
+    EXPECT_EQ(memRefTable_.GetHixlWriteLimitBytes(), FLAGS_hixl_d2rh_protected_memory_mb * bytesPerMiB);
+}
+
 TEST_F(ObjRefTableTest, HixlBudgetReservesBeforeAllocation)
 {
-    const auto maxBytes = MemRefTable::MAX_HIXL_WRITE_BYTES;
+    const auto maxBytes = MemRefTable::DEFAULT_MAX_HIXL_WRITE_BYTES;
     const auto maxCount = MemRefTable::MAX_HIXL_WRITE_ALLOCATIONS;
     DS_ASSERT_OK(memRefTable_.ReserveHixlWriteBudget(maxBytes, maxCount));
     EXPECT_EQ(memRefTable_.ReserveHixlWriteBudget(1, 0).GetCode(), K_OUT_OF_MEMORY);
@@ -907,7 +957,7 @@ TEST_F(ObjRefTableTest, HixlBudgetReservesBeforeAllocation)
 
 TEST_F(ObjRefTableTest, HixlConcurrentReservationsStayWithinBudget)
 {
-    constexpr uint64_t bytes = MemRefTable::MAX_HIXL_WRITE_BYTES / 4;
+    constexpr uint64_t bytes = MemRefTable::DEFAULT_MAX_HIXL_WRITE_BYTES / 4;
     std::atomic<size_t> accepted{ 0 };
     ParallelFor(16, [&](size_t) {
         if (memRefTable_.ReserveHixlWriteBudget(bytes, 1).IsOk()) {
@@ -916,8 +966,8 @@ TEST_F(ObjRefTableTest, HixlConcurrentReservationsStayWithinBudget)
     }, 4);
     EXPECT_EQ(accepted.load(), 4);
     memRefTable_.ReleaseHixlWriteBudget(bytes * accepted.load(), accepted.load());
-    DS_ASSERT_OK(memRefTable_.ReserveHixlWriteBudget(MemRefTable::MAX_HIXL_WRITE_BYTES, 1));
-    memRefTable_.ReleaseHixlWriteBudget(MemRefTable::MAX_HIXL_WRITE_BYTES, 1);
+    DS_ASSERT_OK(memRefTable_.ReserveHixlWriteBudget(MemRefTable::DEFAULT_MAX_HIXL_WRITE_BYTES, 1));
+    memRefTable_.ReleaseHixlWriteBudget(MemRefTable::DEFAULT_MAX_HIXL_WRITE_BYTES, 1);
 }
 
 TEST_F(ObjRefTableTest, HixlProtectionRetainsOwnerUntilCompletion)
@@ -938,9 +988,9 @@ TEST_F(ObjRefTableTest, HixlProtectionRetainsOwnerUntilCompletion)
     ASSERT_FALSE(owner.expired());
     completed.clear();
     EXPECT_TRUE(owner.expired());
-    DS_ASSERT_OK(memRefTable_.ReserveHixlWriteBudget(MemRefTable::MAX_HIXL_WRITE_BYTES,
+    DS_ASSERT_OK(memRefTable_.ReserveHixlWriteBudget(MemRefTable::DEFAULT_MAX_HIXL_WRITE_BYTES,
                                                     MemRefTable::MAX_HIXL_WRITE_ALLOCATIONS));
-    memRefTable_.ReleaseHixlWriteBudget(MemRefTable::MAX_HIXL_WRITE_BYTES,
+    memRefTable_.ReleaseHixlWriteBudget(MemRefTable::DEFAULT_MAX_HIXL_WRITE_BYTES,
                                        MemRefTable::MAX_HIXL_WRITE_ALLOCATIONS);
 }
 
@@ -961,9 +1011,9 @@ TEST_F(ObjRefTableTest, HixlProtectionRollsBackPartialInsertion)
     DS_ASSERT_OK(memRefTable_.ProtectHixlWrites(client, { first, second }, 128, 2));
     std::vector<std::shared_ptr<ShmUnit>> completed;
     DS_ASSERT_OK(memRefTable_.CompleteHixlWrites(client, { first->GetId(), second->GetId() }, completed));
-    DS_ASSERT_OK(memRefTable_.ReserveHixlWriteBudget(MemRefTable::MAX_HIXL_WRITE_BYTES,
+    DS_ASSERT_OK(memRefTable_.ReserveHixlWriteBudget(MemRefTable::DEFAULT_MAX_HIXL_WRITE_BYTES,
                                                     MemRefTable::MAX_HIXL_WRITE_ALLOCATIONS));
-    memRefTable_.ReleaseHixlWriteBudget(MemRefTable::MAX_HIXL_WRITE_BYTES,
+    memRefTable_.ReleaseHixlWriteBudget(MemRefTable::DEFAULT_MAX_HIXL_WRITE_BYTES,
                                        MemRefTable::MAX_HIXL_WRITE_ALLOCATIONS);
 }
 

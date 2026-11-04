@@ -27,6 +27,21 @@ SDK 还需包含本次补充的 D2H access 日志 `transportType` 字段，否�
 需要 CS 的环境还需 `--hixl_cs_enable true`。保留原有集群发现、认证、共享内存等基础配置。
 buffer pool 使用该环境已验证的非零配置。
 
+D2RH 默认每个 Worker 允许最多 256 MiB 的受保护在途写内存，所有 SDK 进程和 NPU 共享，
+单批也受此限制，计入对象头和元数据。大批量写入可在启动 Worker 前配置，例如：
+
+```bash
+export DS_HIXL_D2RH_PROTECTED_MEMORY_MB=2048
+```
+
+也可使用 Worker 参数 `--hixl_d2rh_protected_memory_mb 2048`；环境变量优先于启动参数/JSON 配置。
+值必须是正整数 MiB，不能超过 `17592186044415`，无不限额模式；非法值会导致 Worker 初始化失败。
+只需更新 Worker 二进制；使用新增 dscli 参数时还需更新 CLI 的 `worker_config.json`。
+配置在初始化时固定，修改后需重启 Worker；撤销环境变量和自定义参数可恢复默认值。
+额度不预分配内存，也不扩大 `shared_memory_size_mb` 或 HiXL buffer pool；应结合 Worker 可用共享内存、
+并发批次和异常写保留内存设定。1024 个受保护 allocation 的数量限制保持不变。
+启动 INFO 会打印 `HIXL D2RH protected memory budget`；拒绝批次/在途写时会打印请求和限制字节数。
+
 节点 A 安装本次 release wheel，清除指向源码 `python/` 的 `PYTHONPATH`，然后运行：
 
 ```bash
@@ -251,7 +266,8 @@ Worker 复用 RH2D 已初始化的每卡 HiXL engine，READ 和 WRITE 共用同�
 不再为 D2RH 创建第二组 engine。设备列表必须非空，且设备号在本机有效。
 Worker 使用现有分配与发布流程，在现有引用表中额外保留未确认写入的 ShmUnit 强引用。
 成功 WRITE 后通过 MultiPublish 的完成标志解除该保护。没有完成确认的分配即使客户端引用已释放，也保留到
-Worker 进程退出；每个 Worker 允许的保护总量为 256 MiB、1024 个分配（包含正常在途写）。超出预算时拒绝
+Worker 进程退出；每个 Worker 允许的保护总量默认为 256 MiB、1024 个分配（包含正常在途写），
+字节额度可通过上述启动配置调整。超出预算时拒绝
 新分配，避免无限增长。预算在 allocator/驱逐之前预留，失败时撤回；HIXL 分配禁用聚合，避免小切片持有整块
 owner 却只计少量字节。因此成功链路的批次也必须在此预算内（计入内部 metadata）。
 

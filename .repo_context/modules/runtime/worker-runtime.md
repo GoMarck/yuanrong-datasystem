@@ -48,7 +48,11 @@
     Existing MultiPublish consumes
     the authenticated client's WRITE-complete flag, retaining local ShmUnit owners throughout publication.
     `SharedMemoryRefTable::ProtectHixlWrites/CompleteHixlWrites` holds strong owners independently of normal client
-    ref cleanup; incomplete writes remain until process exit with a 256 MiB/1024-allocation per-Worker budget.
+    ref cleanup; incomplete writes remain until process exit with a per-Worker budget (default 256 MiB/1024 allocations).
+    Startup flag `hixl_d2rh_protected_memory_mb` controls the byte limit; `DS_HIXL_D2RH_PROTECTED_MEMORY_MB`
+    overrides it, including dscli/JSON values. Worker service Init rejects nonpositive/overflow values and freezes
+    the effective limit in SharedMemoryRefTable before serving. Single-batch and cumulative reservations use that
+    same limit, including headers/metadata. Changes require restart; restoring the default needs no protocol change.
     HIXL allocations disable aggregation; budget is reserved before allocator/eviction and canceled on failure.
     Installing strong owners rolls back partial insertions on allocation errors before committing the reservation.
     This is conservative quarantine, not a DMA fence or automatic failure recovery. Read

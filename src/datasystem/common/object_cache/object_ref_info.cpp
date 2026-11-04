@@ -22,8 +22,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <limits>
 #include <new>
 
+#include "datasystem/common/flags/common_flags.h"
 #include "datasystem/common/immutable_string/immutable_string.h"
 #include "datasystem/common/inject/inject_point.h"
 #include "datasystem/common/log/log.h"
@@ -39,6 +42,7 @@
 #include "datasystem/common/util/strings_util.h"
 #include "datasystem/common/util/thread_local.h"
 #include "datasystem/common/util/timer.h"
+#include "datasystem/common/util/uri.h"
 #include "datasystem/common/util/uuid_generator.h"
 #include "datasystem/utils/status.h"
 
@@ -212,14 +216,39 @@ void SharedMemoryRefTable::AddShmUnits(TbbMemoryClientRefTable::const_accessor &
     }
 }
 
+Status SharedMemoryRefTable::InitHixlWriteBudget()
+{
+    constexpr uint64_t bytesPerMiB = 1024ULL * 1024;
+    uint64_t limitMb = FLAGS_hixl_d2rh_protected_memory_mb;
+    const char *env = std::getenv("DS_HIXL_D2RH_PROTECTED_MEMORY_MB");
+    if (env != nullptr) {
+        const std::string value(env);
+        CHECK_FAIL_RETURN_STATUS(!value.empty() && value.find_first_not_of("0123456789") == std::string::npos
+                                     && Uri::StrToUint64(env, limitMb), K_INVALID,
+                                 "DS_HIXL_D2RH_PROTECTED_MEMORY_MB must be an unsigned integer in MiB");
+    }
+    CHECK_FAIL_RETURN_STATUS(limitMb > 0 && limitMb <= std::numeric_limits<uint64_t>::max() / bytesPerMiB,
+                             K_INVALID, "HIXL D2RH protected memory budget must be positive and fit in uint64 bytes");
+    hixlWriteLimitBytes_ = limitMb * bytesPerMiB;
+    LOG(INFO) << "HIXL D2RH protected memory budget: limit_mb=" << limitMb
+              << ", limit_bytes=" << hixlWriteLimitBytes_ << ", max_allocations=" << MAX_HIXL_WRITE_ALLOCATIONS;
+    return Status::OK();
+}
+
 Status SharedMemoryRefTable::ReserveHixlWriteBudget(uint64_t bytes, size_t count)
 {
     std::lock_guard<std::mutex> lock(hixlWriteMutex_);
-    CHECK_FAIL_RETURN_STATUS(bytes <= MAX_HIXL_WRITE_BYTES && count <= MAX_HIXL_WRITE_ALLOCATIONS, K_OUT_OF_MEMORY,
-                             "HIXL write batch exceeds the protected memory budget");
-    CHECK_FAIL_RETURN_STATUS(hixlWriteBytes_ <= MAX_HIXL_WRITE_BYTES - bytes
+    CHECK_FAIL_RETURN_STATUS(bytes <= hixlWriteLimitBytes_ && count <= MAX_HIXL_WRITE_ALLOCATIONS, K_OUT_OF_MEMORY,
+                             FormatString("HIXL write batch exceeds the protected memory budget: requested_bytes=%llu, "
+                                          "limit_bytes=%llu, requested_allocations=%zu, max_allocations=%zu",
+                                          bytes, hixlWriteLimitBytes_, count, MAX_HIXL_WRITE_ALLOCATIONS));
+    CHECK_FAIL_RETURN_STATUS(hixlWriteBytes_ <= hixlWriteLimitBytes_ - bytes
                                  && hixlWriteAllocations_ <= MAX_HIXL_WRITE_ALLOCATIONS - count, K_OUT_OF_MEMORY,
-                             "HIXL pending writes exhausted their memory budget");
+                             FormatString("HIXL pending writes exhausted their memory budget: requested_bytes=%llu, "
+                                          "pending_bytes=%llu, limit_bytes=%llu, requested_allocations=%zu, "
+                                          "pending_allocations=%zu, max_allocations=%zu",
+                                          bytes, hixlWriteBytes_, hixlWriteLimitBytes_, count,
+                                          hixlWriteAllocations_, MAX_HIXL_WRITE_ALLOCATIONS));
     hixlWriteBytes_ += bytes;
     hixlWriteAllocations_ += count;
     return Status::OK();

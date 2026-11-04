@@ -759,6 +759,10 @@
         "value": "false",
         "description": "Enable synchronous routed HIXL D2RH writes. Reuses RH2D engines across remote_h2d_device_ids, including multi-device workers. Requires an HIXL build, HCCS and a nonzero remote_h2d_hccs_buffer_pool. Default false."
     },
+    "hixl_d2rh_protected_memory_mb": {
+        "value": "256",
+        "description": "Per-Worker protected D2RH memory budget in MiB, shared by all in-flight writes and limiting each batch including headers and metadata. Positive integer; default 256. DS_HIXL_D2RH_PROTECTED_MEMORY_MB overrides this startup value. Allocation-count limit remains 1024."
+    },
     "remote_h2d_device_ids": {
         "value": "",
         "description": "The NPU device ids to be used for Remote H2D purposes given as a list of comma seperated values, default is none. Assigning values enables RemoteH2D."
