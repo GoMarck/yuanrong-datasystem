@@ -36,6 +36,9 @@ add_definitions(-DBUILD_COMMIT="${BUILD_COMMIT}")
 # any third-party dev packages; only the pre-installed datasystem SDK (for
 # libdatasystem.so + datasystem headers) is required.
 # ---------------------------------------------------------------------------
+option(KVTEST_ENABLE_MOONCAKE "Link the prebuilt Mooncake C++ SDK" OFF)
+set(MOONCAKE_OUTPUT_DIR "" CACHE PATH "Mooncake SDK export directory")
+
 option(KVTEST_USE_BRPC "Use brpc control plane + bthread workers (ON) or httplib + std::thread (OFF)" ON)
 
 # Common sources (compiled in both backends).
@@ -138,7 +141,7 @@ if(KVTEST_USE_BRPC)
         ${DATASYSTEM_SDK_DIR}/lib/libdatasystem.so
         -Wl,--whole-archive
         ${BRPC_LIBRARY}
-        ${gflags_LIBRARY}
+        $<$<NOT:$<BOOL:${KVTEST_ENABLE_MOONCAKE}>>:${gflags_LIBRARY}>
         ${leveldb_LIBRARY}
         -Wl,--no-whole-archive
         protobuf::libprotobuf
@@ -189,7 +192,11 @@ endif()
 
 # Statically link libstdc++ and libgcc so the binary runs on systems with
 # older GCC (e.g. openEuler 22.04 with GCC 10 / GLIBCXX_3.4.29).
-target_link_options(kvtest PRIVATE -static-libstdc++ -static-libgcc -Wl,--exclude-libs,ALL)
+if(NOT KVTEST_ENABLE_MOONCAKE)
+    target_link_options(kvtest PRIVATE -static-libstdc++ -static-libgcc -Wl,--exclude-libs,ALL)
+else()
+    target_link_options(kvtest PRIVATE -Wl,--exclude-libs,ALL)
+endif()
 
 # ---------------------------------------------------------------------------
 # coordinator_test: standalone Coordinator deployment test program
@@ -223,3 +230,112 @@ set_target_properties(worker_test PROPERTIES
     BUILD_RPATH "${DATASYSTEM_SDK_DIR}/lib"
     INSTALL_RPATH "$ORIGIN/lib")
 target_link_options(worker_test PRIVATE -static-libstdc++ -static-libgcc -Wl,--exclude-libs,ALL)
+
+# Mooncake is compiled separately by the user. Opting in links its prebuilt
+# C++ SDK into the same kvtest executable and enables runtime backend choice.
+if(KVTEST_ENABLE_MOONCAKE)
+    target_sources(kvtest PRIVATE src/pipeline/mooncake_client.cpp src/pipeline/mooncake_pipeline.cpp)
+    if(NOT MOONCAKE_OUTPUT_DIR)
+        message(FATAL_ERROR "KVTEST_ENABLE_MOONCAKE requires MOONCAKE_OUTPUT_DIR")
+    endif()
+    set(MC_ROOT "${MOONCAKE_OUTPUT_DIR}/Mooncake")
+    set(MC_BUILD "${MC_ROOT}/build-ub")
+    set(MC_DEPS "${MOONCAKE_OUTPUT_DIR}/mooncake-bench/.deps")
+    foreach(required
+            "${MC_ROOT}/mooncake-store/include/real_client.h"
+            "${MC_BUILD}/mooncake-store/src/libmooncake_store.a"
+            "${MC_BUILD}/mooncake-transfer-engine/src/libtransfer_engine.a"
+            "${MC_BUILD}/mooncake-transfer-engine/src/common/base/libbase.a"
+            "${MC_BUILD}/mooncake-store/src/local_ssd/libmooncake_local_ssd.a"
+            "${MC_BUILD}/mooncake-store/src/cachelib_memory_allocator/libcachelib_memory_allocator.a"
+            "${MC_BUILD}/mooncake-common/src/libmooncake_common.a"
+            "${MC_BUILD}/mooncake-common/libasio.so"
+            "${MC_DEPS}/msgpack-install/include/msgpack.hpp"
+            "${DATASYSTEM_SDK_DIR}/lib/libdatasystem.so")
+        if(NOT EXISTS "${required}")
+            message(FATAL_ERROR "Mooncake KVTest build input is missing: ${required}")
+        endif()
+    endforeach()
+
+    unset(MC_GFLAGS CACHE)
+    unset(MC_GFLAGS)
+    unset(MC_GLOG CACHE)
+    unset(MC_GLOG)
+    find_library(MC_GFLAGS NAMES gflags PATHS "${MC_DEPS}/gflags-install/lib" "${MC_DEPS}/gflags-install/lib64" NO_DEFAULT_PATH)
+    find_library(MC_GLOG NAMES glog PATHS "${MC_DEPS}/glog-install/lib64" "${MC_DEPS}/glog-install/lib" NO_DEFAULT_PATH)
+    if(NOT MC_GFLAGS OR NOT MC_GLOG)
+        message(FATAL_ERROR "Mooncake output must include the built gflags and glog libraries")
+    endif()
+    foreach(lib ibverbs curl rt crypto zstd jsoncpp yaml-cpp xxhash numa)
+        string(REPLACE "-" "_" var "MC_SYSTEM_${lib}")
+        find_library(${var} NAMES ${lib})
+        if(NOT ${var})
+            message(FATAL_ERROR "Mooncake KVTest build requires system library: ${lib}")
+        endif()
+    endforeach()
+    # The prebuilt Store archive references io_uring even for in-memory workloads.
+    find_library(MC_SYSTEM_uring NAMES uring)
+    if(NOT MC_SYSTEM_uring)
+        message(FATAL_ERROR "Mooncake Store requires liburing: install liburing-devel (or liburing-dev), then rebuild KVTest")
+    endif()
+    find_package(Threads REQUIRED)
+
+    target_compile_features(kvtest PRIVATE cxx_std_20)
+    target_compile_definitions(kvtest PRIVATE KVTEST_WITH_MOONCAKE
+        ASIO_DYN_LINK ASIO_SEPARATE_COMPILATION CONFIG_ERDMA GFLAGS_IS_A_DLL=0
+        GLOG_USE_GLOG_EXPORT HAVE_OSS_ADAPTER HAVE_S3_ADAPTER
+        MOONCAKE_GLOG_HAS_IS_INITIALIZED=1 USE_HTTP USE_TCP WITH_METRICS
+        YLT_ENABLE_DL YLT_ENABLE_IBV)
+    set(MC_COMPLETION_MODE "not recorded")
+    if(EXISTS "${MC_BUILD}/CMakeCache.txt")
+        file(STRINGS "${MC_BUILD}/CMakeCache.txt" MC_COMPLETION_ENTRY
+            REGEX "^USE_EVENT_DRIVEN_COMPLETION:BOOL=")
+        if(MC_COMPLETION_ENTRY)
+            string(REPLACE "USE_EVENT_DRIVEN_COMPLETION:BOOL=" ""
+                MC_COMPLETION_MODE "${MC_COMPLETION_ENTRY}")
+            if(MC_COMPLETION_MODE STREQUAL "ON")
+                target_compile_definitions(kvtest PRIVATE USE_EVENT_DRIVEN_COMPLETION)
+            elseif(NOT MC_COMPLETION_MODE STREQUAL "OFF")
+                message(FATAL_ERROR "Invalid Mooncake event completion setting: ${MC_COMPLETION_MODE}")
+            endif()
+        endif()
+    endif()
+    message(STATUS "Mooncake event-driven completion: ${MC_COMPLETION_MODE} (prebuilt SDK)")
+    target_include_directories(kvtest PRIVATE
+        "${DATASYSTEM_SDK_DIR}/include" "${CMAKE_SOURCE_DIR}/src"
+        "${MC_ROOT}/mooncake-common/etcd"
+        "${MC_ROOT}/mooncake-common/k8s-lease"
+        "${MC_ROOT}/mooncake-common/include"
+        "${MC_ROOT}/mooncake-common/src"
+        "${MC_ROOT}/mooncake-transfer-engine/include"
+        "${MC_ROOT}/mooncake-store/include/mooncake-store/proto"
+        "${MC_ROOT}/mooncake-store/include"
+        "${MC_ROOT}/mooncake-store/include/cachelib_memory_allocator"
+        "${MC_ROOT}/mooncake-store/include/cachelib_memory_allocator/include"
+        "${MC_ROOT}/mooncake-store/include/cachelib_memory_allocator/fake_include"
+        "${MC_BUILD}/mooncake-store/include"
+        "${MC_BUILD}/_deps/yalantinglibs-src/include/ylt/thirdparty")
+    target_include_directories(kvtest SYSTEM PRIVATE
+        "${MC_BUILD}/_deps/yalantinglibs-src/include"
+        "${MC_BUILD}/_deps/yalantinglibs-src/include/ylt/standalone"
+        "${MC_DEPS}/glog-install/include"
+        "${MC_DEPS}/msgpack-install/include")
+    target_link_libraries(kvtest PRIVATE
+        "${MC_BUILD}/mooncake-store/src/libmooncake_store.a"
+        "${MC_BUILD}/mooncake-transfer-engine/src/libtransfer_engine.a"
+        "${MC_BUILD}/mooncake-transfer-engine/src/common/base/libbase.a"
+        "${MC_SYSTEM_ibverbs}" "${MC_SYSTEM_curl}" "${MC_SYSTEM_rt}"
+        "${MC_GFLAGS}"
+        "${MC_BUILD}/mooncake-store/src/local_ssd/libmooncake_local_ssd.a"
+        "${MC_BUILD}/mooncake-store/src/cachelib_memory_allocator/libcachelib_memory_allocator.a"
+        "${MC_GLOG}" "${MC_SYSTEM_curl}" "${MC_SYSTEM_crypto}"
+        "${MC_BUILD}/mooncake-common/src/libmooncake_common.a"
+        "${MC_BUILD}/mooncake-common/libasio.so"
+        Threads::Threads "${CMAKE_DL_LIBS}" "${MC_SYSTEM_ibverbs}"
+        "${MC_SYSTEM_zstd}" "${MC_SYSTEM_jsoncpp}"
+        "${MC_SYSTEM_yaml_cpp}" "${MC_SYSTEM_xxhash}" "${MC_SYSTEM_numa}")
+    target_link_libraries(kvtest PRIVATE "${MC_SYSTEM_uring}")
+    set_target_properties(kvtest PROPERTIES BUILD_RPATH
+        "${DATASYSTEM_SDK_DIR}/lib;${MC_DEPS}/gflags-install/lib;${MC_DEPS}/glog-install/lib64;${MC_BUILD}/mooncake-common;/opt/mooncake-bench/.deps/gflags-install/lib;/opt/mooncake-bench/.deps/glog-install/lib64;/opt/Mooncake/build-ub/mooncake-common")
+    message(STATUS "Mooncake C++ KVTest enabled from ${MOONCAKE_OUTPUT_DIR}")
+endif()

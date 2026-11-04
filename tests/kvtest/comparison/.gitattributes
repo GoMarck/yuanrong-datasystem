@@ -1,0 +1,3 @@
+# Preserve operator-supplied template formatting, including original whitespace.
+worker_config.reference.json -text -whitespace
+coordinator_config.reference.json -text -whitespace

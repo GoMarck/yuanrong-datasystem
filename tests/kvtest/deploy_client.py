@@ -430,6 +430,12 @@ class Deployer:
             config['random_numa_node'] = False
         if 'cuda' in node:
             config['cuda'] = dict(self.config_template.get('cuda', {}), **node['cuda'])
+        if config.get('backend') == 'mooncake':
+            mooncake = dict(config.get('mooncake', {}))
+            mooncake['pod_ip'] = node.get('pod_ip', node.get('host', ''))
+            if 'mooncake_device' in node:
+                mooncake['device_name'] = node['mooncake_device']
+            config['mooncake'] = mooncake
         if self.jemalloc_prof_conf is not None and not config.get('output_dir'):
             config['output_dir'] = f'metrics_{node["instance_id"]}_{time.strftime("%Y%m%d_%H%M%S")}'
         return config
@@ -1243,6 +1249,9 @@ class Deployer:
         a 2000-node collect can be manually batched.
         """
         transfer_kwargs = {'archive_options': archive_options} if archive_options is not None else {}
+        # Mooncake diagnostics are in KVTest output and master/store logs.
+        # Only an explicit --sdk-only request overrides the backend selection.
+        collect_datasystem_sdk = sdk_only or getattr(self, 'config_template', {}).get('backend', 'datasystem') != 'mooncake'
         collect_dir = output_dir
         if not sdk_only:
             copy_case_files(getattr(self, 'case_config_paths', []), collect_dir)
@@ -1322,14 +1331,15 @@ class Deployer:
                 time.sleep(_POLL_INTERVAL)
             if summary_ok:
                 log_info(f'  {target} -> summary OK')
-            elif not sdk_only and not has_filters(filters):
+            elif not sdk_only and not has_filters(filters) and summary_timeout > 0:
                 log_info(f'  {target} -> summary timeout, collecting available files')
 
             # Immediately collect this node's files (no global barrier).
             try:
                 if sdk_only or has_filters(filters):
-                    sources = [['output', self.remote_work_dir, ['*.csv', '*.txt', '*.log', '*.log.*']],
-                               ['sdk', sdk_log_dir, ['*.log', '*.log.*', '*.txt']]]
+                    sources = [['output', self.remote_work_dir, ['*.csv', '*.txt', '*.log', '*.log.*']]]
+                    if collect_datasystem_sdk:
+                        sources.append(['sdk', sdk_log_dir, ['*.log', '*.log.*', '*.txt']])
                     if sdk_only:
                         sources = sources[1:]
                     command = archive_command(sources, filters, **transfer_kwargs)
@@ -1343,7 +1353,8 @@ class Deployer:
                     return 'ok' if count_files else 'empty'
                 else:
                     self.collect_files(node, local_dir, **transfer_kwargs)
-                    self.collect_sdk_logs(node, local_dir, sdk_log_dir, **transfer_kwargs)
+                    if collect_datasystem_sdk:
+                        self.collect_sdk_logs(node, local_dir, sdk_log_dir, **transfer_kwargs)
                 if not os.path.isdir(local_dir):
                     return 'empty'
                 count_files = sum(len(f) for _, _, f in os.walk(local_dir))
@@ -1465,6 +1476,8 @@ def _build_deploy_config(args, transport, nodes):
     }
     if args.remote_sdk_dir:
         deploy['remote_sdk_dir'] = args.remote_sdk_dir
+    if getattr(args, 'backend', 'datasystem') == 'mooncake':
+        deploy['binary_name'] = 'kvtest'
     return deploy
 
 
@@ -1488,6 +1501,15 @@ def _build_config(mode, args):
             'fast_transport_mem_size': '512MB',
         },
     }
+    if getattr(args, 'backend', 'datasystem') == 'mooncake':
+        cfg['backend'] = 'mooncake'
+        cfg['mooncake'] = {
+            'master_address': args.mooncake_master,
+            'transport': args.mooncake_transport,
+            'device_name': args.mooncake_device,
+            'local_buffer_size': args.mooncake_local_buffer,
+        }
+        cfg.pop('connect_options')
     if mode == 'pipeline':
         cfg['cuda'] = {
             'transfer_enabled': getattr(args, 'cuda_transfer', False),
@@ -1545,7 +1567,9 @@ def _build_config(mode, args):
         cfg['target_qps'] = args.target_qps
     # Service discovery address: --jf takes priority (JF discovery),
     # then --coordinator-address (direct), otherwise default to etcd_address.
-    if args.jf:
+    if getattr(args, 'backend', 'datasystem') == 'mooncake':
+        pass
+    elif args.jf:
         cfg['jf_address'] = args.jf
         cfg['jf_service'] = args.service or 'kvcache_coordinator'
     elif args.coordinator_address:
@@ -1599,6 +1623,9 @@ def _build_config(mode, args):
         # Pipeline / Cache
         writer_pipeline = _parse_pipeline(args.pipeline)
         notify_pipeline = _parse_pipeline(args.notify_pipeline)
+        if getattr(args, 'backend', 'datasystem') == 'mooncake':
+            if any(op not in ('put', 'get_buffer') for op in writer_pipeline) or any(op != 'get_buffer' for op in notify_pipeline):
+                raise ValueError('Mooncake requires native put/get_buffer pipeline names')
         cfg['listen_port'] = 9000
         cfg['role'] = 'writer'
         cfg['pipeline'] = writer_pipeline
@@ -1635,6 +1662,13 @@ def cmd_gen_config(args):
     mode = args.mode
 
     # --- Validation ---
+    if getattr(args, 'backend', 'datasystem') == 'mooncake':
+        if mode != 'pipeline':
+            log_error('ERROR: Mooncake currently supports pipeline mode only')
+            sys.exit(1)
+        if not args.mooncake_master:
+            log_error('ERROR: --mooncake-master is required for Mooncake')
+            sys.exit(1)
     if mode == 'benchmark':
         if not args.test_mode:
             log_error('ERROR: --test-mode is required for benchmark mode')
@@ -1733,6 +1767,10 @@ def cmd_gen_config(args):
 
     deploy = _build_deploy_config(args, transport, nodes)
     cfg = _build_config(mode, args)
+    if getattr(args, 'backend', 'datasystem') == 'mooncake' and mode == 'pipeline':
+        for node in deploy['nodes']:
+            node['pipeline'] = cfg['pipeline'] if node.get('role') == 'writer' else cfg['notify_pipeline']
+            node['notify_pipeline'] = cfg['notify_pipeline']
 
     # --- Write files ---
     os.makedirs(args.output_dir, exist_ok=True)
@@ -1785,6 +1823,12 @@ def _add_gen_config_args(p):
                    help='Set cluster_name in generated config.json')
     p.add_argument('--remote-sdk-dir',
                    help='SDK lib path inside containers')
+    p.add_argument('--backend', choices=['datasystem', 'mooncake'], default='datasystem',
+                   help='C++ KV SDK backend (default: datasystem)')
+    p.add_argument('--mooncake-master', help='Mooncake master host:port')
+    p.add_argument('--mooncake-transport', choices=['tcp', 'rdma'], default='tcp')
+    p.add_argument('--mooncake-device', default='', help='Mooncake RDMA device')
+    p.add_argument('--mooncake-local-buffer', default='512MB')
     p.add_argument('-m', '--mode', default='pipeline',
                    choices=['pipeline', 'cache', 'benchmark'],
                    help='Run mode (default: pipeline)')

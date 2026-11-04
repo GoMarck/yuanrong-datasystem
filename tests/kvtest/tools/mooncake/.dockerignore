@@ -1,0 +1,16 @@
+Mooncake/
+.deps/
+__pycache__/
+*.pyc
+*.log
+*.tar
+*.tar.gz
+source/
+test_*.py
+*.md
+results/
+runtime*.json
+pipeline*.json
+dist/
+*.whl
+!wheelhouse/*.whl

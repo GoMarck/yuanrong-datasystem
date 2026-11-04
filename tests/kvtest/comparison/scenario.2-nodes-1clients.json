@@ -1,0 +1,145 @@
+{
+  "control_node": "master",
+  "nodes": [
+    "worker02",
+    "worker03"
+  ],
+  "protocols": {
+    "datasystem": "ub",
+    "mooncake": "rdma"
+  },
+  "systems": [
+    "datasystem",
+    "mooncake"
+  ],
+  "cluster_name": "predictor",
+  "mooncake_rdma": {
+    "resource": "rdma/hca",
+    "device_name": "auto"
+  },
+  "clients_per_node": 1,
+  "writer_threads": 16,
+  "notify_count": 10,
+  "notify_include_self": false,
+  "sizes": [
+    "8KB"
+  ],
+  "target_qps": {
+    "8KB": [
+      105
+    ]
+  },
+  "memory_gib": {
+    "datasystem_worker": 60,
+    "datasystem_pod": 336,
+    "mooncake_store": 320,
+    "mooncake_pod": 336,
+    "client_pod": 20,
+    "mooncake_client_buffer": 2
+  },
+  "cpus": {
+    "storage": 16,
+    "client": 16
+  },
+  "ub_resource": "unifiedbus.com/ub_net_device",
+  "device_name": "auto",
+  "components": {
+    "datasystem": {
+      "coordinator": {
+        "generated": {
+          "coordinator_address": "${coordinator_address}"
+        },
+        "config": {
+          "coordinator_raft_data_dir": "/data/raft",
+          "log_dir": "/data/logs"
+        },
+        "env": {},
+        "config_file": "comparison/coordinator_config.reference.json",
+        "preserve_config_template": true
+      },
+      "worker": {
+        "config_file": "comparison/worker_config.reference.json",
+        "generated": {
+          "coordinator_address": "${coordinator_address}"
+        },
+        "config": {
+          "host_id_env_name": "HOST_IP",
+          "log_dir": "/data/logs",
+          "unix_domain_socket_dir": "/data/uds",
+          "health_check_path": "/data/probe/healthy",
+          "ready_check_path": "/data/probe/ready"
+        },
+        "env": {},
+        "preserve_config_template": true
+      },
+      "client": {
+        "generated": {
+          "coordinator_address": "${coordinator_address}"
+        },
+        "config": {
+          "enable_local_cache": true,
+          "request_timeout_seconds": 30,
+          "service_discovery": "coordinator",
+          "host_id_env_name": "HOST_IP"
+        },
+        "env": {}
+      }
+    },
+    "mooncake": {
+      "master": {
+        "generated": {
+          "rpc_address": "${master_pod_ip}"
+        },
+        "args": {
+          "rpc_port": 50051
+        },
+        "env": {}
+      },
+      "store": {
+        "generated": {
+          "master": "${master_address}",
+          "segment_size": "${mooncake_store_bytes}",
+          "local_buffer_size": "${mooncake_client_buffer_bytes}",
+          "protocol": "${protocol}",
+          "device_name": "${device_name}"
+        },
+        "args": {},
+        "env": {
+          "MC_SLICE_SIZE": "1048576",
+          "MC_NUM_QP_PER_EP": "2",
+          "MC_NUM_CQ_PER_CTX": "1",
+          "MC_WORKERS_PER_CTX": "2",
+          "MC_MAX_WR": "256",
+          "MC_TE_METRIC": "1",
+          "MC_TE_METRIC_INTERVAL_SECONDS": "5",
+          "MC_STORE_CLIENT_METRIC": "1",
+          "MC_STORE_CLIENT_METRIC_INTERVAL": "5"
+        }
+      },
+      "client": {
+        "generated": {
+          "master_address": "${master_address}",
+          "local_buffer_size": "${mooncake_client_buffer_bytes}",
+          "protocol": "${protocol}",
+          "device_name": "${device_name}"
+        },
+        "config": {
+          "request_timeout_seconds": 30
+        },
+        "env": {
+          "MC_SLICE_SIZE": "1048576",
+          "MC_NUM_QP_PER_EP": "2",
+          "MC_NUM_CQ_PER_CTX": "1",
+          "MC_WORKERS_PER_CTX": "2",
+          "MC_MAX_WR": "256",
+          "MC_TE_METRIC": "1",
+          "MC_TE_METRIC_INTERVAL_SECONDS": "5",
+          "MC_STORE_CLIENT_METRIC": "1",
+          "MC_STORE_CLIENT_METRIC_INTERVAL": "5"
+        }
+      }
+    }
+  },
+  "client_numa_node": 0,
+  "client_cpu_limit": 32
+}

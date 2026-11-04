@@ -1,4 +1,5 @@
 #include "kv_worker.h"
+#include "mooncake_pipeline.h"
 #include "data_pattern.h"
 #include <datasystem/utils/string_view.h>
 #include "common/rate_gate.h"
@@ -12,7 +13,7 @@
 using namespace datasystem;
 
 KVWorker::KVWorker(const Config &cfg, std::shared_ptr<KVClient> client,
-                   MetricsCollector &metrics)
+                   MetricsCollector &metrics, MooncakePipeline *mooncake)
     : cfg_(cfg), client_(client), metrics_(metrics),
       currentPoolSize_(static_cast<uint64_t>(cfg.keyPoolSize)),
       currentTargetQps_(cfg.targetQps), notifyPool_(100, cfg.notifyQueueMax),
@@ -21,7 +22,7 @@ KVWorker::KVWorker(const Config &cfg, std::shared_ptr<KVClient> client,
         pipelineNeedsData_ = std::find(cfg_.pipeline.begin(), cfg_.pipeline.end(), kOpSetStringView) != cfg_.pipeline.end();
     }
     for (auto &name : cfg_.pipeline) {
-        auto fn = GetOpFunc(name);
+        auto fn = mooncake ? mooncake->GetOp(name) : GetOpFunc(name);
         if (!fn) {
             SLOG_WARN("Unknown pipeline op: " << name << ", skipping");
             continue;

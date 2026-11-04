@@ -15,6 +15,7 @@ import os
 import re
 import shlex
 import sys
+from pathlib import Path
 
 from log_collect import (add_collect_filters, archive_command, filters_from_args, has_filters,
                          pod_directory, receive_archive, archive_options_from_args,
@@ -75,7 +76,7 @@ def validate_env_assignment(value):
 def start_worker(pod, namespace, config, worker_port, remote_config,
                   enable_procmon=True,
                  numactl_opts=None, jemalloc_prof_conf=None, env=None,
-                 timeout=DEFAULT_TIMEOUT):
+                 timeout=DEFAULT_TIMEOUT, config_template_text=None):
     """Start a worker in a single pod.
 
     Delegates to deploy_common.start_service with the worker role's binding
@@ -87,6 +88,8 @@ def start_worker(pod, namespace, config, worker_port, remote_config,
         kwargs['jemalloc_prof_conf'] = jemalloc_prof_conf
     if env is not None:
         kwargs['env'] = env
+    if config_template_text is not None:
+        kwargs['config_template_text'] = config_template_text
     return start_service(pod, namespace, config, remote_config, worker_port,
                           PROCESS_NAME, enable_procmon,
                          **kwargs)
@@ -102,6 +105,8 @@ def cmd_start(args, pods):
 
     with open(args.config) as f:
         config_template = json.load(f)
+    template_text = (Path(args.config).read_bytes().decode('utf-8')
+                     if getattr(args, 'preserve_config_template', False) else None)
 
     if args.set:
         apply_config_overrides(config_template, args.set)
@@ -128,6 +133,7 @@ def cmd_start(args, pods):
                               jemalloc_prof_conf=getattr(
                                   args, 'jemalloc_prof_options', None),
                               env=env,
+                              config_template_text=template_text,
                               timeout=args.timeout)
             return ok
         finally:
@@ -449,6 +455,8 @@ def main():
                                          help='Start workers from config')
     parser_start.add_argument('-c', '--config', required=True,
                               help='Path to worker.config template')
+    parser_start.add_argument('--preserve-config-template', action='store_true',
+                              help='Preserve template text and reject parameter/metadata changes')
     parser_start.add_argument('--port', type=int, default=31501,
                               help='Worker port (default: 31501)')
     parser_start.add_argument('--remote-config', default='/tmp/worker.config',
@@ -600,6 +608,8 @@ def main():
                                           help='Install + start workers in one command')
     parser_deploy.add_argument('-c', '--config', required=True,
                                help='Path to worker.config template')
+    parser_deploy.add_argument('--preserve-config-template', action='store_true',
+                               help='Preserve template text and reject parameter/metadata changes')
     parser_deploy.add_argument('--port', type=int, default=31501,
                                help='Worker port (default: 31501)')
     parser_deploy.add_argument('--remote-config', default='/tmp/worker.config',

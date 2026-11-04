@@ -1,0 +1,70 @@
+{
+  "control_node": "master",
+  "nodes": ["worker02", "worker03"],
+  "protocols": {"datasystem": "ub", "mooncake": "rdma"},
+  "systems": ["datasystem", "mooncake"],
+  "cluster_name": "predictor",
+  "mooncake_rdma": {"resource": "rdma/hca", "device_name": "auto"},
+  "clients_per_node": 8,
+  "writer_threads": 16,
+  "notify_count": 10,
+  "inflight": 128,
+  "writes_per_client": {"8MB": 2100},
+  "sizes": ["8MB"],
+  "target_qps": {"8MB": [35]},
+  "repeats": 1,
+  "memory_gib": {
+    "datasystem_worker": 320,
+    "datasystem_pod": 336,
+    "mooncake_store": 320,
+    "mooncake_pod": 336,
+    "client_pod": 20,
+    "mooncake_client_buffer": 2
+  },
+  "cpus": {"storage": 16, "client": 16},
+  "ub_resource": "unifiedbus.com/ub_net_device",
+  "device_name": "auto",
+  "components": {
+    "datasystem": {
+      "coordinator": {
+        "generated": {"coordinator_address": "${coordinator_address}"},
+        "config": {
+          "coordinator_raft_initial_peers": "", "coordinator_raft_data_dir": "/data/raft", "log_dir": "/data/logs",
+          "brpc_max_concurrency": 256, "brpc_server_num_threads": 64,
+          "coordinator_discovery_retry_interval_ms": 5000, "coordinator_member_failure_grace_ms": 10000,
+          "coordinator_raft_election_timeout_ms": 5000, "coordinator_raft_heartbeat_interval_ms": 1000,
+          "coordinator_rpc_stub_cache_size": 4096, "coordinator_topology_max_active_clusters": 8,
+          "watch_event_dispatch_thread": 64,
+          "log_async_queue_size": 2048
+        },
+        "env": {}
+      },
+      "worker": {
+        "generated": {"coordinator_address": "${coordinator_address}", "shared_memory_size_mb": "${datasystem_worker_mb}", "enable_urma": "${protocol_is_ub}"},
+        "config": {
+          "etcd_address": "", "enable_rdma": false, "ipc_through_shared_memory": false,
+          "host_id_env_name": "HOST_IP", "log_dir": "/data/logs", "rocksdb_store_dir": "/data/rocksdb", "spill_directory": "",
+          "access_sample_rate": 1.0, "diagnostic_sample_rate": 0.01, "request_sample_rate": 0.01,
+          "arena_per_tenant": 1, "batch_get_threshold_mb": 100,
+          "brpc_max_concurrency": 256, "brpc_server_num_threads": 64,
+          "client_reconnect_wait_s": 5, "data_migrate_rate_limit_mb": 3072,
+          "enable_lossless_data_exit_mode": true, "enable_memory_rebalance": false,
+          "enable_pipeline_h2d": false, "enable_thp": true,
+          "enable_transport_fallback": false, "eviction_reserve_mem_threshold_mb": 10240,
+          "log_monitor": true, "log_monitor_exporter": "harddisk", "log_monitor_interval_ms": 5000,
+          "max_client_num": 200, "max_rpc_session_num": 10000, "memory_alignment": 64,
+          "node_timeout_s": 3, "node_dead_timeout_s": 30, "oc_thread_num": 64,
+          "rocksdb_write_mode": "none", "shared_memory_distribution_policy": "interleave_all_numa",
+          "shared_memory_populate": false, "skip_authenticate": true, "urma_register_whole_arena": true
+        },
+        "env": {}
+      },
+      "client": {"generated": {"coordinator_address": "${coordinator_address}"}, "config": {"enable_local_cache": true, "request_timeout_seconds": 30, "service_discovery": "coordinator", "host_id_env_name": "HOST_IP"}, "env": {}}
+    },
+    "mooncake": {
+      "master": {"generated": {"rpc_address": "${master_pod_ip}"}, "args": {"rpc_port": 50051}, "env": {}},
+      "store": {"generated": {"master": "${master_address}", "segment_size": "${mooncake_store_bytes}", "local_buffer_size": "${mooncake_client_buffer_bytes}", "protocol": "${protocol}", "device_name": "${device_name}"}, "args": {}, "env": {}},
+      "client": {"generated": {"master_address": "${master_address}", "local_buffer_size": "${mooncake_client_buffer_bytes}", "protocol": "${protocol}", "device_name": "${device_name}"}, "config": {"request_timeout_seconds": 30}, "env": {}}
+    }
+  }
+}

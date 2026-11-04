@@ -115,9 +115,9 @@ private:
 
 BrpcControlServer::BrpcControlServer(const Config &cfg,
                                      std::shared_ptr<datasystem::KVClient> client,
-                                     MetricsCollector &metrics, std::atomic<bool> &running)
+                                     MetricsCollector &metrics, std::atomic<bool> &running, MooncakePipeline *mooncake)
     : cfg_(cfg), running_(running), metrics_(metrics),
-      dispatcher_(cfg, std::move(client), metrics),
+      dispatcher_(cfg, std::move(client), metrics, mooncake),
       impl_(std::make_unique<Impl>(&dispatcher_, &metrics_, &running_)) {}
 
 BrpcControlServer::~BrpcControlServer() { Stop(); }

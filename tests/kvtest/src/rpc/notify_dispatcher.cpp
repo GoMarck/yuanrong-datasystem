@@ -1,4 +1,5 @@
 #include "notify_dispatcher.h"
+#include "pipeline/mooncake_pipeline.h"
 
 #include "pipeline/cache_reader.h"
 #include "pipeline/data_pattern.h"
@@ -9,7 +10,7 @@ using namespace datasystem;
 
 NotifyDispatcher::NotifyDispatcher(const Config &cfg,
                                     std::shared_ptr<datasystem::KVClient> client,
-                                    MetricsCollector &metrics)
+                                    MetricsCollector &metrics, MooncakePipeline *mooncake)
     : cfg_(cfg), client_(std::move(client)), metrics_(metrics),
       notifyPool_(cfg.NumReadThreads(), cfg.notifyQueueMax),
       // mgetPool_ reuses the same read-thread count; its queue bound caps
@@ -20,7 +21,7 @@ NotifyDispatcher::NotifyDispatcher(const Config &cfg,
         mgetRngs_[i].seed(static_cast<uint32_t>(i + 1));
     }
     for (auto &name : cfg_.notifyPipeline) {
-        auto fn = GetOpFunc(name);
+        auto fn = mooncake ? mooncake->GetOp(name) : GetOpFunc(name);
         if (!fn) {
             SLOG_WARN("Unknown notify_pipeline op: " << name << ", skipping");
             continue;

@@ -14,10 +14,12 @@
 #include <vector>
 #include <thread>
 
+class MooncakePipeline;
+
 class KVWorker {
 public:
     KVWorker(const Config &cfg, std::shared_ptr<datasystem::KVClient> client,
-             MetricsCollector &metrics);
+             MetricsCollector &metrics, MooncakePipeline *mooncake = nullptr);
     ~KVWorker();
 
     void Start();

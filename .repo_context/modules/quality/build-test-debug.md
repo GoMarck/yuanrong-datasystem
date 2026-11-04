@@ -601,3 +601,22 @@ Backed by `build.sh` and current docs:
 
 - The fastest minimal command set for local iteration on a single submodule still needs module-level documentation.
 - Service boot, smoke-test, and deployment debug flows should be split into dedicated context files later.
+
+
+## KVTest rc44 Optional Mooncake Adapter
+
+`tests/kvtest/docs/rc44-mooncake-minimal.md` documents the minimal adapter based on
+`v0.9.2.rc44` (`2ff37e2f7c5fb45f3feea7c3fb969b8f84b920d6`). The DS pipeline executor,
+metrics Record, rate gate, thread pool, and notification execution remain native.
+Mooncake callbacks are bound only during worker/dispatcher construction and owned
+until executor teardown. `--with-mooncake` enables optional CMake sources; native DS
+Bazel/CMake defaults remain available. `artifacts.kvtest_binaries` selects separate
+native DS and combined MC packages without changing the workloads.
+
+The Python comparison controller uses external wall time and native stop semantics,
+not later C++ writer-window/drain APIs. DS latency summaries use client SDK access
+logs with coverage evidence; MC exports bounded asynchronous raw call timings and
+an export-status file. Reports distinguish both timing boundaries. Source guard:
+`tests/kvtest/tests/python/test_rc44_source_guard.py`; independent MC/config tests:
+`tests/kvtest/tests/cxx/test_mooncake_pipeline.cpp`. The guide records baseline-only
+failures and local-vs-real-cluster validation limits.

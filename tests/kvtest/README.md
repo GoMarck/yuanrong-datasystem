@@ -2,6 +2,11 @@
 
 独立的 datasystem KVClient 性能测试工具，支持 Writer/Reader 角色分离、Cache 模式、Benchmark Set/Get 模式、多节点部署、K8s 自动发现。同时提供 Worker/Coordinator 独立部署测试程序（coordinator_test / worker_test）和外部服务发现模拟（mock_jf_server.py），用于验证独立集成部署与服务发现对接流程。
 
+## rc44 基线与可选 Mooncake 对比
+
+本分支以 `v0.9.2.rc44` 为基线，保留下述原生用法。Mooncake 使用独立 `put/get_buffer` 操作，默认不编入。
+新对比入口、双二进制配置、SDK access 日志口径及已知基线测试问题见 [rc44 接入与运行指南](docs/rc44-mooncake-minimal.md)。
+
 ## 编译与运行
 
 ```bash

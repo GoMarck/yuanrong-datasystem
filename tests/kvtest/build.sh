@@ -36,6 +36,8 @@ set -euo pipefail
 #                     the default brpc+bthread backend. The brpc backend reuses the
 #                     main repo's cmake/external_libs scripts to download/build
 #                     brpc/protobuf/gflags/absl into $DS_OPENSOURCE_DIR (cached).
+#   --with-mooncake   cmake only: link the optional prebuilt Mooncake SDK
+#   --mooncake-output DIR  SDK export containing Mooncake/ and mooncake-bench/.deps/
 #   -h, --help        Show this help
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -49,6 +51,8 @@ BUILD_WITH_URMA="off"
 BUILD_WITH_JEMALLOC_PROF="off"
 CLEAN=0
 USE_HTTPLIB=0
+WITH_MOONCAKE=OFF
+MOONCAKE_OUTPUT=""
 
 usage() {
     sed -n '3,/^SCRIPT_DIR=/{ /^SCRIPT_DIR=/d; s/^# \{0,1\}//; p; }' "$0"
@@ -89,10 +93,20 @@ while [[ $# -gt 0 ]]; do
             BUILD_WITH_JEMALLOC_PROF="$2"; shift 2 ;;
         -c|--clean) CLEAN=1; shift ;;
         --use-httplib) USE_HTTPLIB=1; shift ;;
+        --with-mooncake) WITH_MOONCAKE=ON; shift ;;
+        --mooncake-output) MOONCAKE_OUTPUT="$2"; shift 2 ;;
         -h|--help)  usage ;;
         *)          echo "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+if [[ "$WITH_MOONCAKE" == ON ]]; then
+    if [[ "$BUILD_SYSTEM" != cmake || ! -d "$MOONCAKE_OUTPUT/Mooncake" ]]; then
+        echo "ERROR: Mooncake requires -b cmake --mooncake-output <SDK export>"
+        exit 1
+    fi
+    MOONCAKE_OUTPUT="$(cd "$MOONCAKE_OUTPUT" && pwd)"
+fi
 
 # -M drives the Bazel --config=urma flag; it has no cmake-mode equivalent and
 # must not be silently ignored under cmake (a stale cmake build would proceed
@@ -163,6 +177,8 @@ if [[ "$BUILD_SYSTEM" == "cmake" ]]; then
         -DREPO_ROOT="$REPO_ROOT"
         -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
         -DCMAKE_SKIP_INSTALL_RPATH=ON
+        -DKVTEST_ENABLE_MOONCAKE="$WITH_MOONCAKE"
+        -DMOONCAKE_OUTPUT_DIR="$MOONCAKE_OUTPUT"
         -DKVTEST_USE_BRPC=$([[ $USE_HTTPLIB -eq 1 ]] && echo OFF || echo ON)
     )
     cmake -S "$SCRIPT_DIR" -B "$BUILD_DIR" "${cmake_opts[@]}"
@@ -171,6 +187,16 @@ if [[ "$BUILD_SYSTEM" == "cmake" ]]; then
     # Copy all .so from SDK to build/lib/ (KVCache .so + third-party .so + URMA .so)
     mkdir -p "$BUILD_DIR/lib"
     cp -fL "$SDK_DIR/lib"/*.so* "$BUILD_DIR/lib/" 2>/dev/null || true
+    if [[ "$WITH_MOONCAKE" == ON ]]; then
+        for directory in "$MOONCAKE_OUTPUT/mooncake-bench/.deps/gflags-install/lib" \
+                         "$MOONCAKE_OUTPUT/mooncake-bench/.deps/gflags-install/lib64" \
+                         "$MOONCAKE_OUTPUT/mooncake-bench/.deps/glog-install/lib" \
+                         "$MOONCAKE_OUTPUT/mooncake-bench/.deps/glog-install/lib64" \
+                         "$MOONCAKE_OUTPUT/Mooncake/build-ub/mooncake-common"
+        do
+            cp -fL "$directory"/*.so* "$BUILD_DIR/lib/" 2>/dev/null || true
+        done
+    fi
 
     echo "Build OK: $BUILD_DIR/kvtest + $BUILD_DIR/coordinator_test + $BUILD_DIR/worker_test"
     echo ""

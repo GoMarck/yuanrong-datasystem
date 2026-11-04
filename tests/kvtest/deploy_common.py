@@ -24,6 +24,7 @@ import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from ds_config_template import render_ds_config
 
 
 def normalize_jemalloc_prof_conf(conf, log_dir, instance_id, profile_name='kvtest'):
@@ -511,7 +512,7 @@ def start_service(pod, namespace, config, remote_config, port, process_name,
                   enable_procmon=True,
                   numactl_opts=None, jemalloc_prof_conf=None,
                   env=None,
-                  timeout=DEFAULT_TIMEOUT):
+                  timeout=DEFAULT_TIMEOUT, config_template_text=None):
     """Start a datasystem service in a single pod.
 
     The caller is responsible for injecting the per-pod listening address
@@ -538,11 +539,13 @@ def start_service(pod, namespace, config, remote_config, port, process_name,
     pod_name = pod['name']
     pod_ip = pod['ip']
 
+    payload = (json.dumps(config, indent=2) if config_template_text is None
+               else render_ds_config(config_template_text, config))
     with tempfile.NamedTemporaryFile(
-        mode='w', suffix='.json', prefix=f'service_{pod_name}_',
+        mode='w', encoding='utf-8', newline='', suffix='.json', prefix=f'service_{pod_name}_',
         delete=False
     ) as tf:
-        json.dump(config, tf, indent=2)
+        tf.write(payload)
         tmp_path = tf.name
 
     try:

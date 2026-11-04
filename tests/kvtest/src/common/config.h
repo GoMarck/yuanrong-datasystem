@@ -58,6 +58,12 @@ struct Config {
         std::string runtimeLibrary;
     } cuda;
     RunMode runMode = RunMode::PIPELINE;
+    std::string backend = "datasystem";
+    std::string mooncakeMasterAddress;
+    std::string mooncakePodIp;
+    std::string mooncakeTransport = "tcp";
+    std::string mooncakeDeviceName;
+    uint64_t mooncakeLocalBufferSize = 512ULL * 1024 * 1024;
     int instanceId = 0;
     int listenPort = 9000;
     std::string etcdAddress;

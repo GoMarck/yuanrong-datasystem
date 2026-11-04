@@ -1,0 +1,314 @@
+{
+    "access_sample_rate": {
+        "description": "Supplement access log sample rate [0.0-1.0]. Only applies when request is NOT sampled-in; request sampled-in always outputs access logs. Final retention can exceed this rate. Empty means not configured, auto-derive from request rate.",
+        "value": "0.01"
+    },
+    "arena_per_tenant": {
+        "description": "The arena count for each tenant. Multiple arenas can improve the performance of share memory allocation for the first time, but each arena will use one more fd.",
+        "value": "1"
+    },
+    "batch_get_threshold_mb": {
+        "description": "The payload threshold to batch get objects, the unit is mb, must be greater than 0. Setting to 0 will indicate no split.",
+        "value": "100"
+    },
+    "brpc_enable_builtin_services": {
+        "description": "The payload threshold to batch get objects, the unit is mb, must be greater than 0. Setting to 0 will indicate no split.",
+        "value": "true"
+    },
+    "brpc_max_concurrency": {
+        "description": "Max concurrent in-flight RPCs per brpc server. 0 means unlimited. Recommended: brpc_server_num_threads * 2 (e.g. 128 for 64 threads). When exceeded, brpc returns ELIMIT immediately so a slow handler cannot exhaust bthreads and cause OOM. Must not be smaller than brpc_server_num_threads. Default is 128.",
+        "value": "256"
+    },
+    "brpc_server_num_threads": {
+        "description": "Number of brpc server worker threads (bthread worker pool size). Default is 64.",
+        "value": "64"
+    },
+    "hash_ring_tokens_per_member": {
+        "description": "Set token for hashring range in [0, 4096]",
+        "value": "32"
+    },
+    "check_async_queue_empty_time_s": {
+        "description": "The worker ensures a certain period of time that the asynchronous queues for sending messages to ETCD and L2 cache remain empty before it can exit properly.",
+        "value": "1"
+    },
+    "client_dead_timeout_s": {
+        "description": "Maximum time interval for the worker to determine client death, Value range: [15, UINT64_MAX).",
+        "value": "3"
+    },
+    "client_reconnect_wait_s": {
+        "description": "Client reconnect wait seconds, default is 5.",
+        "value": "5"
+    },
+    "cluster_name": {
+        "description": "Cluster namespace used to distinguish metadata prefixes when needed.",
+        "value": "recall"
+    },
+    "coordinator_address": {
+        "description": "Address of datasystem coordinator service. Empty means coordinator mode is disabled.",
+        "value": ""
+    },
+    "data_migrate_rate_limit_mb": {
+        "description": "Data migrate rate limit for every node when scale down happen.",
+        "value": "3072"
+    },
+    "diagnostic_sample_rate": {
+        "description": "Supplement diagnostic log sample rate [0.0-1.0]. Only applies when request is NOT sampled-in for ERROR/WARNING/SLOW_LOG; request sampled-in always outputs diagnostics. FATAL/CHECK always retained. Empty means not configured, auto-derive from request rate.",
+        "value": "0.01"
+    },
+    "enable_data_replication": {
+        "description": "Experimental parameter. Allow data read from a remote worker to be cached locally as a hot replica and registered in metadata. This is only for hot-replica performance optimization; it is not a data reliability mechanism and does not guarantee data reliability or availability.",
+        "value": "true"
+    },
+    "enable_fallocate": {
+        "description": "Due to k8s's resource calculation policies,shared memory is sometimes multiple counted , which can lead to client crashes, Using fallocate to address this issue.",
+        "value": "false"
+    },
+    "enable_lossless_data_exit_mode": {
+        "description": "Migrate data to another node before the node exits if other nodes are available. If this is the only node in the cluster, exits directly and the data will be lost.",
+        "value": "true"
+    },
+    "enable_memory_rebalance": {
+        "description": "Enable master-scheduled object cache memory rebalance. When a worker exceeds the rebalance source usage threshold, the master schedules migration of old primary copies to less-loaded workers, reducing hotspot memory pressure.",
+        "value": "false"
+    },
+    "enable_perf_trace_log": {
+        "description": "Enable perf trace log output.",
+        "value": "false"
+    },
+   "enable_urma_perf": {
+        "description": "Option to turn on urma for OC worker to worker data transfer, default false.",
+        "value": "true"
+    },
+    "enable_pipeline_h2d": {
+        "description": "Enable pipeline Host-to-Device (H2D) transfer to overlap host-side data preparation with device-side copies. Only effective when enable_urma is true; otherwise ignored. Default is false.",
+        "value": "false"
+    },
+    "enable_thp": {
+        "description": "Control this process by enabling transparent huge pages, default is disabled. Enable Transparent Huge Pages (THP) can enhance performance and reduce page table overhead, but it may also lead to increased memory usage",
+        "value": "true"
+    },
+    "enable_transport_fallback": {
+        "description": "Enable the fast transport fallback to tcp transport.",
+        "value": "false"
+    },
+    "enable_ub_numa_affinity": {
+        "description": "Enable UB numa affinity optimization when URMA and whole-arena registration are both enabled.",
+        "value": "true"
+    },
+    "enable_urma": {
+        "description": "Option to turn on urma for OC worker to worker data transfer, default false.",
+        "value": "true"
+    },
+    "enable_worker_worker_batch_get": {
+        "description": "Enable worker->worker OC batch get, default false.",
+        "value": "true"
+    },
+    "eviction_reserve_mem_threshold_mb": {
+        "description": "The reserved memory (MB) is determined by min(shared_memory_size_mb*0.1, eviction_reserve_mem_threshold_mb). Eviction begins when memory drops below this threshold.The valid range is 100-102400.",
+        "value": "10240"
+    },
+    "health_check_path": {
+        "description": "File will create after the worker successfully.",
+        "value": "/export/Logs/datasystem/probe/healthy"
+    },
+    "heartbeat_interval_ms": {
+        "description": "Time interval between worker and etcd heartbeats.",
+        "value": "3000"
+    },
+    "host_id_env_name": {
+        "description": "Environment variable name used to obtain the current host_id. Worker reports this host_id to ETCD for same-node worker affinity.",
+        "value": "JDOS_HOST_IP"
+    },
+    "io_thread_nice": {
+        "description": "Nice value for selected IO threads. Valid range is [-20, 19]. 0 skips nice adjustment and preserves the thread's inherited nice value. Only non-zero values call setpriority; negative values usually require appropriate privileges.",
+        "value": "0"
+    },
+    "ipc_through_shared_memory": {
+        "description": "Using shared memory to exchange data between client and worker. If this parameter is set to true, client and worker will pass control messages through Unix Domain Sockets (UDS); otherwise, they will pass control messages through TCP/IP and exchange data through TCP/IP.",
+        "value": "true"
+    },
+    "json_log_monitor": {
+        "description": "Record JSON-Lines monitor logs kv_resource.log and kv_metrics.log.",
+        "value": "true"
+    },
+    "log_async": {
+        "description": "Flush log files with async mode.",
+        "value": "true"
+    },
+    "log_async_queue_size": {
+        "description": "Size of async logger's message queue.",
+        "value": "65536"
+    },
+    "log_compress": {
+        "description": "Compress old log files in .gz format. This parameter takes effect only when the size of the generated log is greater than max log size.",
+        "value": "false"
+    },
+    "log_dir": {
+        "description": "The directory where log files are stored.",
+        "value": "/export/Logs/kvcache/logs"
+    },
+    "log_filename": {
+        "description": "Prefix of log filename, default is program invocation short name. Use standard characters only.",
+        "value": "kvcache"
+    },
+    "log_monitor": {
+        "description": "Record performance and resource logs.",
+        "value": "true"
+    },
+    "log_monitor_exporter": {
+        "description": "Specify the type of exporter, either harddisk or backend. Only takes effect when log_monitor or json_log_monitor is true.",
+        "value": "harddisk"
+    },
+    "log_monitor_interval_ms": {
+        "description": "The sleep time between iterations of observability collector scan, default value is 10000ms(Must be greater than 0).",
+        "value": "5000"
+    },
+    "log_retention_day": {
+        "description": "This value should be greater than or equal to 0.If log_retention_day is greater than 0, any log file from your project whose last modified time is greater than log_retention_day days will be unlinked. If log_retention_day is equal 0, will not unlink log file by time.",
+        "value": "0"
+    },
+    "logbufsecs": {
+        "description": "Buffer log messages for at most this many seconds.",
+        "value": "10"
+    },
+    "logfile_mode": {
+        "description": "Log file mode/permissions.",
+        "value": "416"
+    },
+    "max_client_num": {
+        "description": "Maximum number of clients that can be connected to a worker. Value range: [1, 10000].",
+        "value": "200"
+    },
+    "max_log_file_num": {
+        "description": "Maximum number of log files to retain per severity level. And every log file size is limited by max_log_size.",
+        "value": "20"
+    },
+    "max_log_size": {
+        "description": "Maximum log file size (in MB), must be greater than 0.",
+        "value": "400"
+    },
+    "max_rpc_session_num": {
+        "description": "Maximum number of sessions that can be cached, must be within [512, 10'000]",
+        "value": "10000"
+    },
+    "memory_alignment": {
+        "description": "The memory alignment size used by jemalloc for all memory allocations (in bytes). Larger alignment can improve performance but may increase memory consumption due to fragmentation.",
+        "value": "64"
+    },
+    "memory_reclamation_time_second": {
+        "description": "The memory reclamation time after free.",
+        "value": "600"
+    },
+    "minloglevel": {
+        "description": "Messages logged at a lower level than this don't actually get logged anywhere.",
+        "value": "0"
+    },
+    "monitor_config_file": {
+        "description": "Configure the path of the worker monitoring configuration file. During the execution of the worker, it periodically monitors whether the configuration file is changed to update the flag parameter value.",
+        "value": "/export/Logs/datasystem/config/datasystem.config"
+    },
+    "node_dead_timeout_s": {
+        "description": "Maximum time interval for the etcd to determine node death.",
+        "value": "30"
+    },
+    "node_timeout_s": {
+        "description": "Maximum time interval before a node is considered lost. must be greater than or equal to 1.",
+        "value": "3"
+    },
+    "oc_shm_transfer_threshold_kb": {
+        "description": "The data threshold to transfer obj data between client and worker via shm, unit is KB",
+        "value": "256"
+    },
+    "oc_thread_num": {
+        "description": "The number of worker service for object cache, default is 32.",
+        "value": "64"
+    },
+    "pipeline_h2d_thread_num": {
+        "description": "Number of pipeline H2D worker threads. Valid range [8, 128]. Values outside the range fall back to the default (64) at runtime. Default is 64.",
+        "value": "64"
+    },
+    "ready_check_path": {
+        "description": "This file will be created after the worker service is started successfully and a connection can be established using the stub.",
+        "value": "/export/Logs/datasystem/probe/ready"
+    },
+    "rebalance_source_usage_percent": {
+        "description": "Memory usage percent at or above which a ready worker can be selected as a memory rebalance source. Valid range: 1-100.",
+        "value": "80"
+    },
+    "rebalance_task_report_grace_ms": {
+        "description": "Grace time in milliseconds for a rebalance task to report back before it is considered expired and a retry is scheduled.",
+        "value": "30000"
+    },
+    "rebalance_usage_gap_percent": {
+        "description": "Minimum memory usage percent gap between source and target worker for memory rebalance to be scheduled. Valid range: 1-100.",
+        "value": "20"
+    },
+    "request_sample_rate": {
+        "description": "Request log sample rate per trace [0.0-1.0]. 1.0=all retained; sampled-in request also forces access/diagnostic output. Empty means not configured, use worker built-in default 1.0.",
+        "value": "0.01"
+    },
+    "rocksdb_write_mode": {
+        "description": "Config the rocksdb support none, sync or async, async by default. Optional value: 'none', 'sync', 'async'. This represents the method of writing metadata to rocksdb.",
+        "value": "none"
+    },
+    "rpc_thread_num": {
+        "description": "Config rpc server thread number, must be great equal than 0.",
+        "value": "64"
+    },
+    "sc_regular_socket_num": {
+        "description": "The number of regular backend socket for stream cache, must be great equal than 0.",
+        "value": "0"
+    },
+    "shared_memory_distribution_policy": {
+        "description": "Shared memory NUMA distribution policy. Optional values: none, interleave_all_numa, interleave_affinity_numa. This option takes effect only when both enable_urma and urma_register_whole_arena are true.",
+        "value": "interleave_all_numa"
+    },
+    "shared_memory_populate": {
+        "description": "Avoiding page faults during copying improves runtime performance but may result in longer worker startup times (depending on shared_memory_size_mb).",
+        "value": "false"
+    },
+    "shared_memory_size_mb": {
+        "description": "Upper limit of the shared memory, the unit is mb, must be greater than 0.",
+        "value": "61440"
+    },
+    "shared_memory_worker_port": {
+        "description": "Port for SCMTCP connections when transferring shared memory file descriptors. A non-zero value enables IPPROTO_SCMTCP (protocol number 518) on worker nodes and clients to attempt SCMTCP when connecting.",
+        "value": "31502"
+    },
+    "skip_authenticate": {
+        "description": "Skip authentication for worker requests",
+        "value": "true"
+    },
+    "slow_log_process_slower_than": {
+        "description": "In-process processing latency threshold (microseconds) for slow-log and latencySummary. Default 2000 (2ms). Accepts a positive integer (e.g. 1000 for 1ms). 0 means disabled. When enabled, requests whose in-process phases (total minus sub-RPC time) exceed this threshold will include a latencySummary in the access log.",
+        "value": "2000"
+    },
+    "slow_log_rpc_slower_than": {
+        "description": "Cross-process RPC latency threshold (microseconds) for slow-log and latencySummary. Default 5000 (5ms). Accepts a positive integer (e.g. 2000 for 2ms). 0 means disabled. When enabled, requests whose RPC sub-phases exceed this threshold will include a latencySummary in the access log.",
+        "value": "5000"
+    },
+    "unix_domain_socket_dir": {
+        "description": "The directory to store unix domain socket file. The UDS generates temporary files in this path. Max length: 80",
+        "value": "/export/Logs/kvcache/uds"
+    },
+    "urma_max_write_size_mb": {
+        "description": "Maximum URMA write size, unit is MB. Valid range is [1, 2048].",
+        "value": "5"
+    },
+    "urma_poll_size": {
+        "description": "Number of complete record to poll at a time, 16 is the max this device can poll",
+        "value": "8"
+    },
+    "urma_register_whole_arena": {
+        "description": "Register the whole arena as segment during init, otherwise, register each object as a segment.",
+        "value": "true"
+    },
+    "v": {
+        "description": "Vlog level, a larger value indicates more detailed logs. The value is between 0-3.",
+        "value": "0"
+    },
+    "worker_address": {
+        "description": "Address of worker in 'host:port' format (e.g., \"127.0.0.1:31501\"). The value cannot be empty.",
+        "value": "127.0.0.1:31501"
+    }
+}

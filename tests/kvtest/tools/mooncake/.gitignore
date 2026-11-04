@@ -1,0 +1,10 @@
+Mooncake/
+.deps/
+__pycache__/
+kvtest_store_config.json
+kvtest_store_benchmark.json
+mooncake-kvtest-results/
+runtime-*.json
+workload-*.json
+smoke-*.json
+results/

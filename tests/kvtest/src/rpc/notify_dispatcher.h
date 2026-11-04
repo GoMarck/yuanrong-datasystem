@@ -14,6 +14,7 @@
 #include <vector>
 
 class CacheReader;
+class MooncakePipeline;
 
 // NotifyDispatcher owns the former httplib POST /notify handling logic:
 // dispatching warmup_done / evict / normal notify_pipeline actions to the
@@ -35,7 +36,7 @@ class CacheReader;
 class NotifyDispatcher {
 public:
     NotifyDispatcher(const Config &cfg, std::shared_ptr<datasystem::KVClient> client,
-                     MetricsCollector &metrics);
+                     MetricsCollector &metrics, MooncakePipeline *mooncake = nullptr);
 
     void SetCacheReader(CacheReader *reader) { cacheReader_ = reader; }
 

@@ -1,0 +1,11 @@
+# Build/runtime dependencies from Mooncake 89520212377af7114bbba4177021ba092d78ed11
+# pyproject.toml. Keep aligned when changing the pinned source revision.
+# Download with dependencies; do not use --no-deps.
+scikit-build-core>=1.0
+pybind11>=2.13
+numpy>=1.24
+setuptools>=61
+pip>=23
+aiohttp
+msgpack
+requests

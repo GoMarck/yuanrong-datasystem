@@ -1,0 +1,109 @@
+{
+    "brpc_max_concurrency": {
+        "description": "Max concurrent in-flight RPCs per brpc server. 0 means unlimited. Recommended: brpc_server_num_threads * 2 (e.g. 128 for 64 threads). When exceeded, brpc returns ELIMIT immediately so a slow handler cannot exhaust bthreads and cause OOM. Must not be smaller than brpc_server_num_threads. Default is 128.",
+        "value": "256"
+    },
+    "brpc_server_num_threads": {
+        "description": "Number of brpc server worker threads (bthread worker pool size). Default is 64.",
+        "value": "64"
+    },
+    "hash_ring_tokens_per_member": {
+        "description": "Set token for hashring range in [0, 4096]",
+        "value": "32"
+    },
+    "coordinator_address": {
+        "description": "Address of coordinator in 'host:port' format (e.g., \"127.0.0.1:31511\"). The value cannot be empty.",
+        "value": "127.0.0.1:31511"
+    },
+    "coordinator_discovery_retry_interval_ms": {
+        "description": "Minimum interval between Coordinator candidate Discovery retries in milliseconds. Must be greater than 0.",
+        "value": "5000"
+    },
+    "coordinator_member_failure_grace_ms": {
+        "description": "Continuous voting-member failure grace period in milliseconds. Must be greater than the internal health-check interval.",
+        "value": "10000"
+    },
+    "coordinator_raft_data_dir": {
+        "description": "Exclusive local data root for Coordinator Raft term, vote, log, and snapshot state.",
+        "value": "/export/datasystem/coordinator_raft"
+    },
+    "coordinator_raft_election_timeout_ms": {
+        "description": "Coordinator Raft election timeout in milliseconds. Must be an integer multiple of coordinator_raft_heartbeat_interval_ms with a ratio in [5, 10].",
+        "value": "5000"
+    },
+    "coordinator_raft_heartbeat_interval_ms": {
+        "description": "Coordinator Raft heartbeat interval in milliseconds. Must be in [10, 10000].",
+        "value": "1000"
+    },
+    "coordinator_raft_initial_peers": {
+        "description": "Comma-separated Coordinator Raft initial peers in 'host:port' format. Empty means single-node no-election mode. Configure multiple peers to enable static-peers Raft election.",
+        "value": ""
+    },
+    "coordinator_rpc_stub_cache_size": {
+        "description": "Maximum coordinator RPC stub cache size.",
+        "value": "4096"
+    },
+    "coordinator_topology_max_active_clusters": {
+        "description": "Maximum active topology clusters in [2, 32]. Restart Coordinator after changing it.",
+        "value": "8"
+    },
+    "log_async": {
+        "description": "Enable asynchronous writing to log files.",
+        "value": "true"
+    },
+    "log_async_queue_size": {
+        "description": "Size of async logger's message queue.",
+        "value": "2048"
+    },
+    "log_compress": {
+        "description": "Compress old log files in .gz format when generated log size exceeds max_log_size.",
+        "value": "false"
+    },
+    "log_dir": {
+        "description": "If specified, logfiles are written into this directory instead of the default logging directory.",
+        "value": "/export/Logs/kvcache/logs"
+    },
+    "log_filename": {
+        "description": "Prefix of log filename, default is program invocation short name. Use standard characters only.",
+        "value": "kvcache_coordinator"
+    },
+    "log_retention_day": {
+        "description": "If greater than 0, log files older than this many days will be removed. If equal 0, log files are not removed by time.",
+        "value": "0"
+    },
+    "logbufsecs": {
+        "description": "Buffer log messages for at most this many seconds.",
+        "value": "10"
+    },
+    "logfile_mode": {
+        "description": "Log file mode/permissions.",
+        "value": "416"
+    },
+    "max_log_file_num": {
+        "description": "Maximum number of log files to retain per severity level. If set to 0, the log num is not limited.",
+        "value": "20"
+    },
+    "max_log_size": {
+        "description": "Approx. maximum log file size (in MB). A value of 0 will be silently overridden to 1.",
+        "value": "400"
+    },
+    "minloglevel": {
+        "description": "Messages below this level are not logged.",
+        "value": "0"
+    },
+    "node_timeout_s": { 
+        "value": "3", 
+        "description": "Maximum time interval before a node is considered lost. must be greater than or equal to 1." },
+    "node_dead_timeout_s": {
+        "description": "Maximum time interval for the etcd to determine node death.",
+        "value": "30"
+    },
+    "rpc_thread_num": {
+        "description": "Config rpc server thread number, must be great equal than 0.",
+        "value": "64"
+    },
+    "watch_event_dispatch_thread": {
+        "description": "Number of coordinator watch event dispatch threads.",
+        "value": "64"
+    }
+}

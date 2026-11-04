@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import deploy_pods
@@ -66,7 +67,7 @@ def _reject_dscli_jemalloc_profile(args):
 
 def start_coordinator(pod, namespace, config, coordinator_port, remote_config,
                       enable_procmon=True,
-                      timeout=DEFAULT_TIMEOUT):
+                      timeout=DEFAULT_TIMEOUT, config_template_text=None):
     """Start a coordinator in a single pod.
 
     Delegates to deploy_common.start_service with the coordinator role's
@@ -75,9 +76,10 @@ def start_coordinator(pod, namespace, config, coordinator_port, remote_config,
     ``coordinator_raft_initial_peers`` list -- see ``_inject_raft_initial_peers``)
     into ``config`` already (see cmd_start / cmd_deploy).
     """
+    kwargs = {} if config_template_text is None else {'config_template_text': config_template_text}
     return start_service(pod, namespace, config, remote_config,
                          coordinator_port, PROCESS_NAME, enable_procmon,
-                         numactl_opts=None, timeout=timeout)
+                         numactl_opts=None, timeout=timeout, **kwargs)
 
 
 def _inject_raft_initial_peers(cfg, pods, port):
@@ -93,7 +95,7 @@ def _inject_raft_initial_peers(cfg, pods, port):
     """
     if len(pods) >= 2:
         peers = ','.join(f'{p["ip"]}:{port}' for p in pods)
-        cfg['coordinator_raft_initial_peers'] = {'value': peers}
+        cfg.setdefault('coordinator_raft_initial_peers', {})['value'] = peers
 
 
 def cmd_start(args, pods):
@@ -110,6 +112,8 @@ def cmd_start(args, pods):
 
     with open(args.config) as f:
         config_template = json.load(f)
+    template_text = (Path(args.config).read_bytes().decode('utf-8')
+                     if getattr(args, 'preserve_config_template', False) else None)
 
     if args.set:
         apply_config_overrides(config_template, args.set)
@@ -128,6 +132,7 @@ def cmd_start(args, pods):
         return start_coordinator(pod, args.namespace, cfg, args.port,
                                  args.remote_config,
                                  enable_procmon=args.enable_procmon,
+                                 config_template_text=template_text,
                                  timeout=args.timeout)
 
     return do_for_all_pods(pods, do_op, 'Starting coordinators')
@@ -493,6 +498,8 @@ def main():
                                          help='Start coordinators from config')
     parser_start.add_argument('-c', '--config', required=True,
                               help='Path to coordinator.config template')
+    parser_start.add_argument('--preserve-config-template', action='store_true',
+                              help='Preserve template text and reject parameter/metadata changes')
     parser_start.add_argument('--port', type=int, default=31511,
                               help='Coordinator port (default: 31511)')
     parser_start.add_argument('--remote-config', default='/tmp/coordinator.config',
@@ -500,11 +507,11 @@ def main():
     parser_start.add_argument('--set', '-s', action='append', default=[],
                               help='Add/override config values (format: key=value). '
                                    'Common coordinator keys: log_dir, log_filename, '
-                                   'minloglevel, rpc_thread_num, '
+                                   'minloglevel, brpc_server_num_threads, '
                                    'watch_event_dispatch_thread, '
                                    'coordinator_rpc_stub_cache_size, '
                                    'max_log_size, max_log_file_num, '
-                                   'log_retention_day. Example: --set rpc_thread_num=128')
+                                   'log_retention_day. Example: --set brpc_server_num_threads=128')
     parser_start.add_argument('--enable-procmon', action='store_true', default=False,
                               dest='enable_procmon',
                               help='Start procmon.py for coordinator monitoring (default: disabled)')
@@ -640,6 +647,8 @@ def main():
              'with Raft peers (multi-instance)')
     parser_deploy.add_argument('-c', '--config', required=True,
                                help='Path to coordinator.config template')
+    parser_deploy.add_argument('--preserve-config-template', action='store_true',
+                               help='Preserve template text and reject parameter/metadata changes')
     parser_deploy.add_argument('--port', type=int, default=31511,
                                help='Coordinator port (default: 31511)')
     parser_deploy.add_argument('--remote-config', default='/tmp/coordinator.config',
@@ -647,7 +656,7 @@ def main():
     parser_deploy.add_argument('--set', '-s', action='append', default=[],
                                help='Add/override config values (format: key=value). '
                                     'Common coordinator keys: log_dir, log_filename, '
-                                    'minloglevel, rpc_thread_num, '
+                                    'minloglevel, brpc_server_num_threads, '
                                     'watch_event_dispatch_thread, '
                                     'coordinator_rpc_stub_cache_size, '
                                     'max_log_size, max_log_file_num, '

@@ -84,6 +84,17 @@ endif()
 target_link_libraries(kvtest_tests PRIVATE pthread ${CMAKE_DL_LIBS})
 
 enable_testing()
+add_test(NAME native_kvtest COMMAND kvtest_tests)
+add_executable(kvtest_mooncake_pipeline_tests test_mooncake_pipeline.cpp
+    ${KVTEST_ROOT}/src/common/config.cpp
+    ${KVTEST_ROOT}/src/pipeline/mooncake_pipeline.cpp
+    ${KVTEST_ROOT}/src/pipeline/pipeline.cpp
+    ${KVTEST_ROOT}/src/pipeline/cuda_workload.cpp
+    ${KVTEST_ROOT}/src/metrics/metrics.cpp)
+target_include_directories(kvtest_mooncake_pipeline_tests PRIVATE stubs . ${KVTEST_ROOT}/src ${KVTEST_ROOT}/../../include)
+target_link_libraries(kvtest_mooncake_pipeline_tests PRIVATE pthread ${CMAKE_DL_LIBS})
+add_test(NAME mooncake_pipeline COMMAND kvtest_mooncake_pipeline_tests)
+set_tests_properties(mooncake_pipeline PROPERTIES TIMEOUT 8)
 add_library(kvtest_fake_cudart SHARED fake_cudart.cpp)
 target_link_libraries(kvtest_fake_cudart PRIVATE pthread)
 add_executable(kvtest_cuda_tests test_cuda_workload.cpp

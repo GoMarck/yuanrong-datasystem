@@ -155,6 +155,19 @@ bool LoadConfig(const std::string &path, Config &cfg, const std::string &outputD
     try {
         json j = json::parse(f);
 
+        cfg.backend = j.value("backend", cfg.backend);
+        if (cfg.backend == "mooncake" && j.contains("mooncake")) {
+            const auto &mc = j.at("mooncake");
+            cfg.mooncakeMasterAddress = mc.value("master_address", cfg.mooncakeMasterAddress);
+            cfg.mooncakePodIp = mc.value("pod_ip", cfg.mooncakePodIp);
+            cfg.mooncakeTransport = mc.value("transport", cfg.mooncakeTransport);
+            cfg.mooncakeDeviceName = mc.value("device_name", cfg.mooncakeDeviceName);
+            if (mc.contains("local_buffer_size")) {
+                const auto &size = mc.at("local_buffer_size");
+                cfg.mooncakeLocalBufferSize = size.is_string() ? ParseSize(size.get<std::string>()) : size.get<uint64_t>();
+            }
+        }
+
         if (j.contains("instance_id"))
             cfg.instanceId = j["instance_id"];
         if (j.contains("listen_port"))
@@ -451,6 +464,7 @@ bool LoadConfig(const std::string &path, Config &cfg, const std::string &outputD
         // Generate output directory: metrics_{ip}_{timestamp}
         if (cfg.outputDir.empty()) {
             std::string ip = cfg.etcdAddress.empty() ? cfg.coordinatorAddress : cfg.etcdAddress;
+            if (cfg.backend == "mooncake") ip = cfg.mooncakePodIp;
             auto colonPos = ip.find(':');
             if (colonPos != std::string::npos)
                 ip = ip.substr(0, colonPos);
@@ -504,7 +518,37 @@ bool LoadConfig(const std::string &path, Config &cfg, const std::string &outputD
         return false;
     }
 
-    if (cfg.etcdAddress.empty() && cfg.coordinatorAddress.empty() && cfg.jfAddress.empty()) {
+    if (cfg.backend != "datasystem" && cfg.backend != "mooncake") {
+        SLOG_ERROR("backend must be datasystem or mooncake");
+        return false;
+    }
+    if (cfg.backend == "mooncake") {
+        if (cfg.runMode != RunMode::PIPELINE || cfg.keyPoolSize != 0 || cfg.testMode != TestMode::NONE
+            || cfg.cuda.transferEnabled || cfg.batchKeysCount != 1 || cfg.mgetSizeDist.enabled) {
+            SLOG_ERROR("Mooncake adapter supports single-key CPU pipeline mode only");
+            return false;
+        }
+        if (cfg.mooncakeMasterAddress.empty() || cfg.mooncakePodIp.empty() || cfg.mooncakeLocalBufferSize == 0
+            || (cfg.mooncakeTransport != "tcp" && cfg.mooncakeTransport != "rdma")
+            || (cfg.mooncakeTransport == "rdma"
+                && (cfg.mooncakeDeviceName.empty() || cfg.mooncakeDeviceName == "auto"))) {
+            SLOG_ERROR("Mooncake requires master_address, pod_ip, positive local_buffer_size and a resolved transport/device");
+            return false;
+        }
+        for (const auto &op : cfg.pipeline) {
+            if (op != "put" && op != "get_buffer") {
+                SLOG_ERROR("Unknown Mooncake pipeline operation: " << op);
+                return false;
+            }
+        }
+        for (const auto &op : cfg.notifyPipeline) {
+            if (op != "get_buffer") {
+                SLOG_ERROR("Unknown Mooncake notify operation: " << op);
+                return false;
+            }
+        }
+    }
+    if (cfg.backend == "datasystem" && cfg.etcdAddress.empty() && cfg.coordinatorAddress.empty() && cfg.jfAddress.empty()) {
         SLOG_ERROR("either etcd_address or coordinator_address or jf_address is required");
         return false;
     }

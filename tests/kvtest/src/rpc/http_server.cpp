@@ -7,9 +7,9 @@
 using json = nlohmann::json;
 
 HttpServer::HttpServer(const Config &cfg, std::shared_ptr<datasystem::KVClient> client,
-                       MetricsCollector &metrics, std::atomic<bool> &running)
+                       MetricsCollector &metrics, std::atomic<bool> &running, MooncakePipeline *mooncake)
     : cfg_(cfg), running_(running), metrics_(metrics),
-      dispatcher_(cfg, std::move(client), metrics),
+      dispatcher_(cfg, std::move(client), metrics, mooncake),
       server_(std::make_unique<httplib::Server>()) {}
 
 HttpServer::~HttpServer() { Stop(); }

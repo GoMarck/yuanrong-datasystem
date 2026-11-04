@@ -51,6 +51,7 @@ public:
     void Record(const std::string &op, double latencyMs, uint32_t code, uint64_t bytes = 0);
     void RecordVerifyFail();
     void EnableCudaMetrics() { cudaMetricsEnabled_ = true; }
+    void EnableMooncakeMetrics() { GetOrCreateOp("put"); GetOrCreateOp("get_buffer"); }
 
     std::atomic<uint64_t> &VerifyFailCounter() { return verifyFailCount_; }
 

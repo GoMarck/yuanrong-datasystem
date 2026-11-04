@@ -18,7 +18,7 @@ class KVWorker;
 class HttpServer {
 public:
     HttpServer(const Config &cfg, std::shared_ptr<datasystem::KVClient> client,
-               MetricsCollector &metrics, std::atomic<bool> &running);
+               MetricsCollector &metrics, std::atomic<bool> &running, MooncakePipeline *mooncake = nullptr);
     ~HttpServer();
 
     void Start();

@@ -7,6 +7,7 @@
 #include "metrics/metrics.h"
 #include "pipeline/pipeline.h"
 #include "pipeline/kv_worker.h"
+#include "pipeline/mooncake_pipeline.h"
 #include "pipeline/cache_reader.h"
 #include "pipeline/stop.h"
 #include "benchmark/benchmark_runner.h"
@@ -442,61 +443,77 @@ static int RunServerMode(const Config &cfg)
     const auto closeCuda = [](void *) { kvtest::CloseCudaWorkload(); };
     std::unique_ptr<void, decltype(closeCuda)> cudaCleanup(reinterpret_cast<void *>(1), closeCuda);
 
-    SLOG_INFO("Initializing ServiceDiscovery...");
-
+    std::unique_ptr<MooncakePipeline> mooncake;
     std::shared_ptr<IServiceDiscovery> sd;
-    if (!cfg.jfAddress.empty()) {
-        auto jfClient = std::make_shared<kvtest::JfClient>(cfg.jfAddress);
-        auto discovery = std::make_shared<kvtest::UserCoordinatorDiscovery>(jfClient, cfg.jfService);
-        CoordinatorServiceDiscoveryOptions cdOpts;
-        cdOpts.coordinatorDiscovery = discovery;
-        cdOpts.clusterName = cfg.clusterName;
-        cdOpts.hostIdEnvName = cfg.hostIdEnvName;
-        sd = std::make_shared<CoordinatorServiceDiscovery>(cdOpts);
-    } else if (!cfg.coordinatorAddress.empty()) {
-        CoordinatorServiceDiscoveryOptions cdOpts;
-        cdOpts.serviceAddress = cfg.coordinatorAddress;
-        cdOpts.clusterName = cfg.clusterName;
-        cdOpts.hostIdEnvName = cfg.hostIdEnvName;
-        sd = std::make_shared<CoordinatorServiceDiscovery>(cdOpts);
-    } else {
-        ServiceDiscoveryOptions sdOpts;
-        sdOpts.etcdAddress = cfg.etcdAddress;
-        sdOpts.clusterName = cfg.clusterName;
-        sdOpts.hostIdEnvName = cfg.hostIdEnvName;
-        sd = std::make_shared<ServiceDiscovery>(sdOpts);
-    }
-    Status rc = sd->Init();
-    if (!rc.IsOk()) {
-        SLOG_ERROR("ServiceDiscovery init failed: " << rc.GetMsg());
-        return 1;
-    }
-    SLOG_INFO("ServiceDiscovery initialized: etcd=" << cfg.etcdAddress << ", coordinator=" << cfg.coordinatorAddress
-                                                    << ", jf=" << cfg.jfAddress);
-
     ConnectOptions connOpts;
-    connOpts.serviceDiscovery = sd;
-    connOpts.connectTimeoutMs = cfg.connectTimeoutMs;
-    connOpts.requestTimeoutMs = cfg.requestTimeoutMs;
-    connOpts.enableCrossNodeConnection = cfg.enableCrossNodeConnection;
-    connOpts.enableLocalCache = cfg.enableLocalCache;
-    connOpts.dataPlacementPolicy = cfg.dataPlacementPolicy;
-    connOpts.fastTransportMemSize = cfg.fastTransportMemSize;
-
-    auto client = std::make_shared<KVClient>(connOpts);
-    rc = InitKvtestClient(cfg, *client);
-    if (!rc.IsOk()) {
-        SLOG_ERROR("KVClient init failed: " << rc.GetMsg());
+    std::shared_ptr<KVClient> client;
+    Status rc;
+    if (cfg.backend == "mooncake") {
+#ifdef KVTEST_WITH_MOONCAKE
+        try {
+            mooncake = CreateMooncakePipeline(cfg, CreateMooncakeClient(cfg));
+        } catch (const std::exception &error) {
+            SLOG_ERROR("Mooncake initialization failed: " << error.what());
+            return 1;
+        }
+#else
+        SLOG_ERROR("This binary was built without Mooncake support");
         return 1;
+#endif
+    } else {
+        SLOG_INFO("Initializing ServiceDiscovery...");
+        if (!cfg.jfAddress.empty()) {
+            auto jfClient = std::make_shared<kvtest::JfClient>(cfg.jfAddress);
+            auto discovery = std::make_shared<kvtest::UserCoordinatorDiscovery>(jfClient, cfg.jfService);
+            CoordinatorServiceDiscoveryOptions cdOpts;
+            cdOpts.coordinatorDiscovery = discovery;
+            cdOpts.clusterName = cfg.clusterName;
+            cdOpts.hostIdEnvName = cfg.hostIdEnvName;
+            sd = std::make_shared<CoordinatorServiceDiscovery>(cdOpts);
+        } else if (!cfg.coordinatorAddress.empty()) {
+            CoordinatorServiceDiscoveryOptions cdOpts;
+            cdOpts.serviceAddress = cfg.coordinatorAddress;
+            cdOpts.clusterName = cfg.clusterName;
+            cdOpts.hostIdEnvName = cfg.hostIdEnvName;
+            sd = std::make_shared<CoordinatorServiceDiscovery>(cdOpts);
+        } else {
+            ServiceDiscoveryOptions sdOpts;
+            sdOpts.etcdAddress = cfg.etcdAddress;
+            sdOpts.clusterName = cfg.clusterName;
+            sdOpts.hostIdEnvName = cfg.hostIdEnvName;
+            sd = std::make_shared<ServiceDiscovery>(sdOpts);
+        }
+        rc = sd->Init();
+        if (!rc.IsOk()) {
+            SLOG_ERROR("ServiceDiscovery init failed: " << rc.GetMsg());
+            return 1;
+        }
+        SLOG_INFO("ServiceDiscovery initialized: etcd=" << cfg.etcdAddress << ", coordinator=" << cfg.coordinatorAddress
+                                                        << ", jf=" << cfg.jfAddress);
+
+        connOpts.serviceDiscovery = sd;
+        connOpts.connectTimeoutMs = cfg.connectTimeoutMs;
+        connOpts.requestTimeoutMs = cfg.requestTimeoutMs;
+        connOpts.enableCrossNodeConnection = cfg.enableCrossNodeConnection;
+        connOpts.enableLocalCache = cfg.enableLocalCache;
+        connOpts.dataPlacementPolicy = cfg.dataPlacementPolicy;
+        connOpts.fastTransportMemSize = cfg.fastTransportMemSize;
+
+        client = std::make_shared<KVClient>(connOpts);
+        rc = InitKvtestClient(cfg, *client);
+        if (!rc.IsOk()) {
+            SLOG_ERROR("KVClient init failed: " << rc.GetMsg());
+            return 1;
+        }
+        SLOG_INFO("KVClient initialized");
+        SetKvtestClientInitialized(true);
     }
-    SLOG_INFO("KVClient initialized");
-    SetKvtestClientInitialized(true);
 
     std::signal(SIGTERM, SignalHandler);
     std::signal(SIGINT, SignalHandler);
     std::signal(SIGPIPE, SIG_IGN);
     if (!WaitAfterClientInit(cfg)) return 0;
-    rc = WarmupCudaPipeline(cfg, client);
+    if (!mooncake) rc = WarmupCudaPipeline(cfg, client);
     if (!rc.IsOk()) {
         SLOG_ERROR("CUDA pipeline warmup failed: " << rc.ToString());
         return 1;
@@ -505,13 +522,14 @@ static int RunServerMode(const Config &cfg)
 
     bool cacheMode = cfg.keyPoolSize > 0;
     MetricsCollector metrics(cfg.instanceId, cfg.metricsIntervalMs, cfg.outputDir, cacheMode, cfg.metricsFile);
+    if (mooncake) metrics.EnableMooncakeMetrics();
     if (cfg.cuda.transferEnabled) metrics.EnableCudaMetrics();
     if (!cfg.targetQpsStages.empty()) {
         metrics.SetQpsStages(cfg.targetQpsStages, cfg.stageDurationSeconds);
     }
     metrics.Start();
 
-    ControlServer server(cfg, client, metrics, gRunning);
+    ControlServer server(cfg, client, metrics, gRunning, mooncake.get());
 
     // Cache mode: create CacheReader before the server starts accepting connections
     std::unique_ptr<CacheReader> cacheReader;
@@ -528,7 +546,7 @@ static int RunServerMode(const Config &cfg)
 
     std::unique_ptr<KVWorker> worker;
     if (cfg.role == "writer") {
-        worker = std::make_unique<KVWorker>(cfg, client, metrics);
+        worker = std::make_unique<KVWorker>(cfg, client, metrics, mooncake.get());
         worker->Start();
         server.SetWorker(worker.get());
     } else {
