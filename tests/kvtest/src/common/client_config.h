@@ -19,6 +19,7 @@
 #pragma once
 
 #include "common/config.h"
+#include "common/simple_log.h"
 
 #include <datasystem/kv_client.h>
 
@@ -34,10 +35,22 @@ inline datasystem::Status InitKvtestClient(const Config &cfg, datasystem::KVClie
     if (cfg.urmaSendLaneCountPerPeer.has_value()) {
         builder.UrmaSendLaneCountPerPeer(cfg.urmaSendLaneCountPerPeer.value());
     }
+    if (cfg.fullAccessLog) {
+        builder.LogMonitorEnable(true).MonitorConfigPath("");
+    }
     datasystem::KVClientConfig clientConfig;
     auto status = builder.Build(clientConfig);
     if (!status.IsOk()) {
         return status;
     }
-    return client.Init(clientConfig);
+    status = client.Init(clientConfig);
+    if (!status.IsOk() || !cfg.fullAccessLog) {
+        return status;
+    }
+    status = client.UpdateConfig(R"({"request_sample_rate":"1.0","access_sample_rate":"1.0",)"
+                                 R"("diagnostic_sample_rate":"1.0"})");
+    if (status.IsOk()) {
+        SLOG_INFO("DS client log sampling disabled: request_sample_rate=1 access_sample_rate=1 diagnostic_sample_rate=1");
+    }
+    return status;
 }

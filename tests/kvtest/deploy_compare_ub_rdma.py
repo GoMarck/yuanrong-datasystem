@@ -610,7 +610,8 @@ def configure_clients(run, scenario, plan, namespace, prefix, backend, case_dir,
     config['env'] = dict(config.get('env', {}), **env)
     write_json(case_dir / 'execution.json', {'duration_seconds': duration, 'timing': 'rc44 controller wall time after deploy'})
     if backend == 'datasystem':
-        config['connect_options']['request_timeout_ms'] = 30000
+        config['connect_options']['request_timeout_ms'] = 20
+        config.setdefault('client_config', {})['full_access_log'] = True
         client = scenario['components'][backend]['client'].get('config', {})
         config['host_id_env_name'] = client.get('host_id_env_name', 'HOST_IP')
         for key in ('enable_local_cache', 'enable_cross_node_connection', 'connect_timeout_ms', 'request_timeout_ms',
@@ -762,6 +763,8 @@ def format_api_latency_table(stats, backend):
               '     P90     P95     P99    P99.9   P99.99      Max'
               '  >2000us  >5000us  >6000us  >7000us  >8000us  >9000us  >10000us  >20000us')
     source = 'SDK access-log' if backend == 'datasystem' else 'KVTest SDK-call'
+    if backend == 'datasystem':
+        header = header.replace('Total', 'Samples')
     rows = [f'{backend} {source} latency (microseconds, all clients)', header,
             '-' * len(header)]
     for op in api_operations(stats):

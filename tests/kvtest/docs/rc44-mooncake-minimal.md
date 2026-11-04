@@ -21,6 +21,12 @@ rc44 原有低 QPS 线程分配和停止丢弃待处理通知行为保留，读�
 
 对比脚本与随附场景默认设置 `components.datasystem.client.config.enable_local_cache=false`，DS Get 按 metadata owner 走 Transport 读路径；显式设为 `true` 可恢复绑定 Worker 的读路径。DS 与 Mooncake client 默认使用 KVTest 原有的随机 NUMA：`client_numa_node` 省略或为 `null` 时生成 `random_numa_node=true`；非负整数（例如 `0`）仍固定到指定 NUMA。已有自定义 JSON 中显式的 `true` 或固定 NUMA 值保持生效，需要自行更新；不修改 worker/store 的 NUMA 策略，也不改动 C++ 读写、通知或统计逻辑。
 
+随附场景统一使用 4 写线程、8 读线程（总线程 12）；DS 请求超时改为 20ms，client 环境变量包含 `DATASYSTEM_UB_GET_DATA_SIZE_BYTES=10485760` 和 `DATASYSTEM_ENABLE_LOAD_AWARE_SCHEDULER=true`。默认 8MB 场景和 `scenario.2-nodes-1clients*.json` 使用 8MB、40 QPS/client；其他专用档位保留数据大小、QPS 与通知设置。接口仍为 DS `Set(key, StringView)` / `getBuffer` 和 MC `put` / `get_buffer`。服务端模板与组件数量不变；负载感知开关只加在 client，worker 是否开启仍由原模板决定。运行时长和容量继续受原有预检约束：当前两 client、DS 每 worker 60GiB 的 8MB/40QPS 场景可用 `--duration 60`，180 秒会超过保守容量预算；更多 client 需要重新核算预算。
+
+对比入口为 DS 生成 `client_config.full_access_log=true`。KVTest 在 SDK Init 后、启动请求线程前调用一次原生 `KVClient::UpdateConfig`，将 request/access/diagnostic 采样率设为 `1.0`，同时开启 client access 日志。SDK 不支持该配置或被外部配置文件监控占用时，初始化报错，不静默使用采样日志。成功日志包含 `DS client log sampling disabled`。此项需要重新编译并更新 scenario 中 `artifacts.kvtest_binaries.datasystem` 指向的包；仅拉取 Python 脚本不能让旧二进制应用新字段。原生 KVTest 未设置该选项时保留 rc44 默认初始化行为，worker/coordinator 配置不受影响。
+
+HTML 的“时延样本数”和命令行的 `Samples` 表示实际读到的 SDK 日志条数；实际调用数来自原生摘要。覆盖率不足时，分位数、Max、FailRate 和阈值计数都只代表样本，不能从旧日志补回未记录的耗时，也不能仅凭约 1% 的覆盖率断言 SDK 配置了 1% 随机采样。重跑后需要核对日志完整性和覆盖率。
+
 ## 实施检查表
 
 - [x] 从主仓 tag 创建并仅推送私仓分支。
@@ -79,7 +85,7 @@ RUN="$PWD/results/compare-rc44-$(date +%Y%m%d-%H%M%S)"
 python3 -u deploy_compare_ub_rdma.py \
   --scenario "$SCENARIO" \
   --systems both \
-  --duration 180 \
+  --duration 60 \
   --mc-image mooncake-store-kvtest:official-v0.3.13.post1-rdma-event \
   --output "$RUN"
 ```

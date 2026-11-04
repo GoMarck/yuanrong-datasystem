@@ -3,7 +3,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import deploy_compare_ub_rdma as compare
 import deploy_client as client
@@ -19,6 +19,54 @@ class Rc44ComparisonTest(unittest.TestCase):
         client._add_gen_config_args(parser)
         args = parser.parse_args(list(map(str, command[3:])))
         return client._build_config('pipeline', args)
+
+    def configured_client_config(self, scenario, backend):
+        plan = compare.plan_from_scenario(scenario)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            generated = self.generated_client_config(scenario, backend)
+            compare.write_json(root / 'config.json', generated)
+            compare.write_json(root / 'deploy.json', {'nodes': []})
+            run = MagicMock()
+            run.pods.return_value = {}
+            compare.configure_clients(run, scenario, plan, 'ns', 'client-', backend,
+                                      root, '10.0.0.1:31511', 60)
+            return json.loads((root / 'config.json').read_text())
+
+    def test_client_profile_keeps_interfaces_and_uses_full_ds_logs(self):
+        for path in sorted((compare.ROOT / 'comparison').glob('scenario.*.json')):
+            scenario = json.loads(path.read_text())
+            for backend in compare.configured_systems(scenario):
+                with self.subTest(path=path.name, backend=backend):
+                    config = self.configured_client_config(scenario, backend)
+                    self.assertEqual(config['num_threads'], 4)
+                    self.assertEqual(config['num_total_threads'], 12)
+                    self.assertEqual(config['pipeline'], ['put' if backend == 'mooncake' else 'setStringView'])
+                    self.assertEqual(config['notify_pipeline'], ['get_buffer' if backend == 'mooncake' else 'getBuffer'])
+                    if backend == 'datasystem':
+                        self.assertEqual(config['connect_options']['request_timeout_ms'], 20)
+                        self.assertEqual(config['env']['DATASYSTEM_UB_GET_DATA_SIZE_BYTES'], '10485760')
+                        self.assertEqual(config['env']['DATASYSTEM_ENABLE_LOAD_AWARE_SCHEDULER'], 'true')
+                        self.assertTrue(config['client_config']['full_access_log'])
+                    else:
+                        self.assertNotIn('client_config', config)
+
+    def test_ds_timeout_default_and_explicit_override(self):
+        scenario = json.loads((compare.ROOT / 'comparison/scenario.2-nodes-1clients.json').read_text())
+        options = scenario['components']['datasystem']['client']['config']
+        options.pop('request_timeout_seconds', None)
+        options.pop('request_timeout_ms', None)
+        self.assertEqual(self.configured_client_config(scenario, 'datasystem')['connect_options']['request_timeout_ms'], 20)
+        options['request_timeout_seconds'] = 30
+        self.assertEqual(self.configured_client_config(scenario, 'datasystem')['connect_options']['request_timeout_ms'], 30000)
+
+    def test_current_two_node_workloads_match_requested_size_and_qps(self):
+        for name in ('scenario.2-nodes-1clients.json', 'scenario.2-nodes-1clients-jf.json', compare.SCENARIO.name):
+            with self.subTest(name=name):
+                scenario = json.loads((compare.ROOT / 'comparison' / name).read_text())
+                plan = compare.plan_from_scenario(scenario)
+                self.assertEqual(plan.size, '8MB')
+                self.assertEqual(plan.qps, 40)
 
     def test_comparison_defaults_use_transport_reads_and_random_numa(self):
         scenario = json.loads((compare.ROOT / 'comparison/scenario.2-nodes-1clients.json').read_text())
@@ -130,6 +178,8 @@ class Rc44ComparisonTest(unittest.TestCase):
             self.assertIn('datasystem_sdk_access_log', report)
             self.assertIn('50.00%', report)
             self.assertIn('两者边界不同', report)
+            self.assertIn('时延样本数', report)
+            self.assertIn('不是实际操作总数', report)
 
     def test_backend_binary_preserves_shared_path_compatibility(self):
         scenario = {'artifacts': {'kvtest_binary': '/shared/kvtest',

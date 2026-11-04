@@ -253,7 +253,11 @@ def render_html_report(output, backends=None, workload=None):
                                            (read_name + ' / ' + write_name, f'{ratio:.3f}')]) + '</div>']
         if abs(ratio - fanout.get('configured_fanout', workload.get('reads_per_write', workload.get('fanout', ratio)))) > 0.001:
             parts.append('<aside>实际读取倍数与配置不同；比较时应同时查看读负载。读取数量不作严格相等校验。</aside>')
-        fields = [('total', 'Total'), ('fail', 'Fail'), ('fail_rate_pct', 'FailRate %'),
+        if backend == 'datasystem':
+            parts.append('<p class="muted">时延样本数来自 SDK access 日志，不是实际操作总数；'
+                         '失败数、失败率、分位数、Max 和阈值计数均基于这些样本。'
+                         '请结合下方覆盖率核对日志是否完整，样本 Max 不代表全量调用 Max。</p>')
+        fields = [('total', '时延样本数'), ('fail', '样本 Fail'), ('fail_rate_pct', '样本 FailRate %'),
                   ('min_us', 'Min'), ('avg_us', 'Avg'), ('p50_us', 'P50'), ('p90_us', 'P90'),
                   ('p95_us', 'P95'), ('p99_us', 'P99'), ('p999_us', 'P99.9'),
                   ('p9999_us', 'P99.99'), ('max_us', 'Max')]

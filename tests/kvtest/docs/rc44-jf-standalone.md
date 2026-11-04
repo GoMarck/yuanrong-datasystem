@@ -1,6 +1,6 @@
 # rc44 JF 独立部署性能对照
 
-用户已确认使用 rc44 自带 JF mock：master 上增加一个 JF Pod，coordinator_test 注册并维持心跳，worker_test 和 kvtest client 经 JF 发现 coordinator。当前两节点、8KB、105 QPS/client、线程数及模板参数保持不变，先只运行 DS。
+使用 rc44 自带 JF mock：master 上增加一个 JF Pod，coordinator_test 注册并维持心跳，worker_test 和 kvtest client 经 JF 发现 coordinator。节点分布及服务端模板与 dscli 场景保持一致，先只运行 DS。
 
 ## 实施计划
 
@@ -35,11 +35,11 @@ JF 心跳及发现线程属于已有 rc44 行为。仅改变部署与发现路�
 ```
 
 同时将 `components.datasystem.client.config.service_discovery` 配置为 `jf`。默认 `dscli` 场景继续使用 `coordinator`。
-本轮为两节点各 1 client、8KB、105 QPS/client、16 写/16 读线程、180 秒。保持原生通知上限 10，但只有一个其他 client，因此有效读/写目标是 1。
+默认场景为两节点各 1 client、8MB、40 QPS/client、4 写/8 读线程、60 秒。保持原生通知上限 10，但只有一个其他 client，因此有效读/写目标是 1。
 JF Pod 固定 1 CPU/1Gi，无 UB/RDMA 设备请求；worker、client 的设备、CPU 和内存预算沿用原场景。
 
 独立模式不安装 whl：直接上传 `kvtest` 所在包里的 `coordinator_test`、`worker_test` 和 `lib/`。
-建议使用前面保存的原生 DS 包，以便与 dscli 场景使用相同 SDK。无需因本次 Python 改动重新编译 C++。
+建议与 dscli 场景使用相同 SDK。对比入口现已启用 `client_config.full_access_log=true`，需要重新编译 DS 包，才能在发压前关闭 SDK 日志采样；不能沿用不识别该选项的旧 kvtest 二进制。
 
 ## 执行命令
 
@@ -84,13 +84,13 @@ print('使用原生 DS 包:', package)
 PY
 
 SCENARIO=comparison/scenario.rc44-jf-local.json
-RUN="$PWD/results/ds-jf-8kb-105qps-$(date +%Y%m%d-%H%M%S)"
+RUN="$PWD/results/ds-jf-8mb-40qps-$(date +%Y%m%d-%H%M%S)"
 
 python3 -u deploy_compare_ub_rdma.py \
-  --scenario "$SCENARIO" --systems datasystem --duration 180 --validate-only
+  --scenario "$SCENARIO" --systems datasystem --duration 60 --validate-only
 
 python3 -u deploy_compare_ub_rdma.py \
-  --scenario "$SCENARIO" --systems datasystem --duration 180 --output "$RUN"
+  --scenario "$SCENARIO" --systems datasystem --duration 60 --output "$RUN"
 
 echo "HTML报告：$RUN/report.html"
 ```

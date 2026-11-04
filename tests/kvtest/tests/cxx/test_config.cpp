@@ -142,6 +142,25 @@ TEST(LoadConfig_ClientUrmaSendLaneCountPerPeer) {
     std::remove(path.c_str());
 }
 
+TEST(LoadConfig_ClientFullAccessLog) {
+    for (const bool enabled : {false, true}) {
+        auto path = WriteTempConfig(std::string(R"({"etcd_address":"x:1","listen_port":9000,"client_config":{"full_access_log":)")
+                                    + (enabled ? "true" : "false") + "}}");
+        Config cfg;
+        ASSERT_TRUE(LoadConfig(path, cfg));
+        ASSERT_EQ(cfg.fullAccessLog, enabled);
+        CleanupDir(cfg.outputDir);
+        std::remove(path.c_str());
+    }
+    for (const auto &value : {"1", "null", "\"true\""}) {
+        auto path = WriteTempConfig(std::string(R"({"etcd_address":"x:1","listen_port":9000,"client_config":{"full_access_log":)")
+                                    + value + "}}");
+        Config cfg;
+        ASSERT_FALSE(LoadConfig(path, cfg));
+        std::remove(path.c_str());
+    }
+}
+
 TEST(LoadConfig_RejectsInvalidClientConfig) {
     for (const auto &clientConfig : { "[]", R"({"urma_send_lane_count_per_peer":0})",
                                       R"({"urma_send_lane_count_per_peer":-1})",
