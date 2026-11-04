@@ -184,6 +184,8 @@ def cmd_start_standalone(args, pods):
         return 1
     with open(args.config) as f:
         config_template = json.load(f)
+    template_text = (Path(args.config).read_bytes().decode('utf-8')
+                     if getattr(args, 'preserve_config_template', False) else None)
 
     if args.set:
         apply_config_overrides(config_template, args.set)
@@ -193,7 +195,11 @@ def cmd_start_standalone(args, pods):
 
     def do_op(pod):
         cfg = json.loads(json.dumps(config_template))
-        cfg[ADDRESS_KEY] = {'value': f'{pod["ip"]}:{args.port}'}
+        if template_text is None:
+            cfg[ADDRESS_KEY] = {'value': f'{pod["ip"]}:{args.port}'}
+        else:
+            cfg[ADDRESS_KEY]['value'] = f'{pod["ip"]}:{args.port}'
+        template_kwargs = {} if template_text is None else {'config_template_text': template_text}
         ok = False
         try:
             ok = start_service_standalone(
@@ -205,7 +211,7 @@ def cmd_start_standalone(args, pods):
                 process_name=PROCESS_NAME_STANDALONE,
                 timeout=args.timeout,
                 jemalloc_prof_conf=getattr(args, 'jemalloc_prof_options', None),
-                start_timeout=getattr(args, 'start_timeout', 90))
+                start_timeout=getattr(args, 'start_timeout', 90), **template_kwargs)
             return ok
         finally:
             # start_service_standalone records only the actual launch

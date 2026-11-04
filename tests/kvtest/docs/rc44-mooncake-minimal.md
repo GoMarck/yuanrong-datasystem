@@ -131,3 +131,8 @@ python3 -m unittest discover -s tests/python -p test_rc44_source_guard.py
 
 源码守卫需要当前 Git checkout 可被所用 Python 的 Git 命令读取；Windows linked worktree 可在 Windows 执行这一项。
 `ctest -R native_kvtest` 可单独复现上述原生全量测试失败；保留该失败用于基线核对，没有删除或改写原测试。
+
+
+## JF 独立部署对照
+
+DS 新增可选 Python 部署模式 `datasystem_deployment.mode=standalone_jf`，使用原有 rc44 独立程序和 JF mock。默认 dscli 模式保留，C++ 核心不变。配置与完整命令见 [JF 独立部署性能对照](rc44-jf-standalone.md)。

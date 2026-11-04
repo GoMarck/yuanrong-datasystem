@@ -1308,7 +1308,7 @@ def start_service_standalone(pod, namespace, binary_name, remote_dir, config_pat
                              enable_procmon=True,
                              port=None, process_name=None,
                              timeout=DEFAULT_TIMEOUT, jemalloc_prof_conf=None,
-                             start_timeout=90):
+                             start_timeout=90, config_template_text=None):
     """Start a standalone test binary in a pod.
 
     Uses ``standalone_launcher.py`` (uploaded alongside procmon) to fork +
@@ -1360,10 +1360,12 @@ def start_service_standalone(pod, namespace, binary_name, remote_dir, config_pat
             log_error(f'{name} ({pod_ip}) -> profiling preflight failed: {error}')
             return False
     if config is not None:
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json',
+        payload = (json.dumps(config, indent=2) if config_template_text is None
+                   else render_ds_config(config_template_text, config))
+        with tempfile.NamedTemporaryFile(mode='w', newline='', suffix='.json',
                                          prefix=f'standalone_{name}_',
                                          delete=False) as tf:
-            json.dump(config, tf, indent=2)
+            tf.write(payload)
             tmp_cfg = tf.name
         try:
             kubectl_cp_to(name, namespace, tmp_cfg, config_path, timeout=timeout)

@@ -25,6 +25,8 @@ from urllib.request import build_opener, ProxyHandler
 from urllib.error import URLError
 from kvtest_report import api_operations, api_label, api_boundary_note
 from kvtest_environment import validate_environment
+from kvtest_datasystem_deploy import (jf_settings, check_native_package, datasystem_service_args,
+                                      start_jf_mock, wait_jf_registration)
 from ds_config_template import render_ds_config, RUNTIME_CONFIG_KEYS
 from kvtest_scenario import (Plan, DEFAULT_DATA_SIZE, SIZE_UNITS, data_size_bytes,
                              scenario_size, build_plan, expand_scenarios, configured_systems)
@@ -125,7 +127,8 @@ def validate_client_options(scenario, backend):
     allowed = {'enable_local_cache', 'enable_cross_node_connection', 'connect_timeout_ms', 'request_timeout_ms',
                'request_timeout_seconds', 'service_discovery', 'host_id_env_name', 'data_placement_policy',
                'fast_transport_mem_size'}
-    if set(config) - allowed or config.get('service_discovery', 'coordinator') != 'coordinator':
+    discovery = 'jf' if jf_settings(scenario, build_plan(scenario)) else 'coordinator'
+    if set(config) - allowed or config.get('service_discovery', discovery) != discovery:
         raise ValueError('DataSystem client.config has unsupported fields or service_discovery')
     for key in ('enable_local_cache', 'enable_cross_node_connection'):
         if key in config and type(config[key]) is not bool:
@@ -161,6 +164,7 @@ def plan_from_scenario(scenario):
         raise ValueError('client_numa_node must be a nonnegative integer')
     plan = build_plan(scenario)
     if 'datasystem' in configured_systems(scenario):
+        jf_settings(scenario, plan)
         for role in ('coordinator', 'worker'):
             component = scenario['components']['datasystem'][role]
             if type(component.get('preserve_config_template', False)) is not bool:
@@ -432,6 +436,9 @@ def node_addresses(run, plan, scenario, backends=('datasystem', 'mooncake')):
     addresses = {}
     placements = [(backend, role, plan.placement(backend, role)) for backend in backends
                   for role in (*(('coordinator', 'worker') if backend == 'datasystem' else ('master', 'store')), 'client')]
+    jf = jf_settings(scenario, plan) if 'datasystem' in backends else None
+    if jf:
+        placements.append(('datasystem', 'jf', ((jf['node'], 1),)))
     for name in dict.fromkeys(node for _, _, entries in placements for node, _ in entries):
         node = nodes.get(name)
         if not node or not any(c.get('type') == 'Ready' and c.get('status') == 'True'
@@ -560,7 +567,11 @@ def client_gen_command(plan, backend, namespace, prefix, case_dir,
            '--remote-work-dir', '/tmp/kvtest-cpp',
            '--output-dir', case_dir]
     if backend == 'datasystem':
-        cmd.extend(['--coordinator-address', service_address])
+        jf = jf_settings(scenario, plan)
+        if jf:
+            cmd.extend(['--jf', service_address, '--service', jf['service']])
+        else:
+            cmd.extend(['--coordinator-address', service_address])
     else:
         cmd.extend(['--mooncake-master', service_address, '--mooncake-transport', 'rdma',
                     '--mooncake-local-buffer', str(scenario['memory_gib']['mooncake_client_buffer']) + 'GB'])
@@ -904,11 +915,13 @@ def run_clients(run, namespace, case_dir, plan):
     return collect_and_check(case_dir, plan)
 
 
-def collect_startup_snapshot(run, namespace, case_dir):
+def collect_startup_snapshot(run, namespace, case_dir, prefixes=None):
     probe = (ROOT / 'kvtest_service_snapshot.py').read_text(encoding='utf-8')
     pods = json.loads((case_dir / 'pods.json').read_text())['items']
     evidence = {'collected_at': datetime.now(timezone.utc).isoformat(), 'pods': []}
     for pod in pods:
+        if prefixes and not pod['metadata']['name'].startswith(prefixes):
+            continue
         record = {'pod': pod['metadata']['name'], 'node': pod['spec'].get('nodeName', '')}
         try:
             result = run.command(['kubectl', '-n', namespace, 'exec', record['pod'], '--',
@@ -925,10 +938,17 @@ def collect_startup_snapshot(run, namespace, case_dir):
 
 
 def collect_datasystem_services(run, namespace, case_dir):
+    path = case_dir / 'service-discovery.json'
+    discovery = json.loads(path.read_text()) if path.is_file() else {'mode': 'dscli'}
+    standalone = discovery['mode'] == 'standalone_jf'
     for role in ('coordinator', 'worker'):
+        remote_dir = f'/data/standalone/{role}' if standalone else '/data'
         run.command([sys.executable, ROOT / f'deploy_{role}.py', 'collect', '-n', namespace,
                      '-p', f'ds-{role}-', '--remote-config', f'/data/{role}.json',
-                     '--remote-dir', '/data', '-o', case_dir / f'{role}-logs'], timeout=180)
+                     '--remote-dir', remote_dir, '-o', case_dir / f'{role}-logs'], timeout=180)
+    if standalone:
+        run.command([sys.executable, ROOT / 'deploy_jf.py', 'collect', '-n', namespace,
+                     '-p', 'ds-jf-', '--remote-dir', '/data/jf', '-o', case_dir / 'jf-logs'], timeout=120)
 
 
 def execute_trial(scenario, args, output):
@@ -976,6 +996,11 @@ def execute_trial(scenario, args, output):
         for backend, image in pod_images.items():
             run.binary_path = backend_binary(scenario, backend)
             ensure_binary(run, image, require_mooncake=backend == 'mooncake')
+            if backend == 'datasystem':
+                if jf_settings(scenario, plan):
+                    check_native_package(scenario)
+                elif not args.ds_whl:
+                    raise ValueError('dscli deployment requires --ds-whl or artifacts.datasystem_whl')
         if 'mooncake' in backends:
             ensure_mooncake_rdma_image(run, pod_images['mooncake'])
         config_dir = ds_configs(run, scenario, '127.0.0.1:31511', args.ds_image) if 'datasystem' in backends else None
@@ -999,6 +1024,11 @@ def execute_trial(scenario, args, output):
             memory = scenario['memory_gib']
             if backend == 'datasystem':
                 print('[3/7] Deploy Coordinator and worker Pods')
+                jf = jf_settings(scenario, plan)
+                discovery = (start_jf_mock(run, scenario, plan, namespace, image, templates / 'control.yaml')
+                             if jf else {'mode': 'dscli'})
+                write_json(case_dir / 'service-discovery.json', discovery)
+                jf_address = discovery.get('jf_address')
                 coordinator = deploy_component(run, scenario, plan, namespace, backend, 'coordinator', image, templates)
                 service = ','.join(pod['status']['podIP'] + ':31511' for pod in coordinator.values())
                 set_coordinator_addresses(config_dir, service)
@@ -1006,7 +1036,11 @@ def execute_trial(scenario, args, output):
                              '-p', 'ds-coordinator-', '-c', config_dir / 'coordinator.json',
                              '--remote-config', '/data/coordinator.json', '--port', '31511',
                              *ds_template_args(scenario, 'coordinator'),
-                             '--whl', args.ds_whl, '--no-procmon'], timeout=600)
+                             *datasystem_service_args(scenario, plan, 'coordinator', jf_address, args.ds_whl),
+                             '--no-procmon'], timeout=600)
+                if jf:
+                    discovery['registration'] = wait_jf_registration(run, namespace, discovery, service.split(','))
+                    write_json(case_dir / 'service-discovery.json', discovery)
                 deploy_component(run, scenario, plan, namespace, backend, 'worker', image, templates)
                 print('[4/7] Deploy client Pods and start DataSystem workers')
                 deploy_component(run, scenario, plan, namespace, backend, 'client', image, templates)
@@ -1014,7 +1048,10 @@ def execute_trial(scenario, args, output):
                              '-p', 'ds-worker-', '-c', config_dir / 'worker.json',
                              '--remote-config', '/data/worker.json', '--port', '31501',
                              *ds_template_args(scenario, 'worker'),
-                             '--whl', args.ds_whl, '--no-procmon'], timeout=600)
+                             *datasystem_service_args(scenario, plan, 'worker', jf_address, args.ds_whl),
+                             '--no-procmon'], timeout=600)
+                if jf:
+                    service = jf_address
                 prefix = 'ds-client-'
                 devices = None
             else:
@@ -1052,6 +1089,8 @@ def execute_trial(scenario, args, output):
             configure_clients(run, scenario, plan, namespace, prefix, backend,
                               case_dir, service, args.duration, devices)
             collect_pod_snapshot(run, namespace, case_dir)
+            if backend == 'datasystem' and jf:
+                collect_startup_snapshot(run, namespace, case_dir, ('ds-coordinator-', 'ds-worker-', 'ds-jf-'))
             print(f'[6/7] Run one {plan.size} case, then collect logs')
             summaries = run_clients(run, namespace, case_dir, plan)
             if backend == 'datasystem':
@@ -1140,11 +1179,13 @@ def resolve_run_settings(scenario, args):
 
 def trial_description(scenario):
     plan = plan_from_scenario(scenario)
+    jf = jf_settings(scenario, plan) if 'datasystem' in configured_systems(scenario) else None
     return {'size': plan.size, 'qps_per_client': plan.qps, 'writer_threads': plan.writer_threads,
             'reader_threads': plan.read_threads, 'notify_count': plan.fanout, 'total_clients': plan.total_clients,
             'effective_notify_count': plan.effective_fanout,
             'reads_per_notify': plan.reads_per_notify, 'reads_per_write': plan.reads_per_write,
             'notify_include_self': plan.notify_include_self,
+            'datasystem_deployment': {'mode': 'standalone_jf', 'jf': jf} if jf else {'mode': 'dscli'},
             'components': {backend: {role: dict(plan.placement(backend, role))
                                      for role in (*(('coordinator', 'worker') if backend == 'datasystem' else ('master', 'store')), 'client')}
                            for backend in configured_systems(scenario)}}
@@ -1212,7 +1253,8 @@ def main(argv=None):
             print(json.dumps({'systems': configured_systems(scenario), 'duration_seconds': args.duration,
                               'trials': [trial_description(trial) for trial in scenarios]}, ensure_ascii=False, indent=2))
             return 0
-        if 'datasystem' in configured_systems(scenario):
+        if ('datasystem' in configured_systems(scenario)
+                and not jf_settings(scenario, plan_from_scenario(scenarios[0]))):
             if args.ds_whl is None:
                 args.ds_whl = next(iter(sorted((ROOT / 'datasystem-output').glob('openyuanrong_datasystem-*.whl'), reverse=True)), None)
             if args.ds_whl is None or not args.ds_whl.is_file():

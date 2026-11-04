@@ -145,6 +145,8 @@ def cmd_start_standalone(args, pods):
         return 1
     with open(args.config) as f:
         config_template = json.load(f)
+    template_text = (Path(args.config).read_bytes().decode('utf-8')
+                     if getattr(args, 'preserve_config_template', False) else None)
 
     if args.set:
         apply_config_overrides(config_template, args.set)
@@ -164,8 +166,12 @@ def cmd_start_standalone(args, pods):
             log_info(f'  {pod["name"]} ({pod["ip"]}) -> already running, skip')
             return True
         cfg = json.loads(json.dumps(config_template))
-        cfg[ADDRESS_KEY] = {'value': f'{pod["ip"]}:{args.port}'}
+        if template_text is None:
+            cfg[ADDRESS_KEY] = {'value': f'{pod["ip"]}:{args.port}'}
+        else:
+            cfg[ADDRESS_KEY]['value'] = f'{pod["ip"]}:{args.port}'
         pod_extra = extra.replace('{pod_ip}', pod['ip'])
+        template_kwargs = {} if template_text is None else {'config_template_text': template_text}
         return start_service_standalone(
             pod, args.namespace, binary_name, remote_dir, args.remote_config,
             args.jf, args.service, pod_extra,
@@ -175,7 +181,7 @@ def cmd_start_standalone(args, pods):
             process_name=binary_name,
             timeout=args.timeout,
             jemalloc_prof_conf=getattr(args, 'jemalloc_prof_conf', None),
-            start_timeout=getattr(args, 'start_timeout', 90))
+            start_timeout=getattr(args, 'start_timeout', 90), **template_kwargs)
 
     return do_for_all_pods(pods, do_op, 'Starting coordinators (standalone)')
 

@@ -3,7 +3,8 @@
 import json
 from pathlib import Path
 
-SERVICES = {'datasystem_worker', 'datasystem_coordinator', 'mooncake_master',
+SERVICES = {'datasystem_worker', 'datasystem_coordinator', 'worker_test', 'coordinator_test',
+            'mock_jf_server.py', 'mooncake_master',
             'store_pod_target.py', 'kvtest'}
 ENV_KEYS = {'HOST_IP', 'POD_IP', 'LD_LIBRARY_PATH', 'MC_GID_INDEX', 'MC_IB_PORT',
             'MC_SLICE_SIZE', 'MC_WORKERS_PER_CTX', 'MC_NUM_QP_PER_EP', 'MC_NUM_CQ_PER_CTX', 'MC_MAX_WR',

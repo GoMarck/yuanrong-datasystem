@@ -620,3 +620,14 @@ an export-status file. Reports distinguish both timing boundaries. Source guard:
 `tests/kvtest/tests/python/test_rc44_source_guard.py`; independent MC/config tests:
 `tests/kvtest/tests/cxx/test_mooncake_pipeline.cpp`. The guide records baseline-only
 failures and local-vs-real-cluster validation limits.
+
+
+The rc44 adapter also supports Python-only `datasystem_deployment.mode=standalone_jf`:
+`kvtest_datasystem_deploy.py` starts an isolated JF mock, deploys the existing native
+coordinator_test/worker_test from the selected DS package, waits for registration,
+and generates JF client discovery flags. The default remains dscli. Optional strict
+template text is forwarded through native deployment without rewriting metadata or
+parameter order. `docs/rc44-jf-standalone.md` has the run commands, evidence paths,
+and remote-validation limit; `test_rc44_jf_comparison.py` covers configuration,
+command routing, template preservation, registration, and report evidence. No SDK
+or C++ workload/discovery implementation changed for this switch.

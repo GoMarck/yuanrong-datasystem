@@ -11,10 +11,10 @@ from urllib.parse import quote
 
 
 LABELS = {'datasystem': 'DataSystem UB', 'mooncake': 'Mooncake RDMA'}
-ROLES = ('Coordinator', 'Worker', 'Master', 'Store', 'Client')
+ROLES = ('Coordinator', 'Worker', 'Master', 'Store', 'Client', 'JF')
 PREFIXES = {'ds-coordinator-': 'Coordinator', 'ds-worker-': 'Worker',
             'ds-client-': 'Client', 'mc-master-': 'Master',
-            'mc-store-': 'Store', 'mc-client-': 'Client'}
+            'mc-store-': 'Store', 'mc-client-': 'Client', 'ds-jf-': 'JF'}
 
 
 def api_operations(metrics):
@@ -118,7 +118,8 @@ def config_files(output, backends):
     candidates += list((output / 'templates').glob('*'))
     for backend in backends:
         for name in ('config.json', 'deploy.json', 'pods.json', 'rdma-devices.json',
-                     'service-startup.json', 'thread-cpu.json', 'host-rdma.json', 'latency-source.json', 'execution.json'):
+                     'service-startup.json', 'thread-cpu.json', 'host-rdma.json', 'latency-source.json',
+                     'execution.json', 'service-discovery.json'):
             candidates.append(output / backend / name)
         candidates += list((output / backend / 'collected').rglob('config*.json'))
         candidates += list((output / backend / 'collected').rglob('deploy*.json'))
@@ -276,6 +277,16 @@ def render_html_report(output, backends=None, workload=None):
               '<p>DS 使用原生 access 日志，可能受 SDK 采样影响；MC 使用有界异步导出，缺样或未正常关闭会报错。'
               '逐 client 原生 KVTest 指标仍保留，用于核对外侧计时差异。</p>']
     topology, resources = deployment_rows(output, backends)
+    if 'datasystem' in backends:
+        discovery = read_json(output / 'datasystem/service-discovery.json')
+        if discovery:
+            jf = discovery.get('jf', {})
+            parts += ['<h3>DataSystem 部署与服务发现</h3>',
+                      table(['部署模式', 'JF节点', 'JF地址', 'JF服务名', '注册实例', '原生程序包'], [[
+                          discovery['mode'], jf.get('node', '—'), discovery.get('jf_address', '—'),
+                          jf.get('service', '—'),
+                          ', '.join(discovery.get('registration', {}).get('instances', [])),
+                          discovery.get('native_package', '—')]])]
     snapshot_times = '；'.join(LABELS[b] + '：' + str(
         read_json(output / b / 'pods.json', {}).get('snapshot_collected_at', '旧结果未记录采集时间'))
         for b in backends)
