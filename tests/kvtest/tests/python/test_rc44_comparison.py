@@ -1,3 +1,4 @@
+import argparse
 import json
 import tempfile
 import unittest
@@ -5,10 +6,61 @@ from pathlib import Path
 from unittest.mock import patch
 
 import deploy_compare_ub_rdma as compare
+import deploy_client as client
 from kvtest_report import render_html_report
 
 
 class Rc44ComparisonTest(unittest.TestCase):
+    def generated_client_config(self, scenario, backend):
+        plan = compare.plan_from_scenario(scenario)
+        command = compare.client_gen_command(plan, backend, 'ns', 'client-',
+                                            Path('/case'), '10.0.0.1:31511', scenario)
+        parser = argparse.ArgumentParser()
+        client._add_gen_config_args(parser)
+        args = parser.parse_args(list(map(str, command[3:])))
+        return client._build_config('pipeline', args)
+
+    def test_comparison_defaults_use_transport_reads_and_random_numa(self):
+        scenario = json.loads((compare.ROOT / 'comparison/scenario.2-nodes-1clients.json').read_text())
+        scenario.pop('client_numa_node', None)
+        scenario['components']['datasystem']['client']['config'].pop('enable_local_cache', None)
+        for backend in ('datasystem', 'mooncake'):
+            with self.subTest(backend=backend):
+                config = self.generated_client_config(scenario, backend)
+                self.assertTrue(config['random_numa_node'])
+                self.assertNotIn('numa_node', config)
+                if backend == 'datasystem':
+                    self.assertFalse(config['connect_options']['enable_local_cache'])
+
+    def test_comparison_preserves_explicit_cache_and_fixed_numa(self):
+        scenario = json.loads((compare.ROOT / 'comparison/scenario.2-nodes-1clients.json').read_text())
+        scenario['client_numa_node'] = 0
+        scenario['components']['datasystem']['client']['config']['enable_local_cache'] = True
+        for backend in ('datasystem', 'mooncake'):
+            with self.subTest(backend=backend):
+                config = self.generated_client_config(scenario, backend)
+                self.assertFalse(config['random_numa_node'])
+                self.assertEqual(config['numa_node'], 0)
+                if backend == 'datasystem':
+                    self.assertTrue(config['connect_options']['enable_local_cache'])
+
+    def test_shipped_scenarios_use_random_numa_and_disable_local_cache(self):
+        for path in sorted((compare.ROOT / 'comparison').glob('scenario.*.json')):
+            with self.subTest(path=path.name):
+                scenario = json.loads(path.read_text())
+                for backend in compare.configured_systems(scenario):
+                    config = self.generated_client_config(scenario, backend)
+                    self.assertTrue(config['random_numa_node'])
+                    if backend == 'datasystem':
+                        self.assertFalse(config['connect_options']['enable_local_cache'])
+
+    def test_invalid_numa_nodes_are_rejected(self):
+        scenario = json.loads((compare.ROOT / 'comparison/scenario.2-nodes-1clients.json').read_text())
+        for value in (-1, True, '0', 0.5):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'client_numa_node'):
+                scenario['client_numa_node'] = value
+                compare.plan_from_scenario(scenario)
+
     def test_ds_uses_sdk_access_logs_and_reports_coverage(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

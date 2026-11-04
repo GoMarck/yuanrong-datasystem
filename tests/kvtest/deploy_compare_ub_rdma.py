@@ -159,9 +159,9 @@ def plan_from_scenario(scenario):
     worker_cluster = scenario.get('components', {}).get('datasystem', {}).get('worker', {}).get('config', {}).get('cluster_name')
     if worker_cluster is not None and worker_cluster != cluster_name:
         raise ValueError('DataSystem worker cluster_name conflicts with scenario cluster_name')
-    numa = scenario.get('client_numa_node', 0)
-    if type(numa) is not int or numa < 0:
-        raise ValueError('client_numa_node must be a nonnegative integer')
+    numa = scenario.get('client_numa_node')
+    if numa is not None and (type(numa) is not int or numa < 0):
+        raise ValueError('client_numa_node must be null (random) or a nonnegative integer')
     plan = build_plan(scenario)
     if 'datasystem' in configured_systems(scenario):
         jf_settings(scenario, plan)
@@ -561,12 +561,18 @@ def client_gen_command(plan, backend, namespace, prefix, case_dir,
            '--target-qps', str(plan.qps), '--data-sizes', plan.size,
            '--num-threads', str(plan.writer_threads),
            '--num-total-threads', str(plan.writer_threads + plan.read_threads), '--batch-keys-count', '1',
-           '--numa-node', str(scenario.get('client_numa_node', 0)), '--no-random-numa-node',
            '--cleanup-method', 'del', '--ttl', str(scenario.get('run', {}).get('ttl_seconds', 10)),
            '--cluster-name', scenario['cluster_name'],
            '--remote-work-dir', '/tmp/kvtest-cpp',
            '--output-dir', case_dir]
+    numa = scenario.get('client_numa_node')
+    if numa is None:
+        cmd.append('--random-numa-node')
+    else:
+        cmd.extend(['--numa-node', str(numa), '--no-random-numa-node'])
     if backend == 'datasystem':
+        client = scenario['components'][backend]['client'].get('config', {})
+        cmd.extend(['--enable-local-cache', str(client.get('enable_local_cache', False)).lower()])
         jf = jf_settings(scenario, plan)
         if jf:
             cmd.extend(['--jf', service_address, '--service', jf['service']])

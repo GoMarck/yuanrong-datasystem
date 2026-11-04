@@ -90,7 +90,7 @@
           "coordinator_address": "${coordinator_address}"
         },
         "config": {
-          "enable_local_cache": true,
+          "enable_local_cache": false,
           "request_timeout_seconds": 30,
           "service_discovery": "coordinator",
           "host_id_env_name": "HOST_IP"
@@ -153,6 +153,6 @@
       }
     }
   },
-  "client_numa_node": 0,
+  "client_numa_node": null,
   "client_cpu_limit": 32
 }

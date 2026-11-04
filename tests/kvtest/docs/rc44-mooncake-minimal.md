@@ -19,6 +19,8 @@ MC 回调拥有 SDK client，执行器仅持有启动期设置的非拥有指针
 
 rc44 原有低 QPS 线程分配和停止丢弃待处理通知行为保留，读写比例可能不足；不将这些基线行为在本分支悄悄修复。SDK access 日志采样、额外调用或缺失记录会影响统计覆盖率，必须在报告中显示。配置中的 SDK/whl 版本、服务启动参数、缓存与 NUMA 设置仍需与旧环境对齐。
 
+对比脚本与随附场景默认设置 `components.datasystem.client.config.enable_local_cache=false`，DS Get 按 metadata owner 走 Transport 读路径；显式设为 `true` 可恢复绑定 Worker 的读路径。DS 与 Mooncake client 默认使用 KVTest 原有的随机 NUMA：`client_numa_node` 省略或为 `null` 时生成 `random_numa_node=true`；非负整数（例如 `0`）仍固定到指定 NUMA。已有自定义 JSON 中显式的 `true` 或固定 NUMA 值保持生效，需要自行更新；不修改 worker/store 的 NUMA 策略，也不改动 C++ 读写、通知或统计逻辑。
+
 ## 实施检查表
 
 - [x] 从主仓 tag 创建并仅推送私仓分支。

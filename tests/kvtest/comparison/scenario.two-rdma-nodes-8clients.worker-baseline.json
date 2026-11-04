@@ -59,7 +59,7 @@
         },
         "env": {}
       },
-      "client": {"generated": {"coordinator_address": "${coordinator_address}"}, "config": {"enable_local_cache": true, "request_timeout_seconds": 30, "service_discovery": "coordinator", "host_id_env_name": "HOST_IP"}, "env": {}}
+      "client": {"generated": {"coordinator_address": "${coordinator_address}"}, "config": {"enable_local_cache": false, "request_timeout_seconds": 30, "service_discovery": "coordinator", "host_id_env_name": "HOST_IP"}, "env": {}}
     },
     "mooncake": {
       "master": {"generated": {"rpc_address": "${master_pod_ip}"}, "args": {"rpc_port": 50051}, "env": {}},
