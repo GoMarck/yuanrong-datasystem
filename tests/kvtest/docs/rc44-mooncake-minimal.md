@@ -102,6 +102,20 @@ Python 先完成原生部署，再计时，达到运行时长后使用原生 sto
 
 ## 输出与计时口径
 
+六组固定的两节点对比可使用下面的入口。依次运行 1B/17QPS/2client、1KB/17QPS/2client、8KB/17QPS/2client、8KB/105QPS/1client、256KB/17QPS/2client、1MB/17QPS/2client（client 数均为每节点数量）。每组 DS、MC 各运行 180 秒；全部 client 均读写，每次写入通知一个其他 client 读取一次。
+
+```bash
+python3 -u tools/run_six_case_compare.py \
+  --source-scenario "$SCENARIO" \
+  --ds-whl "$DS_WHL" \
+  --mc-image "$MC_IMAGE" \
+  --duration 180
+```
+
+此入口从当前 `scenario.2-nodes-1clients.json` 获取服务端 reference 配置、资源和 MC 参数，固定 DS 使用 whl+dscli。`--source-scenario` 仅复用旧场景的 `artifacts`（镜像、SDK/二进制路径），不继承旧 JF、client 或服务端配置。client 统一 4 写/8 读、随机 NUMA、关闭 local cache、DS 20ms 超时及前述两个 DS 环境变量，保留 DS Set/getBuffer 和 MC put/get_buffer 接口，不调整日志采样。worker/coordinator 保留 reference 模板参数、说明和顺序，只替换部署所需的地址、路径等运行时值。默认控制节点为 master，worker/store/client 节点为 worker02、worker03，每个存储节点各一个 worker/store。
+
+所有派生 JSON 保存到新结果目录的 `scenarios/`，每组生成独立报告，`index.html` 为入口。失败停止并保留现场，不复用或覆盖之前失败的结果目录。外部监控沿用当前对比入口的默认关闭行为。
+
 - `report.html` / `report.md`：本轮数据、部署、配置及统计边界。
 - `datasystem/api_latency_summary.*`：SDK 原生 `DS_KV_CLIENT_SET/GET` access 日志中的微秒耗时。
 - `mooncake/api_latency_summary.*`：独立操作层的 `put/get_buffer` SDK 外侧微秒耗时。

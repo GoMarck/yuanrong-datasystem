@@ -270,6 +270,9 @@ Backed by `tests/kvtest/BUILD.bazel` and `tests/kvtest/build.sh`:
 - `tests/kvtest` is a standalone KVClient performance tool with its own `build.sh` supporting `-b cmake|bazel`,
   mirroring the main repo's build-system switch; **bazel is the default** (so the brpc control plane and
   bthread-backed pipeline/notify-pool workers are enabled out of the box);
+- `tests/kvtest/tools/run_six_case_compare.py` prepares the six fixed two-node workload cases from the current
+  comparison reference scenario and invokes `deploy_compare_ub_rdma.py` serially. It forces whl/dscli deployment,
+  reuses only `artifacts` from an optional source scenario, and preserves the strict worker/coordinator templates;
 - the CMake mode links against a pre-installed SDK (`-s/--sdk`, default `../../output/cpp`), while the Bazel mode
   builds `//tests/kvtest:kvtest` against the in-tree `//src/datasystem/client:datasystem`, producing a self-contained
   binary that does not need `libdatasystem.so` at runtime;
