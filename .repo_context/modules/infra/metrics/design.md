@@ -143,6 +143,14 @@
   - worker object-cache batch remote get now exposes `worker_inflight_remote_get_request` as a typed `Gauge` around the outbound `BatchGetObjectRemote` logical retry flow.
   - Coordinator initializes and ticks the same typed registry from `coordinator_runtime.cpp`. Every dispatched `CoordinatorService` RPC entrypoint increments its own request counter before handler-level validation or serving gates, so handler-rejected and redirected requests remain visible. Requests dropped by RPC framework admission before service dispatch are outside these per-method counters and remain covered by framework-level metrics. Successful business watch notifications increment sent-batch, sent-event, and serialized-`EventReqPb` byte counters in `WatchDispatcherImpl::DoNotify`; the byte counter excludes transport framing and worker reachability probes use a separate path, so probes are excluded from all three counters. `SendEventRequest` records `HandleEvent` latency and failures, while channel-map mutations publish the lock-consistent live channel count.
   - request-path latency for `set/get` style APIs is mostly surfaced through the logging/access-recorder path rather than through typed metrics families.
+  - HiXL SDK native READ/WRITE calls in `hixl_transport.cpp` use append-only KvMetricId 150-157:
+    `hixl_d2rh_write_*` and `hixl_rh2d_read_*` request_total/error_total/success_bytes/latency.
+    Counts are submitted native batches; bytes sum descriptors only on successful return; latency covers native
+    calls including failures. Connection/validation failures before submission, SHM traffic, and publication outcomes
+    are outside this scope. The existing typed registry/JSON output is reused, without a new resource family.
+    When both monitor flags are false the wrapper bypasses timing/byte scanning. Enabled collection adds existing
+    relaxed atomic counters and a brief histogram mutex after the native call; no transfer serialization lock or
+    foreground logging/allocation is added. Concurrency overhead still requires hardware benchmark evidence.
 - Relevant constraints from current release or deployment:
   - collector startup is gated by `log_monitor` and exporter initialization, and each resource-write loop re-checks runtime `log_monitor`;
   - `HardDiskExporter` is shared with logging-side access records, so exporter changes are cross-cutting;

@@ -57,6 +57,8 @@ struct TransportSetParam {
     bool keep = false;
     int64_t subTimeoutMs = 0;
     bool isRetry = false;
+    std::vector<std::vector<uint64_t>> blobSizes;
+    bool returnLocalPublishedIndexes = false;
 };
 
 struct TransportSetResult {

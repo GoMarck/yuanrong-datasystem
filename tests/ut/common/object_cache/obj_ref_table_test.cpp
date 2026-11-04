@@ -16,6 +16,7 @@
  */
 
 #include <tbb/concurrent_hash_map.h>
+#include <atomic>
 #include <chrono>
 #include <limits>
 #include <thread>
@@ -75,6 +76,7 @@ public:
     // once its match count runs out (kills the process from the background flush thread).
     void TearDown() override
     {
+        (void)datasystem::inject::Clear("SharedMemoryRefTable.ProtectHixlWrites.insert");
         (void)datasystem::inject::Clear("RemoveShmUnit");
         (void)datasystem::inject::Clear("shm_ref.GetCurrentTimeMs");
     }
@@ -889,5 +891,81 @@ TEST_F(ObjRefTableTest, RecordMaybeExpiredShmStagingHandoffUnderConcurrency)
         }
     }
 }
+TEST_F(ObjRefTableTest, HixlBudgetReservesBeforeAllocation)
+{
+    const auto maxBytes = MemRefTable::MAX_HIXL_WRITE_BYTES;
+    const auto maxCount = MemRefTable::MAX_HIXL_WRITE_ALLOCATIONS;
+    DS_ASSERT_OK(memRefTable_.ReserveHixlWriteBudget(maxBytes, maxCount));
+    EXPECT_EQ(memRefTable_.ReserveHixlWriteBudget(1, 0).GetCode(), K_OUT_OF_MEMORY);
+    EXPECT_EQ(memRefTable_.ReserveHixlWriteBudget(0, 1).GetCode(), K_OUT_OF_MEMORY);
+    memRefTable_.ReleaseHixlWriteBudget(maxBytes, maxCount);
+    EXPECT_EQ(memRefTable_.ReserveHixlWriteBudget(maxBytes + 1, 1).GetCode(), K_OUT_OF_MEMORY);
+    EXPECT_EQ(memRefTable_.ReserveHixlWriteBudget(1, maxCount + 1).GetCode(), K_OUT_OF_MEMORY);
+    DS_ASSERT_OK(memRefTable_.ReserveHixlWriteBudget(maxBytes, maxCount));
+    memRefTable_.ReleaseHixlWriteBudget(maxBytes, maxCount);
+}
+
+TEST_F(ObjRefTableTest, HixlConcurrentReservationsStayWithinBudget)
+{
+    constexpr uint64_t bytes = MemRefTable::MAX_HIXL_WRITE_BYTES / 4;
+    std::atomic<size_t> accepted{ 0 };
+    ParallelFor(16, [&](size_t) {
+        if (memRefTable_.ReserveHixlWriteBudget(bytes, 1).IsOk()) {
+            accepted.fetch_add(1);
+        }
+    }, 4);
+    EXPECT_EQ(accepted.load(), 4);
+    memRefTable_.ReleaseHixlWriteBudget(bytes * accepted.load(), accepted.load());
+    DS_ASSERT_OK(memRefTable_.ReserveHixlWriteBudget(MemRefTable::MAX_HIXL_WRITE_BYTES, 1));
+    memRefTable_.ReleaseHixlWriteBudget(MemRefTable::MAX_HIXL_WRITE_BYTES, 1);
+}
+
+TEST_F(ObjRefTableTest, HixlProtectionRetainsOwnerUntilCompletion)
+{
+    auto unit = std::make_shared<ShmUnit>();
+    unit->id = ShmKey::Intern("hixl-owner");
+    unit->size = 64;
+    const auto id = unit->GetId();
+    std::weak_ptr<ShmUnit> owner = unit;
+    const auto client = ClientKey::Intern("hixl-client");
+    DS_ASSERT_OK(memRefTable_.ReserveHixlWriteBudget(128, 2));
+    DS_ASSERT_OK(memRefTable_.ProtectHixlWrites(client, { unit }, 128, 2));
+    unit.reset();
+    ASSERT_FALSE(owner.expired());
+    std::vector<std::shared_ptr<ShmUnit>> completed;
+    EXPECT_EQ(memRefTable_.CompleteHixlWrites(ClientKey::Intern("other-client"), { id }, completed).GetCode(), K_INVALID);
+    DS_ASSERT_OK(memRefTable_.CompleteHixlWrites(client, { id }, completed));
+    ASSERT_FALSE(owner.expired());
+    completed.clear();
+    EXPECT_TRUE(owner.expired());
+    DS_ASSERT_OK(memRefTable_.ReserveHixlWriteBudget(MemRefTable::MAX_HIXL_WRITE_BYTES,
+                                                    MemRefTable::MAX_HIXL_WRITE_ALLOCATIONS));
+    memRefTable_.ReleaseHixlWriteBudget(MemRefTable::MAX_HIXL_WRITE_BYTES,
+                                       MemRefTable::MAX_HIXL_WRITE_ALLOCATIONS);
+}
+
+TEST_F(ObjRefTableTest, HixlProtectionRollsBackPartialInsertion)
+{
+    auto first = std::make_shared<ShmUnit>();
+    auto second = std::make_shared<ShmUnit>();
+    first->id = ShmKey::Intern("hixl-first");
+    second->id = ShmKey::Intern("hixl-second");
+    first->size = second->size = 64;
+    const auto client = ClientKey::Intern("hixl-client");
+    DS_ASSERT_OK(memRefTable_.ReserveHixlWriteBudget(128, 2));
+    DS_ASSERT_OK(inject::Set("SharedMemoryRefTable.ProtectHixlWrites.insert", "1*off->1*call()"));
+    EXPECT_EQ(memRefTable_.ProtectHixlWrites(client, { first, second }, 128, 2).GetCode(), K_OUT_OF_MEMORY);
+    DS_ASSERT_OK(inject::Clear("SharedMemoryRefTable.ProtectHixlWrites.insert"));
+    memRefTable_.ReleaseHixlWriteBudget(128, 2);
+    DS_ASSERT_OK(memRefTable_.ReserveHixlWriteBudget(128, 2));
+    DS_ASSERT_OK(memRefTable_.ProtectHixlWrites(client, { first, second }, 128, 2));
+    std::vector<std::shared_ptr<ShmUnit>> completed;
+    DS_ASSERT_OK(memRefTable_.CompleteHixlWrites(client, { first->GetId(), second->GetId() }, completed));
+    DS_ASSERT_OK(memRefTable_.ReserveHixlWriteBudget(MemRefTable::MAX_HIXL_WRITE_BYTES,
+                                                    MemRefTable::MAX_HIXL_WRITE_ALLOCATIONS));
+    memRefTable_.ReleaseHixlWriteBudget(MemRefTable::MAX_HIXL_WRITE_BYTES,
+                                       MemRefTable::MAX_HIXL_WRITE_ALLOCATIONS);
+}
+
 }  // namespace ut
 }  // namespace datasystem

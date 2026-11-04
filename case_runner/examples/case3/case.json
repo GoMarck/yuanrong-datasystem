@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "nodes": {
+    "node1": {"ssh": "node1"},
+    "node2": {"ssh": "node2"}
+  },
+  "timeout": 1800,
+  "failure_collect_seconds": 30,
+  "collection_timeout": 120,
+  "targets": {
+    "host1": {"node": "node1"},
+    "host2": {"node": "node2"},
+    "test1": {"node": "node1", "container": "vllm_test1"},
+    "test2": {"node": "node2", "container": "vllm_test2"}
+  },
+  "steps": [
+    {"run": [
+      {"id": "pre1", "target": "host1", "script": "pre_check.sh"},
+      {"id": "pre2", "target": "host2", "script": "pre_check.sh"}
+    ]},
+    {"run": [
+      {"id": "ds1", "target": "test1", "script": "start_ds1.sh"}
+    ]},
+    {"start": [
+      {"id": "get", "target": "test1", "script": "start_bench1_get.sh"}
+    ]},
+    {"wait_log": {"job": "get", "source": "file", "path": "get.log", "contains": "GET_READY"}, "timeout": 300},
+    {"run": [
+      {"id": "set", "target": "test2", "script": "start_bench1_set.sh"}
+    ], "timeout": 900}
+  ]
+}

@@ -118,7 +118,9 @@ class __attribute((visibility("default"))) ObjectClientImpl : public std::enable
     friend class BoundMode;
     friend class WorkerFailover;
 public:
-    explicit ObjectClientImpl(const ConnectOptions &connectOptions);
+    enum class DeviceAccessMode { FOLLOW_LOCAL_CACHE, BOUND_READ_ROUTED_WRITE };
+    explicit ObjectClientImpl(const ConnectOptions &connectOptions,
+                              DeviceAccessMode deviceAccessMode = DeviceAccessMode::FOLLOW_LOCAL_CACHE);
 
     ~ObjectClientImpl();
 
@@ -822,6 +824,12 @@ private:
     /**
      * @brief The core synchronous implementation shared by MSetD2H and AsyncMSetD2H.
      */
+    Status MSetD2HRouted(const std::vector<std::string> &keys, const std::vector<DeviceBlobList> &blobs,
+                         const SetParam &param, std::vector<std::string> *confirmedKeys);
+    Status MSetD2HLocal(const HostPort &worker, const std::vector<std::string> &keys,
+                        const std::vector<const DeviceBlobList *> &blobs, client::TransportCreateParam createParam,
+                        client::TransportSetParam setParam, std::vector<std::string> *confirmedKeys);
+
     Status MSetD2HImpl(const std::vector<std::string> &objectKeys, const std::vector<DeviceBlobList> &devBlobList,
                        const SetParam &setParam, std::vector<std::string> *outLocalSetKeys);
 
@@ -1308,6 +1316,11 @@ private:
     SensitiveValue token_;
     std::string tenantId_;
     bool enableCrossNodeConnection_ = false;
+    bool UseRoutedDeviceWrites() const
+    {
+        return deviceAccessMode_ == DeviceAccessMode::BOUND_READ_ROUTED_WRITE || !enableLocalCache_;
+    }
+    const DeviceAccessMode deviceAccessMode_;
     bool enableLocalCache_ = true;
     client::DataPlacementPolicy dataPlacementPolicy_ = client::DataPlacementPolicy::PREFERRED_SAME_NODE;
     std::unique_ptr<Signature> signature_{ nullptr };

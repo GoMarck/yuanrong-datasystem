@@ -181,6 +181,14 @@ constexpr MetricDesc KV_METRIC_DESCS[] = {
     { 147, "client_fast_transport_mem_real_usage", MetricType::GAUGE, "bytes" },
     { 148, "client_ub_holding_count", MetricType::GAUGE, "count" },
     { 149, "client_ub_releasing_count", MetricType::GAUGE, "count" },
+    { 150, "hixl_d2rh_write_request_total", MetricType::COUNTER, "count" },
+    { 151, "hixl_d2rh_write_error_total", MetricType::COUNTER, "count" },
+    { 152, "hixl_d2rh_write_success_bytes", MetricType::COUNTER, "bytes" },
+    { 153, "hixl_d2rh_write_latency", MetricType::HISTOGRAM, "us" },
+    { 154, "hixl_rh2d_read_request_total", MetricType::COUNTER, "count" },
+    { 155, "hixl_rh2d_read_error_total", MetricType::COUNTER, "count" },
+    { 156, "hixl_rh2d_read_success_bytes", MetricType::COUNTER, "bytes" },
+    { 157, "hixl_rh2d_read_latency", MetricType::HISTOGRAM, "us" },
 };
 static_assert(sizeof(KV_METRIC_DESCS) / sizeof(KV_METRIC_DESCS[0]) <= static_cast<size_t>(KvMetricId::KV_METRIC_END));
 

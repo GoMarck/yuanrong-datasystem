@@ -64,6 +64,7 @@ enum class AccessTransportKind : uint8_t {
     UB,
     TCP,
     UNKNOWN,
+    HIXL,
 };
 
 /**

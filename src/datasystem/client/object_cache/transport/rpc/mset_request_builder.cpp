@@ -66,11 +66,15 @@ Status ValidateMSetRequest(const std::vector<std::shared_ptr<ObjectBuffer>> &buf
 }
 
 namespace {
-void AppendObjectInfo(const ObjectBufferInfo &info, bool useTcpPayload, MultiPublishReqPb &request)
+void AppendObjectInfo(const ObjectBufferInfo &info, bool useTcpPayload, MultiPublishReqPb &request,
+                      const std::vector<uint64_t> *blobSizes)
 {
     auto *objectInfo = request.add_object_info();
     objectInfo->set_object_key(info.objectKey);
     objectInfo->set_data_size(info.dataSize);
+    if (blobSizes != nullptr) {
+        objectInfo->mutable_blob_sizes()->Add(blobSizes->begin(), blobSizes->end());
+    }
     if (!useTcpPayload) {
         objectInfo->set_shm_id(info.shmId);
     }
@@ -139,12 +143,15 @@ Status BuildMultiPublishRequest(const std::vector<std::shared_ptr<ObjectBuffer>>
     CHECK_FAIL_RETURN_STATUS(!buffers.empty(), K_INVALID, "MSet buffer list must not be empty");
     CHECK_FAIL_RETURN_STATUS(buffers.size() == tcpPayload.size(), K_INVALID,
                              "MSet payload mode count does not match buffer count");
+    CHECK_FAIL_RETURN_STATUS(param.blobSizes.empty() || param.blobSizes.size() == buffers.size(),
+                             K_INVALID, "Device blob metadata count mismatch");
     request.Clear();
     payloads.clear();
     request.set_client_id(param.requestContext.clientId);
     request.set_token(param.requestContext.token);
     request.set_tenant_id(param.requestContext.tenantId);
     request.set_ttl_second(param.ttlSecond);
+    request.set_return_local_published_indexes(param.returnLocalPublishedIndexes);
     request.set_existence(static_cast<::datasystem::ExistenceOptPb>(param.existence));
     request.set_is_replica(false);
     const bool hasTcpPayload =
@@ -177,14 +184,15 @@ Status BuildMultiPublishRequest(const std::vector<std::shared_ptr<ObjectBuffer>>
             continue;
         }
         const auto &info = ObjectBufferInternal::GetInfo(*buffers[i]);
-        AppendObjectInfo(info, true, request);
+        AppendObjectInfo(info, true, request, param.blobSizes.empty() ? nullptr : &param.blobSizes[i]);
         payloads.emplace_back(info.pointer + info.metadataSize, info.dataSize);
     }
     for (size_t i = 0; i < buffers.size(); ++i) {
         if (tcpPayload[i]) {
             continue;
         }
-        AppendObjectInfo(ObjectBufferInternal::GetInfo(*buffers[i]), false, request);
+        AppendObjectInfo(ObjectBufferInternal::GetInfo(*buffers[i]), false, request,
+                         param.blobSizes.empty() ? nullptr : &param.blobSizes[i]);
     }
     return Status::OK();
 }

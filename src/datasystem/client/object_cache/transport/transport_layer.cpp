@@ -1572,6 +1572,56 @@ void TransportLayer::ReconcileLoop()
     }
 }
 
+Status TransportLayer::RegisterD2RHDeviceMemory(int32_t deviceId, const std::string &localIp,
+                                                 const std::vector<void *> &addresses,
+                                                 const std::vector<uint64_t> &sizes)
+{
+    return hixlTransporter_.RegisterDeviceMemory(deviceId, localIp, addresses, sizes);
+}
+
+Status TransportLayer::MSetDevice(const HostPort &worker, const std::vector<std::string> &keys,
+                                   const std::vector<const DeviceBlobList *> &blobs, TransportCreateParam createParam,
+                                   const TransportSetParam &setParam, TransportMSetResult &result,
+                                   std::vector<std::string> *confirmedKeys)
+{
+    std::shared_ptr<WorkerRpcClient> rpc;
+    RETURN_IF_NOT_OK(manager_->GetOrCreateRpcClient(worker, rpc));
+    return hixlTransporter_.MSetDevice(rpc, keys, blobs, std::move(createParam), setParam, result, confirmedKeys);
+}
+
+Status TransportLayer::PublishDeviceBuffers(const HostPort &worker,
+                                              const std::vector<std::shared_ptr<ObjectBuffer>> &buffers,
+                                              const TransportSetParam &param,
+                                              std::vector<std::string> *confirmedKeys)
+{
+    RETURN_IF_NOT_OK(ValidateMSetRequest(buffers, param));
+    for (const auto &buffer : buffers) {
+        const auto &owner = ObjectBufferInternal::GetInfo(*buffer).receiveBufferOwner;
+        if (owner != nullptr) {
+            RETURN_IF_NOT_OK(owner->CheckAlive());
+        }
+    }
+    MultiPublishReqPb request;
+    std::vector<MemView> payloads;
+    RETURN_IF_NOT_OK(BuildMultiPublishRequest(buffers, std::vector<bool>(buffers.size(), false), param,
+                                             request, payloads));
+    std::shared_ptr<WorkerRpcClient> rpc;
+    RETURN_IF_NOT_OK(manager_->GetOrCreateRpcClient(worker, rpc));
+    MultiPublishRspPb response;
+    uint32_t version = 0;
+    RETURN_IF_NOT_OK(rpc->InvokeMultiSet(param.subTimeoutMs, request, payloads, response, version));
+    if (confirmedKeys != nullptr) {
+        for (auto index : response.local_published_indexes()) {
+            CHECK_FAIL_RETURN_STATUS(index < buffers.size(), K_RUNTIME_ERROR, "Invalid publish result index");
+            confirmedKeys->push_back(request.object_info(static_cast<int>(index)).object_key());
+        }
+    }
+    AccessTransportTracker::Record(AccessTransportKind::SHM);
+    RETURN_IF_NOT_OK(Status(static_cast<StatusCode>(response.last_rc().error_code()), response.last_rc().error_msg()));
+    CHECK_FAIL_RETURN_STATUS(response.failed_object_keys().empty(), K_RUNTIME_ERROR, "Some D2H objects failed");
+    return Status::OK();
+}
+
 void TransportLayer::Shutdown()
 {
     std::lock_guard<bthread::Mutex> shutdownLock(shutdownMutex_);
@@ -1596,6 +1646,7 @@ void TransportLayer::Shutdown()
     if (reconcileThread.joinable()) {
         reconcileThread.join();
     }
+    hixlTransporter_.Shutdown();
     // Drain cleanup and regular DecreaseReference tasks before closing their endpoint connections.
     ambiguousCreateCleanupPool_.reset();
     releasePool_.reset();

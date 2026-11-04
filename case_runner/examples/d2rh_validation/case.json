@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "nodes": {
+    "node_a": {
+      "ssh": "node-a"
+    },
+    "node_b": {
+      "ssh": "node-b"
+    }
+  },
+  "targets": {
+    "writer": {
+      "node": "node_a"
+    },
+    "reader": {
+      "node": "node_b"
+    }
+  },
+  "shared_dirs": {
+    "bench": "../../../bench"
+  },
+  "timeout": 900,
+  "steps": [
+    {
+      "run": [
+        {
+          "id": "put",
+          "target": "writer",
+          "command": "exec python3 -u \"$CASE_DIR/bench/yuanrong_multi_buffer_bench.py\" --operation put --worker-addr \"$YR_WORKER_ADDR\" --local-ip \"$SDK_LOCAL_IP\" --key-prefix \"yr-$(basename \"$(dirname \"$CASE_RUN_DIR\")\")\" --num-keys 64 --keys-per-batch 8 --key-bytes 6291456 --blocks-per-key 2 --concurrency 1 --warmup 0 --enable-remote-h2d --verify-data --output \"$CASE_ARTIFACT_DIR/put.json\"",
+          "env": {
+            "YR_WORKER_ADDR": "worker-a:19491",
+            "SDK_LOCAL_IP": "<SDK_A_IP>"
+          }
+        }
+      ],
+      "timeout": 300
+    },
+    {
+      "run": [
+        {
+          "id": "get",
+          "target": "reader",
+          "command": "exec python3 -u \"$CASE_DIR/bench/yuanrong_multi_buffer_bench.py\" --operation get --worker-addr \"$YR_WORKER_ADDR\" --local-ip \"$SDK_LOCAL_IP\" --key-prefix \"yr-$(basename \"$(dirname \"$CASE_RUN_DIR\")\")\" --num-keys 64 --keys-per-batch 8 --key-bytes 6291456 --blocks-per-key 2 --concurrency 1 --warmup 0 --enable-remote-h2d --verify-data --output \"$CASE_ARTIFACT_DIR/get.json\"",
+          "env": {
+            "YR_WORKER_ADDR": "worker-b:19491",
+            "SDK_LOCAL_IP": "<SDK_B_IP>"
+          }
+        }
+      ],
+      "timeout": 300
+    }
+  ]
+}

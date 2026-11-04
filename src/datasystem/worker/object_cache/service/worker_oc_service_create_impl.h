@@ -72,7 +72,11 @@ private:
     void ReleaseReservations(const std::vector<ShmKey> &reservations);
 
     Status FillCreateResponse(const ClientKey &clientId, const std::shared_ptr<ShmUnit> &shmUnit,
-                              size_t metadataSize, CreateRspPb &resp);
+                              size_t metadataSize, CreateRspPb &resp, bool hixlWrite = false);
+
+    Status PrepareHixlWrite(MultiCreateReqPb &req, MultiCreateRspPb &resp);
+    Status FillHixlTarget(const MultiCreateReqPb &req, int index, const std::shared_ptr<ShmUnit> &unit,
+                          CreateRspPb &resp);
 
     Status AuthenticateCreateRequest(const CreateReqPb &req, std::string &tenantId);
 

@@ -115,6 +115,9 @@ add_dependencies(worker_transport_api worker_object_protos)
 
 add_library(worker_object_cache STATIC ${WORKER_OC_SRCS} ${WORKER_TRANSPORT_API_SRCS})
 target_link_libraries(worker_object_cache PRIVATE ${WORKER_OBJECT_CACHE_DEPEND_LIBS})
+if (ASCEND_HIXL_HCCS_SUPPORTED)
+    target_compile_definitions(worker_object_cache PRIVATE ASCEND_HIXL_AVAILABLE)
+endif ()
 
 # Reduce optimization for protobuf-heavy source files to prevent cc1plus OOM during parallel builds.
 # Each of these files transitively includes multiple .pb.h headers; with -O2 each cc1plus process

@@ -702,3 +702,64 @@ Each collect additionally archives reproduction configuration: Client copies onl
 Collection CLIs no longer expose compression or extraction switches. Ordinary Kubernetes collection retains uncompressed tar transfer and local extraction; ordinary SSH Client collection retains gzip/SCP and local extraction; ordinary localhost Client collection copies files. Filename/keyword/uncompressed-only filtering retains gzip transfer and local extraction. Matching compressed source logs remain included unless `--uncompressed-only` is set. Internal archive helpers and their tests retain support for explicit archive options. Validate CLI rejection and archive behavior with `tests/kvtest/tests/python/test_collect_compression.py` plus the existing collect/deploy suites. No service hot path, concurrency policy, or persisted service format is changed. Rollback restores the CLI argument definitions and documentation; callers using removed flags must omit them.
 
 Host selection is opt-in through `--host-filter` JSON (`include`/`exclude` arrays) only, with exclusion priority; selection precedes prefixes and batching. Kubernetes Client selection reads live HostIP once per namespace; excluded targets receive no remote collection calls. Invalid selectors fail closed. Targets with unavailable host IP are skipped with a diagnostic warning; no stale Kubernetes host IP fallback is used. Empty selection fails and API query errors still abort collection. Defaults remain unchanged. See `config/collect_hosts.json.example` under kvtest and regression suite `test_collect_targets.py` (synthetic 500-target coverage and mocked Worker/Client ordering).
+
+## HIXL D2RH manual ST
+
+- Release-wheel Python E2E: `tests/st/device/hixl_d2rh_release_e2e.py`, uses installed PyACL/public SDK APIs.
+  Default single-Worker mode checks D2RH; dual mode (`--enable-remote-h2d`) binds SDK to Worker A and
+  requires another Worker for remote-object RH2D. Samples 32 fresh random keys by default using
+  PREFERRED_META_OWNER, one key with two Blobs per API to avoid mixed-placement attribution.
+  Each object has 2 MiB and 4 MiB Blobs in reusable 2 MiB-aligned arenas. Its size exceeds the 512 KiB
+  QueryMeta inline-payload cap: smaller objects can be returned with metadata and copied into bound-Worker SHM,
+  bypassing RH2D even when the fresh write used HIXL. Free original overallocated pointers after SDK teardown.
+  Dual-mode preflight requires SDK routing INFO to confirm a nonempty SDK host ID matching active bound
+  Worker A. Workers must publish distinct per-host IDs with host_id_env_name, and A's UDS/SHM must be accessible;
+  otherwise even local keys can enter HIXL and fail same-NPU rank-table validation.
+  Every sample validates bytes, layout, NX and deletion; local/TCP/SHM samples do not count as HIXL coverage.
+  Collects access logs once after sampling (up to 60s; default LogManager flush period 30s), correlating key,
+  API and ordered stage. NX/no-op writes and repeated NX reads do not count as fresh direction coverage.
+  Requires at least two HIXL write samples (configurable); dual mode requires WRITE+first READ HIXL on the
+  same distinct keys, covering both Python write interfaces. Missing evidence or insufficient coverage fails.
+  Writes verified_samples.json and coverage.json with per-stage paths/trace IDs/timings. No placement pinning,
+  no claim of concurrent DMA or all-card coverage. Companion run_hixl_d2rh_multidevice.sh requires each SDK
+  device process to reach the same dual coverage threshold. No ST binary/test build/inject hooks required;
+  native errors cause exit without freeing device arenas. Runtime hardware coverage remains unexecuted here.
+  `HeteroD2RHWithRH2DTest.DISABLED_MultiDeviceWorkerRoundTrip` and
+  `HixlTransportPluginTest.SixteenWorkerDevicesShareRoundRobinEndpoints` add coverage; authored, not executed.
+  `ClientUsesAllocatedDeviceCommPort` and `WorkerKeepsFixedDeviceCommPort` check SDK explicit device-port
+  configuration and the existing Worker port using the fake plugin; authored, not executed.
+- Source: `tests/st/device/hetero_d2rh_test.cpp`; fixture `HeteroD2RHTest`, cases default to `DISABLED_`.
+- CMake collects the source into `ds_device_llt`; Bazel target `//tests/st/device:hetero_d2rh_test` is manual.
+- Requires real Ascend/HIXL, external Workers, buffer-pool configuration and explicit worker opt-in.
+- Covers multi-Blob round trips, arena reuse, NX, unregistered sources, legacy bound async round trips, pre-submit WRITE failure,
+  same-host SHM, and concurrent client registration. Remote tests assert HIXL to avoid accidental SHM coverage.
+- Setup/run commands, failure ownership and unverified hardware-fence boundaries:
+  `tests/st/device/README_hixl_d2rh.md`. Added without local build/test execution at the user's request.
+
+- Focused regressions: `ObjRefTableTest.Hixl*` (reservation/backpressure, concurrent quota, owner lifetime and
+  bad_alloc rollback), `HixlTransportPluginTest` explicit options/Connect budget cases, and Python constructor/import
+  coverage in `tests/python/test_hetero_client_multi_buffer.py`. These cases are authored but unexecuted.
+
+## Optional Python transfer benchmarks
+
+- bench/yuanrong_multi_buffer_bench.py defaults to PREFERRED_META_OWNER for synchronous D2RH placement;
+  registers fixed aligned local NPU arenas for put and HiXL remote H2D get. HIXL config maps to SDK HCCS
+  environment before native import; Workers must separately enable D2RH and compatible buffer pools.
+- bench/buffer_validation.py supplies opt-in --verify-data full-content patterns and destination poisoning
+  for Yuanrong and Mooncake (including HTTP workload propagation). API latency excludes verification;
+  stage wall throughput includes its overhead, reported under verification. Patterned put/get require matching seed.
+- Yuanrong verification additionally checks exact per-key blob_size_list through get_meta_info(keys, False),
+  before get or after put, chunked to the metadata API's 10,000-key limit. Mooncake checks each get return length.
+  api_metrics separates measured calls, verification readback, and Yuanrong metadata queries, with requested/success
+  payload bytes and latency summaries; it does not prove remote transport. Yuanrong phases retain failed-call evidence.
+- HiXL transport typed metrics use hixl_d2rh_write_* and hixl_rh2d_read_* for submitted native batches,
+  transfer errors, successful descriptor bytes and latency. Plugin fake UT WriteMetricsCountCallsAndOnlySuccessfulBytes
+  checks WRITE success/failure accounting; native compilation and NPU execution remain separate validation requirements.
+- case_runner/examples/d2rh_validation orchestrates pre-deployed two-node correctness checks.
+- Host-only regression: python3 -m unittest discover -s bench -p 'test_buffer_validation.py' -v.
+  No native SDK/NPU performance or link coverage is implied by these tests or content verification.
+
+Verification caches only each worker's current batch expectation, preserving shake256-key-offset-v1.
+Device verification uses batch copies and in-place poison rather than per-MiB transfers.
+VERIFY_PROGRESS reports batch/stage without adding background threads. Host memory overhead scales
+with concurrency times batch payload, including the comparison download and byte copy, not dataset size.

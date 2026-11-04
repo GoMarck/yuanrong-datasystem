@@ -28,6 +28,8 @@ constexpr uint32_t DEFAULT_SCALE_IN_COLLECT_WINDOW_MS = 1'000;
 constexpr uint32_t DEFAULT_URMA_SEND_LANE_COUNT_PER_PEER = 8;
 }
 
+DS_DEFINE_bool(enable_hixl_d2rh, false, "Enable synchronous HIXL device-to-remote-host writes");
+
 DS_DEFINE_string(l2_cache_type, "none",
                  "L2 cache type, optional value: 'obs', 'sfs', 'distributed_disk' or 'none', default is none");
 DS_DEFINE_string(distributed_disk_path, "",

@@ -28,6 +28,7 @@
 #include "datasystem/common/log/log.h"
 #include "datasystem/common/log/log_sampler.h"
 #include "datasystem/common/log/trace.h"
+#include "datasystem/common/metrics/kv_metrics.h"
 #include "datasystem/common/perf/perf_manager.h"
 #include "datasystem/utils/status.h"
 
@@ -69,7 +70,8 @@ uint64_t CalculateDataSize(const std::vector<uint64_t> &sizes)
 
 HeteroClient::HeteroClient(const ConnectOptions &connectOptions)
 {
-    impl_ = std::make_shared<object_cache::ObjectClientImpl>(connectOptions);
+    impl_ = std::make_shared<object_cache::ObjectClientImpl>(
+        connectOptions, object_cache::ObjectClientImpl::DeviceAccessMode::BOUND_READ_ROUTED_WRITE);
 }
 
 HeteroClient::~HeteroClient()
@@ -100,6 +102,10 @@ Status HeteroClient::Init()
     bool needRollbackState;
     auto rc = impl_->Init(needRollbackState, true);
     impl_->CompleteHandler(rc.IsError(), needRollbackState);
+    if (rc.IsOk()) {
+        // Client logging must set the log directory before the metrics exporter is initialized.
+        (void)metrics::InitKvMetrics();
+    }
     access.Result(rc).Record();
     return rc;
 }
