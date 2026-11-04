@@ -542,8 +542,10 @@ handler. Clearing the Router handler synchronously excludes later callback acces
     SDK HiXL transfer metrics (`hixl_d2rh_write_*`, `hixl_rh2d_read_*`) count native submitted batches,
     transfer return errors, successful descriptor bytes and call latency. They exclude pre-submit connection errors
     and local SHM traffic, include warmup/verification calls, and do not imply publication success.
-    Rebuilt SDKs emit them through typed metrics to kv_metrics.log (JSON monitor enabled) or INFO;
-    benchmark usage and API/transport accounting boundaries are in bench/README_yuanrong_multi_buffer.md.
+    Rebuilt SDKs emit them through typed metrics to kv_metrics.log (JSON monitor enabled) or INFO.
+    HeteroClient initializes the process-wide registry after successful client Init, once logging has resolved
+    the log directory, matching KVClient/ObjectClient. This does not require an additional client instance.
+    Benchmark usage and API/transport accounting boundaries are in bench/README_yuanrong_multi_buffer.md.
   - remote H2D toggle
   - optional `IServiceDiscovery`; the public implementations are ETCD-backed `ServiceDiscovery` and coordinator-backed `CoordinatorServiceDiscovery`
   - fast transport shared-memory size

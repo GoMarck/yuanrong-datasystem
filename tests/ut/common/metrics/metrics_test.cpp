@@ -1149,6 +1149,14 @@ TEST_F(MetricsTest, kv_metric_urma_id_layout_test)
         { metrics::KvMetricId::CLIENT_FAST_TRANSPORT_MEM_REAL_USAGE, "client_fast_transport_mem_real_usage" },
         { metrics::KvMetricId::CLIENT_UB_HOLDING_COUNT, "client_ub_holding_count" },
         { metrics::KvMetricId::CLIENT_UB_RELEASING_COUNT, "client_ub_releasing_count" },
+        { metrics::KvMetricId::HIXL_D2RH_WRITE_REQUEST_TOTAL, "hixl_d2rh_write_request_total" },
+        { metrics::KvMetricId::HIXL_D2RH_WRITE_ERROR_TOTAL, "hixl_d2rh_write_error_total" },
+        { metrics::KvMetricId::HIXL_D2RH_WRITE_SUCCESS_BYTES, "hixl_d2rh_write_success_bytes" },
+        { metrics::KvMetricId::HIXL_D2RH_WRITE_LATENCY, "hixl_d2rh_write_latency" },
+        { metrics::KvMetricId::HIXL_RH2D_READ_REQUEST_TOTAL, "hixl_rh2d_read_request_total" },
+        { metrics::KvMetricId::HIXL_RH2D_READ_ERROR_TOTAL, "hixl_rh2d_read_error_total" },
+        { metrics::KvMetricId::HIXL_RH2D_READ_SUCCESS_BYTES, "hixl_rh2d_read_success_bytes" },
+        { metrics::KvMetricId::HIXL_RH2D_READ_LATENCY, "hixl_rh2d_read_latency" },
     };
     EXPECT_EQ(static_cast<uint16_t>(metrics::KvMetricId::CLIENT_DIRECT_BATCH_GET_RPC_TOTAL), 95u);
     EXPECT_EQ(static_cast<uint16_t>(metrics::KvMetricId::CLIENT_DIRECT_BATCH_GET_OBJECT_TOTAL), 96u);
@@ -1162,7 +1170,7 @@ TEST_F(MetricsTest, kv_metric_urma_id_layout_test)
     EXPECT_EQ(static_cast<uint16_t>(metrics::KvMetricId::WORKER_TO_CLIENT_GET_URMA_TOTAL_BYTES), 142u);
     EXPECT_EQ(static_cast<uint16_t>(metrics::KvMetricId::CLIENT_AMBIGUOUS_CREATE_CLEANUP_DROPPED_TOTAL), 144u);
     EXPECT_EQ(static_cast<uint16_t>(metrics::KvMetricId::WORKER_EVICT_PRETRIGGER_TOTAL), 145u);
-    EXPECT_EQ(static_cast<uint16_t>(metrics::KvMetricId::KV_METRIC_END), 150u);
+    EXPECT_EQ(static_cast<uint16_t>(metrics::KvMetricId::KV_METRIC_END), 158u);
     for (size_t k = 0; k < sizeof(kTailMetrics) / sizeof(kTailMetrics[0]); ++k) {
         const auto wantId = static_cast<uint16_t>(kTailMetrics[k].id);
         const auto *desc = std::find_if(descs, descs + count,
