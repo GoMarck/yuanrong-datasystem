@@ -10,7 +10,6 @@
   "reader_threads": 8,
   "notify_count": 10,
   "inflight": 128,
-  "writes_per_client": {"8MB": 2100},
   "sizes": ["8MB"],
   "target_qps": {"8MB": [35]},
   "repeats": 1,
