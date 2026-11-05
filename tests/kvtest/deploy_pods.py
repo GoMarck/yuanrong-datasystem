@@ -21,6 +21,7 @@ import sys
 import tempfile
 
 from deploy_common import discover_nodes, log_error, log_info, setup_logging
+from kvtest_pod_identity import pod_name as deployment_pod_name, validate_host_id
 
 MAX_PARALLEL_KUBECTL = 32
 
@@ -268,7 +269,7 @@ def apply_yaml(yaml_content, namespace='default', timeout=60):
 
 
 def generate_pod_manifest(config, template_content, target_replicas,
-                          ip_to_node):
+                          ip_to_node, host_ids=None):
     """Generate Pod YAML manifests from a pre-computed per-node replica plan.
 
     Distribution (node discovery, spec parsing, percentage rounding) lives
@@ -310,18 +311,22 @@ def generate_pod_manifest(config, template_content, target_replicas,
 
     manifest_parts = []
     container_index = 0  # Global counter for container naming
+    if host_ids is not None:
+        expected = {deployment_pod_name(name_prefix, replica, ip_to_node.get(ip, ip))
+                    for ip, count in target_replicas.items() for replica in range(count)}
+        if not isinstance(host_ids, dict) or set(host_ids) != expected:
+            raise ValueError('host-id map must cover exactly the generated Pods')
+        for value in host_ids.values():
+            validate_host_id(value)
 
     for node_ip, replica_count in target_replicas.items():
         if replica_count <= 0:
             continue
 
         node_name = ip_to_node.get(node_ip, node_ip)
-        # Sanitize node_name for use in pod name (k8s naming rules)
-        safe_node_name = node_name.replace('.', '-').replace('_', '-')
-
         for replica in range(replica_count):
             # Pod name: prefix-replica-nodeName (unique across nodes)
-            pod_name = f'{name_prefix}-{replica}-{safe_node_name}'
+            pod_name = deployment_pod_name(name_prefix, replica, node_name)
 
             # Container name: prefix-globalIndex (unique across all pods)
             container_name = f'{name_prefix}-{container_index}'
@@ -335,6 +340,8 @@ def generate_pod_manifest(config, template_content, target_replicas,
             pod_spec['metadata']['name'] = pod_name
             if 'namespace' in config:
                 pod_spec['metadata']['namespace'] = namespace
+            if host_ids is not None:
+                pod_spec['metadata'].setdefault('labels', {})['kvtest.logical-host'] = host_ids[pod_name]
 
             # Update nodeName
             pod_spec.setdefault('spec', {})
@@ -343,6 +350,9 @@ def generate_pod_manifest(config, template_content, target_replicas,
             # Update container resources and name
             containers = pod_spec.get('spec', {}).get('containers', [])
             for container in containers:
+                if host_ids is not None:
+                    container['env'] = [entry for entry in container.get('env', []) if entry['name'] != 'HOST_IP']
+                    container['env'].append({'name': 'HOST_IP', 'value': host_ids[pod_name]})
                 container['name'] = container_name
                 container.setdefault('resources', {})
                 # Update limits
@@ -618,8 +628,14 @@ def cmd_deploy(args):
 
     # Generate manifest
     try:
+        host_ids = None
+        if getattr(args, 'host_id_map', None):
+            with open(args.host_id_map, encoding='utf-8') as stream:
+                host_ids = json.load(stream)
+            if not isinstance(host_ids, dict):
+                raise ValueError('host-id map must be a JSON object')
         manifest = generate_pod_manifest(config, template_content,
-                                         target_replicas, ip_to_node)
+                                         target_replicas, ip_to_node, host_ids)
     except ValueError as e:
         log_error(f'ERROR: {e}')
         return 1
@@ -829,6 +845,7 @@ Examples:
                                help='CPU requests (default: same as --cpu)')
     deploy_parser.add_argument('--requests-memory',
                                help='Memory requests (default: same as --memory)')
+    deploy_parser.add_argument('--host-id-map', help='JSON mapping exact Pod names to logical HOST_IP values')
     # Distribution modes are mutually exclusive: only one of explicit
     # per-node, percentage-of-nodes, or uniform may drive a single deploy.
     # (Previously --replicas silently won over --pods-per-node; making them

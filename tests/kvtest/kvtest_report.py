@@ -119,7 +119,7 @@ def config_files(output, backends):
     for backend in backends:
         for name in ('config.json', 'deploy.json', 'pods.json', 'rdma-devices.json',
                      'service-startup.json', 'thread-cpu.json', 'host-rdma.json', 'latency-source.json',
-                     'execution.json', 'service-discovery.json'):
+                     'execution.json', 'service-discovery.json', 'logical-host-groups.json'):
             candidates.append(output / backend / name)
         candidates += list((output / backend / 'collected').rglob('config*.json'))
         candidates += list((output / backend / 'collected').rglob('deploy*.json'))
@@ -301,6 +301,22 @@ def render_html_report(output, backends=None, workload=None):
               '<details><summary>逐 Pod 镜像与资源配额</summary>',
               table(['系统', '节点', 'Pod', '角色', '镜像', 'Requests（含设备）', 'Limits（含设备）'], resources),
               '</details>']
+    for backend in backends:
+        grouping = read_json(output / backend / 'logical-host-groups.json')
+        if not grouping:
+            continue
+        parts += ['<h3>' + escape(LABELS[backend]) + ' · 逻辑节点分组</h3>',
+                  f"<p>{grouping['physical_nodes']} 台物理机模拟 {grouping['logical_hosts']} 个逻辑节点。"
+                  'CPU、内存与网卡仍由物理机共享，不代表同数量独立机器的扩容性能。</p>',
+                  '<p>' + ('DataSystem worker 与对应两个 client 均使用 host_id_env_name=HOST_IP，'
+                            'HOST_IP 设置为下表逻辑标识；实际通信地址仍为 Pod IP。'
+                            '保留原有传输策略，同组仍可能使用 SHM，不保证全部走 UB。'
+                            if grouping['host_ip_injected'] else
+                            'Mooncake 仅保持相同 store/client 实例数量和分组，不注入 DataSystem HOST_IP 标识。')
+                  + '下表来自部署分组配置，实际 Pod 环境见归档 pods.json。</p>',
+                  table(['逻辑标识', '物理节点', 'Worker/Store Pod', 'Client Pods'],
+                        [[g['host_id'], g['physical_node'], g['storage_pod'], ', '.join(g['client_pods'])]
+                         for g in grouping['groups']])]
     rows = []
     parts.append('<h3>实际组件启动参数</h3><p>命令行来自运行时 /proc，client 项包含实际实例配置。'
                  '环境变量仅采集指定的地址与传输设置。</p>')

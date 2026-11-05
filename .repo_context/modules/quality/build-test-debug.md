@@ -275,6 +275,11 @@ Backed by `tests/kvtest/BUILD.bazel` and `tests/kvtest/build.sh`:
   reuses only `artifacts` from an optional source scenario, and preserves the strict worker/coordinator templates;
 - its `--suite worker-scaling` mode selects the five worker/store-count cases, adjusts only deployment resource
   budgets and MC segment capacity, and reuses `node_addresses` to check the largest case's device quota before traffic;
+- its `--suite logical-hosts` mode runs four 4MB/17QPS logical-group cases on two physical nodes. Each group has
+  one worker/store and two clients. `kvtest_pod_identity.py` generates stable per-group IDs; `deploy_pods.py --host-id-map`
+  and client `logical_host_id` inject matching DS `HOST_IP` values without replacing network addresses or changing
+  C++ scheduling/transport. The report archives intended groups separately from physical Pod topology. MC matches
+  instance counts without adopting DS host affinity; same-group SHM remains possible and these are not independent machines;
 - the CMake mode links against a pre-installed SDK (`-s/--sdk`, default `../../output/cpp`), while the Bazel mode
   builds `//tests/kvtest:kvtest` against the in-tree `//src/datasystem/client:datasystem`, producing a self-contained
   binary that does not need `libdatasystem.so` at runtime;

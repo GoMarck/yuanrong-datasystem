@@ -25,6 +25,7 @@ from urllib.request import build_opener, ProxyHandler
 from urllib.error import URLError
 from kvtest_report import api_operations, api_label, api_boundary_note
 from kvtest_environment import validate_environment
+from kvtest_pod_identity import logical_host_groups, logical_host_ids
 from kvtest_datasystem_deploy import (jf_settings, check_native_package, datasystem_service_args,
                                       start_jf_mock, wait_jf_registration)
 from ds_config_template import render_ds_config, RUNTIME_CONFIG_KEYS
@@ -163,6 +164,18 @@ def plan_from_scenario(scenario):
     if numa is not None and (type(numa) is not int or numa < 0):
         raise ValueError('client_numa_node must be null (random) or a nonnegative integer')
     plan = build_plan(scenario)
+    for backend in configured_systems(scenario):
+        groups = logical_host_groups(scenario, plan, backend)
+        if groups and backend == 'datasystem':
+            if jf_settings(scenario, plan):
+                raise ValueError('logical_hosts requires DataSystem whl/dscli deployment')
+            for role in ('worker', 'client'):
+                config = scenario['components'][backend][role].get('config', {})
+                if config.get('host_id_env_name') != 'HOST_IP':
+                    raise ValueError(f'logical_hosts requires {role}.config.host_id_env_name=HOST_IP')
+    if scenario.get('logical_hosts') and set(configured_systems(scenario)) == {'datasystem', 'mooncake'}:
+        if dict(plan.placement('datasystem', 'worker')) != dict(plan.placement('mooncake', 'store')):
+            raise ValueError('logical_hosts requires matching DataSystem worker and Mooncake store placements')
     if 'datasystem' in configured_systems(scenario):
         jf_settings(scenario, plan)
         for role in ('coordinator', 'worker'):
@@ -283,11 +296,24 @@ def deploy_component(run, scenario, plan, namespace, backend, role, image, templ
     path.write_text(template, encoding='utf-8')
     resources = component_resources(scenario, backend, role)
     prefix = ('ds-' if backend == 'datasystem' else 'mc-') + role
+    host_id_map = None
+    if backend == 'datasystem' and role in ('worker', 'client'):
+        host_ids = logical_host_ids(scenario, plan, backend, role)
+        if host_ids:
+            host_id_map = templates / f'{backend}-{role}-host-ids.json'
+            write_json(host_id_map, host_ids)
     run.deploy_pods(namespace, prefix, image, path,
                     replicas_for(plan, backend, role, run.addresses), str(resources['cpu']),
                     f"{resources['memory_gib']}Gi", requests_cpu=str(resources['requests_cpu']),
-                    requests_memory=f"{resources['requests_memory_gib']}Gi")
-    return run.pods(namespace, prefix + '-', component_count(plan, backend, role))
+                    requests_memory=f"{resources['requests_memory_gib']}Gi", host_id_map=host_id_map)
+    pods = run.pods(namespace, prefix + '-', component_count(plan, backend, role))
+    if host_id_map is not None:
+        for name, pod in pods.items():
+            for container in pod['spec']['containers']:
+                env = {entry['name']: entry.get('value') for entry in container.get('env', [])}
+                if env.get('HOST_IP') != host_ids[name]:
+                    raise RuntimeError(f'{name}: Pod HOST_IP differs from logical host map')
+    return pods
 
 
 def used_resource(pods, node, resource):
@@ -419,7 +445,7 @@ class Run:
         return pods
 
     def deploy_pods(self, namespace, prefix, image, template, replicas, cpu, memory, *, requests_cpu=None,
-                    requests_memory=None):
+                    requests_memory=None, host_id_map=None):
         argv = [sys.executable, ROOT / 'deploy_pods.py', 'deploy', '-n', namespace,
                 '-p', prefix, '-i', image, '-y', template, '-r', replicas,
                 '--cpu', cpu, '--memory', memory, '--wait']
@@ -427,6 +453,8 @@ class Run:
             argv += ['--requests-cpu', requests_cpu]
         if requests_memory is not None:
             argv += ['--requests-memory', requests_memory]
+        if host_id_map is not None:
+            argv += ['--host-id-map', host_id_map]
         self.command(argv, timeout=480)
 
 
@@ -596,6 +624,16 @@ def configure_clients(run, scenario, plan, namespace, prefix, backend, case_dir,
     deploy = json.loads(deploy_path.read_text())
     config = json.loads(config_path.read_text())
     patch_client_deploy(deploy, hosts, devices, duration)
+    groups = logical_host_groups(scenario, plan, backend)
+    if groups:
+        write_json(case_dir / 'logical-host-groups.json', {
+            'physical_nodes': len({group['physical_node'] for group in groups}),
+            'logical_hosts': len(groups), 'host_ip_injected': backend == 'datasystem',
+            'transport_policy': 'unchanged', 'groups': groups})
+        if backend == 'datasystem':
+            host_ids = logical_host_ids(scenario, plan, backend, 'client')
+            for node in deploy['nodes']:
+                node['logical_host_id'] = host_ids[node['pod_name']]
     if plan.notify_include_self:
         peers = [f"http://{pods[node['pod_name']]['status']['podIP']}:"
                  f"{node.get('port', config.get('listen_port', 9000))}" for node in deploy['nodes']]

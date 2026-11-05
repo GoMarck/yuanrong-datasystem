@@ -100,6 +100,34 @@ Python 先完成原生部署，再计时，达到运行时长后使用原生 sto
 外部 CPU/带宽监控默认关闭，Mooncake SDK 自带 metrics 日志由组件 env 保留。常规对比不执行压力期间的逐 Pod procfs 快照。
 组件分布、Pod 资源、生成配置与执行命令均归档；没有实际进程快照时报告明确提示，不能把生成配置冒充实际 /proc 参数。
 
+## 两台物理机的逻辑节点分组对比
+
+`--suite logical-hosts` 串行运行以下四档 DS/MC 对比。数据均为 4MB、17QPS/client、1写1读、4写/8读线程、随机 NUMA，外部监控默认关闭。每档每系统默认运行180秒。
+
+| 物理节点 | 每物理节点 worker/store | 每物理节点 client | 全集群逻辑节点 |
+| --- | ---: | ---: | ---: |
+| worker02、worker03 | 2 | 4 | 4 |
+| worker02、worker03 | 4 | 8 | 8 |
+| worker02、worker03 | 8 | 16 | 16 |
+| worker02、worker03 | 16 | 32 | 32 |
+
+DS 每组为一个 worker 和两个 client，`host_id_env_name=HOST_IP` 保持不变，三者的环境变量 `HOST_IP` 设置为同一个 `node-XX`。例如第一档为 worker02 的 worker0/client0/client1 使用 node-01、worker1/client2/client3 使用 node-02，worker03 对应 node-03、node-04。Pod IP、物理 hostIP 和实际通信地址不替换。保留原有传输策略，逻辑分组不能保证全走 UB，同组仍可能使用 SHM。读通知仍使用原生 KVTest 的 peer 选择，不限定在逻辑组内。
+
+Mooncake 使用相同 store/client 实例数量，只作分组标注，不使用 DS 的 HOST_IP 亲和机制。两台物理机共享 CPU、内存与网卡，因此结果是逻辑分组扩容测试，不等同实际4/8/16/32台机器的扩容结果。报告包含物理部署数量和 `logical-host-groups.json` 对应表。
+
+```bash
+python3 -u tools/run_six_case_compare.py \
+  --suite logical-hosts \
+  --source-scenario comparison/scenario.2-nodes-1clients.json \
+  --ds-whl "${DS_WHL:?请先设置whl路径}" \
+  --mc-image "${MC_IMAGE:-mooncake-store-kvtest:official-v0.3.13.post1-rdma-event}" \
+  --duration 180
+```
+
+`--source-scenario` 仅复用 artifacts；生成的四份完整 JSON 保存在结果目录 `scenarios/`，可查看后单独传给 `deploy_compare_ub_rdma.py --scenario`。启用逻辑分组使用顶层 `logical_hosts=true`，要求各物理节点恰好一个 worker/store 对两个 client，DS worker/client 均显式配置 `host_id_env_name=HOST_IP`，并使用 whl/dscli 模式。关闭该选项或使用旧套件可恢复原来的物理 HOST_IP 注入，无需重编 C++。
+
+新套件 DS/MC 资源一致：worker/store 每实例60GiB池、Pod CPU request/limit=8/32、内存request/limit=64/80GiB；client CPU request/limit=4/32、内存request/limit=4/20GiB。CPU limit不是独占绑核。最大档每物理节点需要48份空闲 UB 和48份空闲 RDMA配额，存储与client合计请求256CPU、1152GiB内存；控制节点上的服务资源另计。脚本会在第一档发压前校验四档容量预算及最大档设备配额；CPU/内存最终由 Kubernetes 调度判断，需预留其他工作负载所用资源。失败即停止并保留现场，入口为结果目录 `index.html`。
+
 ## 输出与计时口径
 
 六组固定的两节点对比可使用下面的入口。依次运行 1B/17QPS/2client、1KB/17QPS/2client、8KB/17QPS/2client、8KB/105QPS/1client、256KB/17QPS/2client、1MB/17QPS/2client（client 数均为每节点数量）。每组 DS、MC 各运行 180 秒；全部 client 均读写，每次写入通知一个其他 client 读取一次。

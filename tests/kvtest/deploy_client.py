@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from log_collect import (add_collect_filters, archive_command, filters_from_args, has_filters,
                          pod_directory, receive_archive, select_targets, copy_case_files, archive_options_from_args,
                          host_selection_from_args, filter_collect_targets, read_pod_addresses)
+from kvtest_pod_identity import validate_host_id
 
 from deploy_common import (
     _print_timings,
@@ -426,6 +427,9 @@ class Deployer:
         config['nodes'] = self.build_config_nodes()
         config['peers'] = self.build_peers(node)
         config.update(self.build_node_overrides(node))
+        if 'logical_host_id' in node:
+            config['env'] = dict(config.get('env', {}), HOST_IP=validate_host_id(node['logical_host_id']))
+            config['host_id_env_name'] = 'HOST_IP'
         if 'numa_node' in node:
             config['random_numa_node'] = False
         if 'cuda' in node:
@@ -646,14 +650,14 @@ class Deployer:
             if has_bundled_jemalloc:
                 ld_path = f'{self.remote_work_dir}/allocator_lib' + (f':{ld_path}' if ld_path else '')
 
-            # Custom env vars: HOST_IP injection + SDK tuning.
-            # Uses status.hostIP (k8s node InternalIP), NOT nodeName (hostname)
-            # — hostname would break coordinator/etcd registration which
-            # expects an IP address.
             custom_env = {k: v for k, v in config.get('env', {}).items() if k}
             if ld_path and 'LD_LIBRARY_PATH' in custom_env:
                 ld_path += ':' + str(custom_env.pop('LD_LIBRARY_PATH'))
             host_id_env = config.get('host_id_env_name') or 'HOST_IP'
+            if 'logical_host_id' in node:
+                if host_id_env != 'HOST_IP':
+                    raise ValueError('logical_host_id requires host_id_env_name=HOST_IP')
+                custom_env['HOST_IP'] = validate_host_id(node['logical_host_id'])
             if host_id_env and host_id_env not in custom_env:
                 host_ip = node.get('host_ip', '')
                 if not host_ip:
