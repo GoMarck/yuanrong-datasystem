@@ -273,6 +273,8 @@ Backed by `tests/kvtest/BUILD.bazel` and `tests/kvtest/build.sh`:
 - `tests/kvtest/tools/run_six_case_compare.py` prepares the six fixed two-node workload cases from the current
   comparison reference scenario and invokes `deploy_compare_ub_rdma.py` serially. It forces whl/dscli deployment,
   reuses only `artifacts` from an optional source scenario, and preserves the strict worker/coordinator templates;
+- its `--suite worker-scaling` mode selects the five worker/store-count cases, adjusts only deployment resource
+  budgets and MC segment capacity, and reuses `node_addresses` to check the largest case's device quota before traffic;
 - the CMake mode links against a pre-installed SDK (`-s/--sdk`, default `../../output/cpp`), while the Bazel mode
   builds `//tests/kvtest:kvtest` against the in-tree `//src/datasystem/client:datasystem`, producing a self-contained
   binary that does not need `libdatasystem.so` at runtime;

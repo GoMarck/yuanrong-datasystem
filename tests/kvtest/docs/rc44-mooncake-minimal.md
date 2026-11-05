@@ -116,6 +116,21 @@ python3 -u tools/run_six_case_compare.py \
 
 所有派生 JSON 保存到新结果目录的 `scenarios/`，每组生成独立报告，`index.html` 为入口。失败停止并保留现场，不复用或覆盖之前失败的结果目录。外部监控沿用当前对比入口的默认关闭行为。
 
+五组 worker/store 数量对比使用 `--suite worker-scaling`：8MB/17QPS/每节点1worker与2client；8KB/1000QPS/每节点1、4、8、16个worker与同数量client。Mooncake store 数量与 DS worker 对应，均为1写1读，沿用相同 client 参数、严格服务端模板和 whl 模式。
+
+```bash
+python3 -u tools/run_six_case_compare.py \
+  --suite worker-scaling \
+  --source-scenario "$SCENARIO" \
+  --ds-whl "$DS_WHL" \
+  --mc-image "$MC_IMAGE" \
+  --duration 150
+```
+
+此套件保留 DS 模板中每 worker 60GiB 内存池，MC 每 store segment 调整为60GiB；worker/store Pod 的 CPU request/limit 为8/16、内存 request/limit 为64/80GiB；client Pod 为4/32 CPU和4/20GiB。最大档每节点请求192CPU、1088GiB内存，另需系统及其他 Pod 的可用资源。最大档每节点需要32份空闲 UB/RDMA 配额，入口先复用原有节点与设备配额检查再开始压测。实际可调度性仍由节点剩余 CPU、内存和 Kubernetes 决定，不通过该配额检查推断性能。
+
+该套件默认每系统150秒：第一组180秒的计划写入量为95.625GiB，超过现有总池120GiB的75%保守预算；150秒为79.6875GiB。显式指定其他时长仍经过原有容量预检。旧六组入口的默认180秒及资源设置保持不变，服务端 reference 模板没有改动。
+
 - `report.html` / `report.md`：本轮数据、部署、配置及统计边界。
 - `datasystem/api_latency_summary.*`：SDK 原生 `DS_KV_CLIENT_SET/GET` access 日志中的微秒耗时。
 - `mooncake/api_latency_summary.*`：独立操作层的 `put/get_buffer` SDK 外侧微秒耗时。
