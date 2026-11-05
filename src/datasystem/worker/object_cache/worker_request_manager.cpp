@@ -744,7 +744,7 @@ void GetRequest::SetShmObjectInfoPb(const ObjectKey &objectKey, size_t objectInd
             *(info.mutable_host_info()) = *(constAccessor->second);
             useRemoteH2DHostInfo = true;
         } else {
-            LOG_FIRST_AND_EVERY_N(WARNING, K_RH2D_WARNING_LOG_EVERY_N)
+            LOG_EVERY_N(WARNING, K_RH2D_WARNING_LOG_EVERY_N)
                 << "[RH2D] Local Get response falls back to shm because host_info with data_info is unavailable, "
                 << "objectKey=" << objectKey << ", commIdSize=" << clientCommId_.size();
         }

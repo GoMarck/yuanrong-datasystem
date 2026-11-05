@@ -139,7 +139,7 @@ Status PrepareLocalGetRemoteH2DHostInfo(const ReadKey &readKey, SafeObjType &saf
                                                   true /* fillDataInfo */, *hostInfo, clientDeviceInfo, &blobSizes,
                                                   true));
     safeObj->SetRemoteHostInfo(clientCommId, hostInfo);
-    LOG_FIRST_AND_EVERY_N(INFO, K_RH2D_INFO_LOG_EVERY_N)
+    LOG_EVERY_N(INFO, K_RH2D_INFO_LOG_EVERY_N)
         << "[RH2D] Prepared local Get host_info for HIXL READ, objectKey=" << readKey.objectKey
         << ", commIdSize=" << clientCommId.size() << ", blobNum=" << hostInfo->data_info().sizes_size()
         << ", dataOffset=" << hostInfo->data_info().offset();

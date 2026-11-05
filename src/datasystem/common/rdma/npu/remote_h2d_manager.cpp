@@ -385,7 +385,7 @@ Status RemoteH2DManager::ResolvePhysicalDeviceId(int32_t logicDeviceId, int32_t 
     Status rc = acl::AclDeviceManager::Instance()->GetPhysicalDeviceId(logicDeviceId, physicalDeviceId);
     if (rc.IsError()) {
         physicalDeviceId = logicDeviceId;
-        LOG_FIRST_AND_EVERY_N(WARNING, K_RH2D_DEVICE_INFO_WARNING_LOG_EVERY_N)
+        LOG_EVERY_N(WARNING, K_RH2D_DEVICE_INFO_WARNING_LOG_EVERY_N)
             << "[RH2D] Failed to resolve physical device id for logic devId=" << logicDeviceId
             << ", use logic devId as comparable device id. Detail: " << rc.ToString();
     }
@@ -399,7 +399,7 @@ Status RemoteH2DManager::GetWorkerPhysicalDeviceId(int32_t logicDeviceId, int32_
         physicalDeviceId = iter->second;
         return Status::OK();
     }
-    LOG_FIRST_AND_EVERY_N(WARNING, K_RH2D_DEVICE_INFO_WARNING_LOG_EVERY_N)
+    LOG_EVERY_N(WARNING, K_RH2D_DEVICE_INFO_WARNING_LOG_EVERY_N)
         << "[RH2D] Worker physical device id cache miss for logic devId=" << logicDeviceId
         << ", resolve it without updating runtime cache.";
     RETURN_IF_NOT_OK(ResolvePhysicalDeviceId(logicDeviceId, physicalDeviceId));
