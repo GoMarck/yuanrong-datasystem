@@ -7,6 +7,8 @@
 本分支以 `v0.9.2.rc44` 为基线，保留下述原生用法。Mooncake 使用独立 `put/get_buffer` 操作，默认不编入。
 新对比入口、双二进制配置、SDK access 日志口径及已知基线测试问题见 [rc44 接入与运行指南](docs/rc44-mooncake-minimal.md)。
 
+录屏入口：[节点扩展示范](docs/ds-node-scaling-demo.md)、[4/6/8/16/32MB 双系统对比演示](docs/size-comparison-demo.md)。
+
 ## 编译与运行
 
 ```bash

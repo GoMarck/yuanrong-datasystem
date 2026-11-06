@@ -296,6 +296,14 @@ Backed by `tests/kvtest/BUILD.bazel` and `tests/kvtest/build.sh`:
   request/limit is 2/32 with memory 4/20GiB. A per-run reference changes only `shared_memory_size_mb` to 24576
   through `render_ds_config`; common templates and other suites remain unchanged. The 16-host 512-group case
   requests 256CPU/1152GiB and 96 UB units per host before coordinator and existing workload overhead;
+- `tests/kvtest/tools/run_size_compare_demo.py` runs five two-node DS/MC comparisons (4/6/8/16/32MB,
+  17QPS/client, two clients and one worker/store per node, 1:1 reads, 120 seconds per system by default).
+  It uses equal 256GiB storage pools, storage CPU request/limit 32/32 with memory 272/288GiB, and client CPU
+  4/32 with memory 4/20GiB. `kvtest_comparison_demo.py` reuses archived aggregate reading and terminal
+  layout helpers to show DataSystem versus an anonymized comparison label, with signed latency reductions.
+  Raw logs, JSON and per-case reports retain backend identity and timing boundaries. Capacity validation,
+  subprocess cancellation and cleanup semantics reuse the existing controller; no C++ hot paths change.
+  A per-run reference changes only the worker pool value to 262144MiB; the canonical template remains unchanged;
 - the CMake mode links against a pre-installed SDK (`-s/--sdk`, default `../../output/cpp`), while the Bazel mode
   builds `//tests/kvtest:kvtest` against the in-tree `//src/datasystem/client:datasystem`, producing a self-contained
   binary that does not need `libdatasystem.so` at runtime;

@@ -17,13 +17,13 @@ STATES = {'pending': '待运行', 'running': '运行中', 'complete': '完成', 
 LATENCIES = ('set_avg_ms', 'set_p99_ms', 'get_avg_ms', 'get_p99_ms')
 
 
-def read_result(directory, row):
+def read_result(directory, row, backend='datasystem'):
     def read(name):
         return json.loads((directory / name).read_text(encoding='utf-8'))
 
     if read('state.json').get('status') != 'complete':
         raise ValueError('controller did not finish successfully')
-    stats = read('datasystem/api_latency_summary.json')
+    stats = read(f'{backend}/api_latency_summary.json')
     write_op, read_op = api_operations(stats)
     result = dict(row, status='complete')
     for prefix, op in (('set', write_op), ('get', read_op)):
@@ -34,7 +34,7 @@ def read_result(directory, row):
                 raise ValueError(f'invalid SDK latency samples: {op}')
             result[f'{prefix}_{target}'] = value / 1000
         result[f'{prefix}_samples'] = item['total']
-    fanout = read('datasystem/fanout.json')
+    fanout = read(f'{backend}/fanout.json')
     result.update(successful_set=fanout['successful_set'], successful_get=fanout['successful_get'],
                   observed_get_per_set=fanout['observed_get_per_set'])
     for prefix, count in (('set', fanout['successful_set']), ('get', fanout['successful_get'])):
@@ -50,12 +50,12 @@ def result_cells(row):
             STATES[row['status']]]
 
 
-def terminal_table(rows):
-    values = [list(HEADERS), *(result_cells(row) for row in rows)]
+def terminal_table(rows, headers=HEADERS, cells=result_cells):
+    values = [list(headers), *(cells(row) for row in rows)]
     def width(text):
         import unicodedata
         return sum(2 if unicodedata.east_asian_width(c) in 'WF' else 1 for c in text)
-    widths = [max(width(row[i]) for row in values) for i in range(len(HEADERS))]
+    widths = [max(width(row[i]) for row in values) for i in range(len(headers))]
     lines = ['  '.join(cell + ' ' * (widths[i] - width(cell)) for i, cell in enumerate(row)) for row in values]
     lines.insert(1, '─' * (sum(widths) + 2 * (len(widths) - 1)))
     return lines
