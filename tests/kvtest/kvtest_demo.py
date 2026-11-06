@@ -96,7 +96,7 @@ def save_summary(output, rows, duration, qps, status, error=None):
             'th,td{text-align:right;padding:17px 12px;border-bottom:1px solid #cbd5e1}'
             'th{color:#475569}a{color:#1d4ed8}details{margin:28px 0}footer{color:#475569;font-size:14px}</style>'
             '<main><p class="sub">DATASYSTEM / SCALING BENCHMARK</p><h1>节点扩展测试结果</h1>'
-            f'<p class="sub">2MB · {qps} QPS/client · 1写1读 · {duration}秒/档</p>'
+            '<p class="sub">2MB · 1写1读</p>'
             '<table><thead><tr>' + ''.join('<th>' + escape(h) + '</th>' for h in HEADERS)
             + '</tr></thead><tbody>' + ''.join(body) + '</tbody></table>'
             '<details><summary>样本与实际调用数</summary><table><tr>'
@@ -179,7 +179,7 @@ class Console:
         elapsed = int(time.monotonic() - self.started)
         current = self.rows[index] if index < len(self.rows) else self.rows[-1]
         lines = ['DATASYSTEM  |  节点扩展性能测试',
-                 f'2MB  ·  {self.qps} QPS/client  ·  1写1读  ·  {self.duration}秒/档', '',
+                 '2MB  ·  1写1读', '',
                  f'总进度  {bar(completed, len(self.rows))}  {completed}/{len(self.rows)}',
                  f'当前节点数  {current["nodes"]}    阶段  {stage}    总用时  {elapsed // 60:02d}:{elapsed % 60:02d}']
         if stage == '压测' and run_started is not None:
