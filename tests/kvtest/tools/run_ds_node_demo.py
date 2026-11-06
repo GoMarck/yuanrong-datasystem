@@ -214,8 +214,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source-scenario', type=Path, default=ROOT / 'comparison/scenario.2-nodes-1clients.json')
     parser.add_argument('--nodes-file', type=Path, help='node names or kubectl get nodes -o json output')
-    parser.add_argument('--counts', nargs='+', type=int, choices=COUNTS,
-                        help='selected node-count cases, e.g. --counts 2 4')
+    parser.add_argument('--counts', nargs='+', type=int, choices=sorted((*COUNTS, 384)),
+                        help='selected node-count cases, e.g. --counts 2 4 or --counts 256 384')
     parser.add_argument('--control-node')
     parser.add_argument('--ds-whl', type=Path, required=True)
     parser.add_argument('--pod-image', default='datasystem-kvtest:rc44-demo-v1')

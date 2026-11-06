@@ -45,6 +45,29 @@ nerdctl -n k8s.io tag \
 
 可选参数：`--control-node` 指定控制节点；`--prepare-only` 仅生成与校验配置，不访问集群；`--plain` 禁用ANSI刷新；`--theme light|dark` 选择终端强调色（默认light）；`--output` 指定一个尚不存在的结果目录。输出包含 `summary.html`、`summary.csv`、`summary.json`、`scenarios/`、`logs/` 及逐档完整报告。没有结果的档位显示空值或失败状态，已完成档位保留实测结果。原始运行日志和控制器状态保存失败原因及保留的命名空间。
 
+## 15个发压节点运行到384档
+
+`--counts` 额外支持384，原默认九档不变。控制节点可以仅部署coordinator，不参与worker/client分布：从节点清单排除它，并用 `--control-node` 单独指定。
+
+```bash
+kubectl get nodes -o json |
+  python3 -c 'import json, sys
+print(json.dumps(sorted(n["metadata"]["name"] for n in json.load(sys.stdin)["items"] if n["metadata"]["name"] != "master")))' \
+  > comparison/demo-nodes.no-master.json
+
+python3 -u tools/run_ds_node_demo.py \
+  --nodes-file comparison/demo-nodes.no-master.json \
+  --control-node master \
+  --counts 2 4 8 16 32 64 128 256 384 \
+  --source-scenario comparison/scenario.2-nodes-1clients.json \
+  --ds-whl "${DS_WHL:?请先设置whl路径}" \
+  --pod-image "${DS_DEMO_IMAGE:-datasystem-kvtest:rc44-demo-v1}" \
+  --duration 180 \
+  --theme light
+```
+
+15个发压节点上，384档总共384worker、768client：9台各26worker+52client，6台各25worker+50client。每台最多需要78份空闲UB配额、208CPU和936GiB内存调度请求，另计现有负载；仍必须通过资源预检。控制节点没有worker/client，也不需要为这些组件暴露UB设备。
+
 ## 录屏配色
 
 两节点可先指定部分档位试跑，界面相同：

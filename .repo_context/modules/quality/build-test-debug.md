@@ -287,7 +287,9 @@ Backed by `tests/kvtest/BUILD.bazel` and `tests/kvtest/build.sh`:
   CPU, memory and Pod requests; `--prepare-only` generates configs without cluster access. Optional
   `run.command_timeout_floor_seconds` extends controller-command waits, leaving SDK and workload timing unchanged;
 - demo `--counts` selects a subset on a 2-to-32-node inventory, distributing groups evenly without rounding away
-  workers; the implicit nine-case run requires at least 16 nodes. Small previews use `--counts 2 4`;
+  workers; the implicit nine-case run requires at least 16 nodes. Small previews use `--counts 2 4`.
+  Explicit counts also accept 384; a 15-node workload inventory with a separate control node places at most
+  26 workers/52 clients per host (78 UB units, 208CPU and 936GiB requested before other workloads);
 - the DS demo defaults to `datasystem-kvtest:rc44-demo-v1` (a retagged existing base). Its `--pod-image` overrides
   source-scenario Pod image fields; SDK version remains controlled by the whl, and MC comparison defaults are unchanged;
 - the demo uses a 24GiB worker pool with worker CPU request/limit 4/32 and memory 28/32GiB; client CPU
