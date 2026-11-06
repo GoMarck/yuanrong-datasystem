@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the nine DataSystem node-count cases with a recording-friendly terminal display."""
+"""Run DataSystem node-count cases with a recording-friendly terminal display."""
 import argparse
 import contextlib
 import copy
@@ -36,14 +36,14 @@ def load_nodes(path, source):
             value = sorted(item['metadata']['name'] for item in value['items'])
     else:
         value = list(source.get('deployment', {}).get('clients', {})) or source.get('nodes')
-    if (not isinstance(value, list) or len(value) != 32
+    if (not isinstance(value, list) or not 2 <= len(value) <= 32
             or any(not isinstance(node, str) or not NODE_NAME.fullmatch(node) for node in value)
-            or len(set(value)) != 32):
-        raise ValueError('需要32个不同节点名，请通过 --nodes-file 提供完整清单')
+            or len(set(value)) != len(value)):
+        raise ValueError('需要2到32个不同节点名，请通过 --nodes-file 提供清单')
     return value
 
 
-def make_scenarios(source, nodes, control, whl, duration):
+def make_scenarios(source, nodes, control, whl, duration, counts=COUNTS):
     base = json.loads((ROOT / 'comparison/scenario.2-nodes-1clients.json').read_text(encoding='utf-8'))
     base.setdefault('artifacts', {}).update(source.get('artifacts', {}))
     base['artifacts']['datasystem_whl'] = str(whl)
@@ -66,9 +66,10 @@ def make_scenarios(source, nodes, control, whl, duration):
     ds['worker']['resources'] = {'cpu': 32, 'requests_cpu': 8, 'memory_gib': 80, 'requests_memory_gib': 64}
     ds['client']['resources'] = {'cpu': 32, 'requests_cpu': 4, 'memory_gib': 20, 'requests_memory_gib': 4}
     scenarios = []
-    for count in COUNTS:
+    for count in counts:
         chosen = nodes[:min(count, len(nodes))]
-        workers = dict.fromkeys(chosen, max(1, count // len(nodes)))
+        per_host, extra = divmod(count, len(chosen))
+        workers = {node: per_host + int(index < extra) for index, node in enumerate(chosen)}
         clients = {node: number * 2 for node, number in workers.items()}
         scenario = copy.deepcopy(base)
         scenario.update(nodes=chosen, clients_per_node=next(iter(clients.values())))
@@ -200,7 +201,9 @@ def run_case(command, log_path, console, index, progress):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source-scenario', type=Path, default=ROOT / 'comparison/scenario.2-nodes-1clients.json')
-    parser.add_argument('--nodes-file', type=Path, help='32 node names or kubectl get nodes -o json output')
+    parser.add_argument('--nodes-file', type=Path, help='node names or kubectl get nodes -o json output')
+    parser.add_argument('--counts', nargs='+', type=int, choices=COUNTS,
+                        help='selected node-count cases, e.g. --counts 2 4')
     parser.add_argument('--control-node')
     parser.add_argument('--ds-whl', type=Path, required=True)
     parser.add_argument('--pod-image', default='mooncake-store-kvtest:official-v0.3.13.post1-rdma-event')
@@ -214,21 +217,26 @@ def main():
         parser.error('duration必须为正数，ds-whl必须是已存在的文件')
     source = json.loads(args.source_scenario.read_text(encoding='utf-8'))
     nodes = load_nodes(args.nodes_file, source)
+    if args.counts is None and len(nodes) != 32:
+        parser.error('完整九档默认需要32个节点；小规模试跑请指定 --counts 2 4')
+    counts = tuple(sorted(args.counts or COUNTS))
+    if len(set(counts)) != len(counts):
+        parser.error('--counts 不允许重复档位')
     control = args.control_node or source.get('control_node', 'master')
-    scenarios = make_scenarios(source, nodes, control, args.ds_whl.resolve(), args.duration)
+    scenarios = make_scenarios(source, nodes, control, args.ds_whl.resolve(), args.duration, counts)
     tag = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:6]
     output = (args.output or ROOT / 'results' / ('ds-node-demo-' + tag)).resolve()
     output.mkdir(parents=True, exist_ok=False)
     for name in ('scenarios', 'logs'):
         (output / name).mkdir()
     rows = [{'nodes': count, 'size': '2MB', 'status': 'pending', 'directory': f'{index:02d}-nodes-{count:03d}'}
-            for index, count in enumerate(COUNTS, 1)]
+            for index, count in enumerate(counts, 1)]
     for row, scenario in zip(rows, scenarios):
         (output / 'scenarios' / (row['directory'] + '.json')).write_text(
             json.dumps(scenario, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     save_summary(output, rows, args.duration, 17, 'prepared')
     if args.prepare_only:
-        print('九档配置已生成:', output / 'scenarios')
+        print(f'{len(rows)}档配置已生成:', output / 'scenarios')
         return 0
     console = Console(rows, args.duration, 17, args.plain, args.theme)
     index = 0

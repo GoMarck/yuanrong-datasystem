@@ -286,6 +286,8 @@ Backed by `tests/kvtest/BUILD.bazel` and `tests/kvtest/build.sh`:
   archived scenarios and per-case reports retain the actual placements. Preflight checks the largest case's device,
   CPU, memory and Pod requests; `--prepare-only` generates configs without cluster access. Optional
   `run.command_timeout_floor_seconds` extends controller-command waits, leaving SDK and workload timing unchanged;
+- demo `--counts` selects a subset on a 2-to-32-node inventory, distributing groups evenly without rounding away
+  workers; the original implicit nine-case run still requires 32 nodes. Small previews use `--counts 2 4`;
 - the CMake mode links against a pre-installed SDK (`-s/--sdk`, default `../../output/cpp`), while the Bazel mode
   builds `//tests/kvtest:kvtest` against the in-tree `//src/datasystem/client:datasystem`, producing a self-contained
   binary that does not need `libdatasystem.so` at runtime;

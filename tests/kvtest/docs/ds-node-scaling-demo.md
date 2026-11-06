@@ -37,6 +37,22 @@ python3 -u tools/run_ds_node_demo.py \
 
 ## 录屏配色
 
+两节点可先指定部分档位试跑，界面相同：
+
+```bash
+printf '%s\n' worker02 worker03 > comparison/demo-nodes.two.txt
+python3 -u tools/run_ds_node_demo.py \
+  --nodes-file comparison/demo-nodes.two.txt \
+  --counts 2 4 \
+  --source-scenario comparison/scenario.2-nodes-1clients.json \
+  --ds-whl "${DS_WHL:?请先设置whl路径}" \
+  --pod-image "${MC_IMAGE:-mooncake-store-kvtest:official-v0.3.13.post1-rdma-event}" \
+  --duration 60 \
+  --theme light
+```
+
+该试跑的每节点worker/client分别为1/2、2/4；最大档每节点需要6份空闲UB配额，调度请求32CPU、144GiB内存。`--duration 60` 用于预览流程，正式取数可改为180。节点清单可含2～32个节点，指定 `--counts` 后会均匀分配所选档位；不指定时仍要求32节点并运行原有九档。
+
 终端背景与正文字体颜色在MobaXterm的 Settings → Configuration → Terminal → Customize 中设置；现有SSH会话也可在会话的 Terminal settings 中覆盖。建议背景 `#F5F7FA`（245,247,250）、正文 `#1F2937`（31,41,55）、选中背景 `#DBEAFE`（219,234,254）、光标 `#1D4ED8`（29,78,216）。字体建议Consolas 18～20号，UTF-8，终端宽度至少96列，录屏推荐120列、28行以上。脚本的默认浅色强调色为深蓝 `#1D4ED8`、完成深绿 `#166534`、失败深红 `#B91C1C`；不改动终端背景。深色终端用 `--theme dark`；不支持彩色时用 `--plain`。汇总HTML使用浅色背景。
 
 设置参考：[MobaXterm官方文档](https://mobaxterm.mobatek.net/documentation.html)。配色为此演示的建议值。
