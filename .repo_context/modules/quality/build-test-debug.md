@@ -288,6 +288,8 @@ Backed by `tests/kvtest/BUILD.bazel` and `tests/kvtest/build.sh`:
   `run.command_timeout_floor_seconds` extends controller-command waits, leaving SDK and workload timing unchanged;
 - demo `--counts` selects a subset on a 2-to-32-node inventory, distributing groups evenly without rounding away
   workers; the original implicit nine-case run still requires 32 nodes. Small previews use `--counts 2 4`;
+- the DS demo defaults to `datasystem-kvtest:rc44-demo-v1` (a retagged existing base). Its `--pod-image` overrides
+  source-scenario Pod image fields; SDK version remains controlled by the whl, and MC comparison defaults are unchanged;
 - the CMake mode links against a pre-installed SDK (`-s/--sdk`, default `../../output/cpp`), while the Bazel mode
   builds `//tests/kvtest:kvtest` against the in-tree `//src/datasystem/client:datasystem`, producing a self-contained
   binary that does not need `libdatasystem.so` at runtime;

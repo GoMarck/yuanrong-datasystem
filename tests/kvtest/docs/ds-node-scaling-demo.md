@@ -25,11 +25,21 @@ python3 -u tools/run_ds_node_demo.py \
   --nodes-file comparison/demo-nodes.json \
   --source-scenario comparison/scenario.2-nodes-1clients.json \
   --ds-whl "${DS_WHL:?请先设置whl路径}" \
-  --pod-image "${MC_IMAGE:-mooncake-store-kvtest:official-v0.3.13.post1-rdma-event}" \
+  --pod-image "${DS_DEMO_IMAGE:-datasystem-kvtest:rc44-demo-v1}" \
   --duration 180
 ```
 
 镜像仅作为DS容器底座，不运行Mooncake。源scenario仅复用artifacts、控制节点与UB资源名称，worker/coordinator配置使用当前reference模板。client保持4写/8读线程、随机NUMA、关闭local cache、20ms SDK超时、512MB快速传输池及既定DS环境变量。CPU request/limit为worker8/32、client4/32；worker每实例60GiB池、Pod内存request/limit64/80GiB，client4/20GiB。
+
+DS演示默认镜像名为 `datasystem-kvtest:rc44-demo-v1`。在有原镜像的节点加标签即可，不重建镜像；DS版本仍由传入whl决定：
+
+```bash
+nerdctl -n k8s.io tag \
+  mooncake-store-kvtest:official-v0.3.13.post1-rdma-event \
+  datasystem-kvtest:rc44-demo-v1
+```
+
+导出、分发时使用新标签。`--pod-image` 会覆盖源scenario中的pod镜像字段，避免旧标签继续生效。其他Mooncake对比入口的默认镜像不变。
 
 容器沿用 `imagePullPolicy=Never`，运行前需将底座镜像导入所有选中节点。预检不修改设备插件、镜像、节点污点或现有工作负载；资源不足会停止执行并输出日志。
 
@@ -46,12 +56,14 @@ python3 -u tools/run_ds_node_demo.py \
   --counts 2 4 \
   --source-scenario comparison/scenario.2-nodes-1clients.json \
   --ds-whl "${DS_WHL:?请先设置whl路径}" \
-  --pod-image "${MC_IMAGE:-mooncake-store-kvtest:official-v0.3.13.post1-rdma-event}" \
+  --pod-image "${DS_DEMO_IMAGE:-datasystem-kvtest:rc44-demo-v1}" \
   --duration 60 \
   --theme light
 ```
 
 该试跑的每节点worker/client分别为1/2、2/4；最大档每节点需要6份空闲UB配额，调度请求32CPU、144GiB内存。`--duration 60` 用于预览流程，正式取数可改为180。节点清单可含2～32个节点，指定 `--counts` 后会均匀分配所选档位；不指定时仍要求32节点并运行原有九档。
+
+16台机器上按当前预算，256档每台16worker+32client，需要48份空闲UB配额、256CPU和1152GiB内存调度请求；512档每台32worker+64client，需要96份空闲UB配额、512CPU和2304GiB内存调度请求。控制服务与现有负载另计。384CPU、约1.5TiB内存的机器无法按此预算运行512档；不能仅修改显示档位绕过预检，需另行规划更小的worker池与调度请求。
 
 终端背景与正文字体颜色在MobaXterm的 Settings → Configuration → Terminal → Customize 中设置；现有SSH会话也可在会话的 Terminal settings 中覆盖。建议背景 `#F5F7FA`（245,247,250）、正文 `#1F2937`（31,41,55）、选中背景 `#DBEAFE`（219,234,254）、光标 `#1D4ED8`（29,78,216）。字体建议Consolas 18～20号，UTF-8，终端宽度至少96列，录屏推荐120列、28行以上。脚本的默认浅色强调色为深蓝 `#1D4ED8`、完成深绿 `#166534`、失败深红 `#B91C1C`；不改动终端背景。深色终端用 `--theme dark`；不支持彩色时用 `--plain`。汇总HTML使用浅色背景。
 

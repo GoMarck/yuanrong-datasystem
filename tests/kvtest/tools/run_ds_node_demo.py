@@ -43,9 +43,12 @@ def load_nodes(path, source):
     return value
 
 
-def make_scenarios(source, nodes, control, whl, duration, counts=COUNTS):
+def make_scenarios(source, nodes, control, whl, duration, counts=COUNTS, pod_image=None):
     base = json.loads((ROOT / 'comparison/scenario.2-nodes-1clients.json').read_text(encoding='utf-8'))
     base.setdefault('artifacts', {}).update(source.get('artifacts', {}))
+    if pod_image is not None:
+        base['artifacts']['pod_image'] = pod_image
+        base['artifacts']['pod_images'] = {'datasystem': pod_image}
     base['artifacts']['datasystem_whl'] = str(whl)
     base['ub_resource'] = source.get('ub_resource', base['ub_resource'])
     base['datasystem_deployment'] = {'mode': 'dscli'}
@@ -206,7 +209,7 @@ def main():
                         help='selected node-count cases, e.g. --counts 2 4')
     parser.add_argument('--control-node')
     parser.add_argument('--ds-whl', type=Path, required=True)
-    parser.add_argument('--pod-image', default='mooncake-store-kvtest:official-v0.3.13.post1-rdma-event')
+    parser.add_argument('--pod-image', default='datasystem-kvtest:rc44-demo-v1')
     parser.add_argument('--duration', type=int, default=180)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--prepare-only', action='store_true')
@@ -223,7 +226,8 @@ def main():
     if len(set(counts)) != len(counts):
         parser.error('--counts 不允许重复档位')
     control = args.control_node or source.get('control_node', 'master')
-    scenarios = make_scenarios(source, nodes, control, args.ds_whl.resolve(), args.duration, counts)
+    scenarios = make_scenarios(source, nodes, control, args.ds_whl.resolve(), args.duration, counts,
+                               pod_image=args.pod_image)
     tag = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:6]
     output = (args.output or ROOT / 'results' / ('ds-node-demo-' + tag)).resolve()
     output.mkdir(parents=True, exist_ok=False)
