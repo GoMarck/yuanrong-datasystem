@@ -280,6 +280,12 @@ Backed by `tests/kvtest/BUILD.bazel` and `tests/kvtest/build.sh`:
   and client `logical_host_id` inject matching DS `HOST_IP` values without replacing network addresses or changing
   C++ scheduling/transport. The report archives intended groups separately from physical Pod topology. MC matches
   instance counts without adopting DS host affinity; same-group SHM remains possible and these are not independent machines;
+- `tests/kvtest/tools/run_ds_node_demo.py` prepares nine DS-only 2MB/17QPS cases (2 through 512 groups) on a
+  32-node inventory, reusing the same HOST_IP grouping. `kvtest_demo.py` shows stage-derived terminal progress and
+  reads completed SDK access-log aggregates for CSV/JSON/HTML summaries. The main display labels counts as nodes;
+  archived scenarios and per-case reports retain the actual placements. Preflight checks the largest case's device,
+  CPU, memory and Pod requests; `--prepare-only` generates configs without cluster access. Optional
+  `run.command_timeout_floor_seconds` extends controller-command waits, leaving SDK and workload timing unchanged;
 - the CMake mode links against a pre-installed SDK (`-s/--sdk`, default `../../output/cpp`), while the Bazel mode
   builds `//tests/kvtest:kvtest` against the in-tree `//src/datasystem/client:datasystem`, producing a self-contained
   binary that does not need `libdatasystem.so` at runtime;

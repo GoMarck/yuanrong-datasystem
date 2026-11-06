@@ -388,13 +388,16 @@ def write_json(path, value):
 
 
 class Run:
-    def __init__(self, output):
+    def __init__(self, output, command_timeout_floor=0):
         self.output = output
         self.commands = output / 'commands'
         self.commands.mkdir(parents=True)
         self.step = 0
+        self.command_timeout_floor = command_timeout_floor
 
     def command(self, argv, *, cwd=None, capture=False, timeout=None, display=None):
+        if timeout is not None:
+            timeout = max(timeout, self.command_timeout_floor)
         self.step += 1
         argv = [str(x) for x in argv]
         name = re.sub(r'[^a-z0-9-]', '-', Path(argv[0]).name.lower())
@@ -1006,7 +1009,7 @@ def execute_trial(scenario, args, output):
     if output.exists():
         raise ValueError(f'output already exists: {output}')
     output.mkdir(parents=True)
-    run = Run(output)
+    run = Run(output, scenario.get('run', {}).get('command_timeout_floor_seconds', 0))
     run.binary_path = args.binary_path
     write_json(output / 'scenario-source.json', args.source_scenario)
     write_json(output / 'scenario-input.json', scenario)
@@ -1174,8 +1177,12 @@ def resolve_run_settings(scenario, args):
     scenario = copy.deepcopy(scenario)
     settings = scenario.get('run', {})
     if not isinstance(settings, dict) or set(settings) - {
-            'duration_seconds', 'cleanup_on_success', 'ttl_seconds', 'service_settle_seconds', 'output_dir', 'output_root'}:
+            'duration_seconds', 'cleanup_on_success', 'ttl_seconds', 'service_settle_seconds', 'output_dir', 'output_root',
+            'command_timeout_floor_seconds'}:
         raise ValueError('run has unknown fields or is not an object')
+    floor = settings.get('command_timeout_floor_seconds', 0)
+    if type(floor) is not int or floor < 0:
+        raise ValueError('run.command_timeout_floor_seconds must be a nonnegative integer')
     artifacts = scenario.get('artifacts', {})
     if not isinstance(artifacts, dict) or set(artifacts) - {
             'pod_image', 'pod_images', 'datasystem_config_image', 'datasystem_whl', 'kvtest_binary', 'kvtest_binaries'}:

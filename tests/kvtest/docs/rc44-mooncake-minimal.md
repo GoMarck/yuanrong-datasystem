@@ -102,6 +102,8 @@ Python 先完成原生部署，再计时，达到运行时长后使用原生 sto
 
 ## 两台物理机的逻辑节点分组对比
 
+32节点环境的九档DS单系统录屏入口、进度与汇总说明见 [节点扩展示范](ds-node-scaling-demo.md)。
+
 `--suite logical-hosts` 串行运行以下四档 DS/MC 对比。数据均为 4MB、17QPS/client、1写1读、4写/8读线程、随机 NUMA，外部监控默认关闭。每档每系统默认运行180秒。
 
 | 物理节点 | 每物理节点 worker/store | 每物理节点 client | 全集群逻辑节点 |
