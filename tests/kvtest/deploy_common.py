@@ -1119,7 +1119,7 @@ def kubectl_exec_raw(pod, namespace, cmd, timeout=DEFAULT_TIMEOUT):
 import tarfile  # noqa: E402  (kept here to match the original deferred import)
 
 
-def build_install_bundle(local_binary, local_lib_dir):
+def build_install_bundle(local_binary, local_lib_dir, extra_files=None):
     """Pack binary + .so deps into ONE shared tar, so each pod needs a single
     ``kubectl cp`` + a single ``kubectl exec`` instead of 5 round trips (500
     pods x 5 = 2500 kubectl processes, each a fresh TLS conn + Rancher
@@ -1132,23 +1132,28 @@ def build_install_bundle(local_binary, local_lib_dir):
     a 500-pod install fires 500 concurrent ``kubectl cp`` of this archive,
     and the wire size (not the process count) is the bottleneck -- gzip
     cuts it ~3x so the transfers fit inside the cp timeout. Returns the
-    tar path, or None when the binary is missing and no .so files exist.
+    tar path, or None when no files exist. extra_files maps archive member
+    names to local files for callers with a different install layout.
     """
     has_binary = local_binary and os.path.isfile(local_binary)
     so_files = []
     if local_lib_dir and os.path.isdir(local_lib_dir):
         so_files = glob.glob(os.path.join(local_lib_dir, '*.so*'))
-    if not has_binary and not so_files:
+    if not has_binary and not so_files and not extra_files:
         return None
     fd, tar_path = tempfile.mkstemp(suffix='.tar.gz', prefix='ds_bundle_')
     os.close(fd)
-    with tarfile.open(tar_path, 'w:gz') as tar:
-        if has_binary:
-            tar.add(os.path.realpath(local_binary),
-                    arcname=os.path.basename(local_binary))
-        for so in so_files:
-            tar.add(os.path.realpath(so),
-                    arcname=f'lib/{os.path.basename(so)}')
+    try:
+        with tarfile.open(tar_path, 'w:gz') as tar:
+            if has_binary:
+                tar.add(os.path.realpath(local_binary), arcname=os.path.basename(local_binary))
+            for so in so_files:
+                tar.add(os.path.realpath(so), arcname=f'lib/{os.path.basename(so)}')
+            for name, source in (extra_files or {}).items():
+                tar.add(os.path.realpath(source), arcname=name)
+    except BaseException:
+        os.unlink(tar_path)
+        raise
     return tar_path
 
 

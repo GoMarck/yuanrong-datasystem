@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import tarfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
@@ -87,6 +88,55 @@ class TestInstallLocks(unittest.TestCase):
         with deployer._get_host_lock(node):
             lock = deployer._get_host_lock(dict(node, namespace='default'))
             self.assertFalse(lock.acquire(blocking=False))
+
+
+class TestKubernetesInstallBundle(unittest.TestCase):
+    def test_single_upload_preserves_library_layout_and_container_sdk(self):
+        for remote_sdk in ('', '/sdk/lib'):
+            with self.subTest(remote_sdk=remote_sdk), tempfile.TemporaryDirectory() as directory:
+                from pathlib import Path
+                root = Path(directory)
+                binary = root / 'custom-binary'
+                binary.write_bytes(b'binary')
+                (root / 'lib').mkdir()
+                for name in ('libexample.so', 'libjemalloc.so.2'):
+                    (root / 'lib' / name).write_bytes(b'library')
+                node = {'host': '192.0.2.1', 'pod_name': 'client-a', 'instance_id': 0,
+                        'remote_sdk_dir': remote_sdk}
+                deployer = _make_deployer([node], {}, transport='kubectl')
+                deployer.binary_path = str(binary)
+                deployer.run_on = MagicMock()
+                members = []
+                def upload(node, source, destination):
+                    with tarfile.open(source) as archive:
+                        members.extend(archive.getnames())
+                deployer.scp_to = MagicMock(side_effect=upload)
+                self.assertTrue(deployer.install_node(node)[0])
+                deployer.scp_to.assert_called_once()
+                deployer.run_on.assert_called_once()
+                self.assertIn('kvtest', members)
+                self.assertIn('standalone_launcher.py', members)
+                self.assertIn('allocator_lib/libjemalloc.so.2', members)
+                self.assertNotIn('lib/libjemalloc.so.2', members)
+                self.assertEqual('lib/libexample.so' in members, not bool(remote_sdk))
+                self.assertFalse(os.path.exists(deployer.scp_to.call_args.args[1]))
+
+    def test_batch_builds_once_and_cleans_archive_after_upload_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            binary = os.path.join(directory, 'kvtest')
+            with open(binary, 'wb') as stream:
+                stream.write(b'binary')
+            nodes = [{'host': '192.0.2.1', 'pod_name': f'client-{i}', 'instance_id': i} for i in range(2)]
+            deployer = _make_deployer(nodes, {}, transport='kubectl')
+            deployer.binary_path = binary
+            deployer.run_on = MagicMock()
+            deployer.scp_to = MagicMock(side_effect=RuntimeError('upload failed'))
+            with patch.object(deployer, '_build_client_bundle', wraps=deployer._build_client_bundle) as build:
+                self.assertFalse(deployer.do_install())
+                build.assert_called_once()
+            self.assertEqual(deployer.scp_to.call_count, 2)
+            self.assertFalse(os.path.exists(deployer.scp_to.call_args.args[1]))
+            self.assertEqual(deployer._install_bundles, {})
 
 
 class TestSdkOnlyCollect(unittest.TestCase):

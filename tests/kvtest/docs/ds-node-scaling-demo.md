@@ -45,6 +45,8 @@ nerdctl -n k8s.io tag \
 
 容器沿用 `imagePullPolicy=Never`，运行前需将底座镜像导入所有选中节点。预检不修改设备插件、镜像、节点污点或现有工作负载；资源不足会停止执行并输出日志。
 
+Kubernetes客户端按批次预先打包二进制、动态库和启动脚本，每Pod一次上传与解包；使用容器SDK时不重复打包SDK库，jemalloc仍使用独立加载目录。上传按命名空间与Pod互斥，临时包在所有上传结束后释放。控制器批量等待所选Pod Ready，并重新读取、校验Pod集合和网络地址。以上只减少部署往返，不修改压测窗口或读写逻辑。
+
 可选参数：`--control-node` 指定控制节点；`--prepare-only` 仅生成与校验配置，不访问集群；`--plain` 禁用ANSI刷新；`--theme light|dark` 选择终端强调色（默认light）；`--output` 指定一个尚不存在的结果目录。输出包含 `summary.html`、`summary.csv`、`summary.json`、`scenarios/`、`logs/` 及逐档完整报告。没有结果的档位显示空值或失败状态，已完成档位保留实测结果。原始运行日志和控制器状态保存失败原因及保留的命名空间。
 
 ## 15个发压节点运行到384档

@@ -2,6 +2,8 @@
 """Deploy kvtest to remote nodes via SSH or kubectl."""
 
 import json
+import glob
+from contextlib import ExitStack
 import os
 import posixpath
 import shlex
@@ -21,6 +23,7 @@ from log_collect import (add_collect_filters, archive_command, filters_from_args
 from kvtest_pod_identity import validate_host_id
 
 from deploy_common import (
+    build_install_bundle,
     _print_timings,
     get_pods,
     log_error,
@@ -65,6 +68,7 @@ class Deployer:
         self.enable_procmon = self.deploy.get('enable_procmon', False)
         self.listen_port = self.config_template.get('listen_port', 9000)
         self._host_locks = {}
+        self._install_bundles = {}
 
     # --- Transport helpers ---
 
@@ -481,6 +485,50 @@ class Deployer:
             f'test -w {directory} && test -x {directory}')
         custom_env['MALLOC_CONF'] = conf
 
+    def _build_client_bundle(self, include_sdk_libs):
+        files = {'kvtest': self.binary_path}
+        library_dir = os.path.join(os.path.dirname(os.path.abspath(self.binary_path)), 'lib')
+        for library in glob.glob(os.path.join(library_dir, '*.so*')):
+            name = os.path.basename(library)
+            if name == 'libjemalloc.so.2':
+                files['allocator_lib/' + name] = library
+            elif include_sdk_libs:
+                files['lib/' + name] = library
+        for name in ('standalone_launcher.py', 'procmon.py'):
+            if name == 'procmon.py' and not self.enable_procmon:
+                continue
+            path = os.path.join(self.base_dir, name)
+            if not os.path.isfile(path):
+                path = os.path.join(self.base_dir, 'tools', name)
+            if os.path.isfile(path):
+                files[name] = path
+            elif name == 'procmon.py':
+                raise FileNotFoundError(path)
+        return build_install_bundle(None, None, extra_files=files)
+
+    def _install_kubernetes_bundle(self, node):
+        include_sdk_libs = not bool(node.get('remote_sdk_dir', self.deploy.get('remote_sdk_dir', '')))
+        bundle = self._install_bundles.get(include_sdk_libs)
+        owned = bundle is None
+        if owned:
+            bundle = self._build_client_bundle(include_sdk_libs)
+        try:
+            archive = '/tmp/' + os.path.basename(bundle)
+            directory = shlex.quote(self.remote_work_dir)
+            cleanup_allocator = ''
+            library_dir = os.path.join(os.path.dirname(os.path.abspath(self.binary_path)), 'lib')
+            if os.path.isfile(os.path.join(library_dir, 'libjemalloc.so.2')):
+                cleanup_allocator = f'rm -rf -- {shlex.quote(self.remote_work_dir + "/allocator_lib")} && '
+            with self._get_host_lock(node):
+                self.scp_to(node, bundle, archive)
+                self.run_on(node, f'mkdir -p -- {directory} && {cleanup_allocator}'
+                            f'tar xzf {shlex.quote(archive)} -C {directory} && '
+                            f'chmod +x {shlex.quote(self.remote_work_dir + "/kvtest")} && '
+                            f'rm -f -- {shlex.quote(archive)}')
+        finally:
+            if owned:
+                os.unlink(bundle)
+
     def install_node(self, node):
         """Install binary + .so + procmon + launcher to a node (no start).
 
@@ -500,6 +548,10 @@ class Deployer:
 
         t0 = time.monotonic()
         try:
+            if transport == 'kubectl':
+                self._install_kubernetes_bundle(node)
+                log_info(f'  {target} -> OK')
+                return True, time.monotonic() - t0
             # Step 1: Create remote directory
             log_info(f'{tag} mkdir {self.remote_work_dir}')
             self.run_on(node, f'mkdir -p -- {shlex.quote(self.remote_work_dir)}')
@@ -884,10 +936,21 @@ class Deployer:
             return ok
 
         results = []
-        with ThreadPoolExecutor(max_workers=len(self.nodes) or 1) as pool:
-            futures = {pool.submit(_install_with_timing, n): n for n in self.nodes}
-            for future in as_completed(futures):
-                results.append(future.result())
+        with ExitStack() as cleanup:
+            try:
+                modes = {not bool(n.get('remote_sdk_dir', self.deploy.get('remote_sdk_dir', '')))
+                         for n in self.nodes if self._transport(n) == 'kubectl'}
+                for mode in sorted(modes):
+                    log_info(f'Preparing shared client bundle (include SDK libraries: {mode})...')
+                    bundle = self._build_client_bundle(mode)
+                    cleanup.callback(os.unlink, bundle)
+                    self._install_bundles[mode] = bundle
+                with ThreadPoolExecutor(max_workers=len(self.nodes) or 1) as pool:
+                    futures = {pool.submit(_install_with_timing, n): n for n in self.nodes}
+                    for future in as_completed(futures):
+                        results.append(future.result())
+            finally:
+                self._install_bundles.clear()
 
         ok = sum(1 for r in results if r)
         total = len(results)

@@ -440,12 +440,21 @@ class Run:
                 if x['metadata']['name'].startswith(prefix)}
         if len(pods) != expected:
             raise RuntimeError(f'{namespace}: expected {expected} {prefix} Pods, found {len(pods)}')
-        for name, pod in pods.items():
-            self.command(['kubectl', '-n', namespace, 'wait', '--for=condition=Ready',
-                          'pod/' + name, '--timeout=300s'], timeout=330)
+        if not pods:
+            return pods
+        self.command(['kubectl', '-n', namespace, 'wait', '--for=condition=Ready',
+                      *('pod/' + name for name in sorted(pods)), '--timeout=300s'], timeout=330)
+        refreshed = {x['metadata']['name']: x for x in self.kube_json('-n', namespace, 'get', 'pods')['items']
+                     if x['metadata']['name'].startswith(prefix)}
+        if set(refreshed) != set(pods):
+            raise RuntimeError(f'{namespace}: {prefix} Pod set changed while waiting')
+        for name, pod in refreshed.items():
+            if not any(c.get('type') == 'Ready' and c.get('status') == 'True'
+                       for c in pod.get('status', {}).get('conditions', [])):
+                raise RuntimeError(f'{name}: Pod is no longer Ready')
             if not pod['status'].get('podIP') or not pod['status'].get('hostIP'):
                 raise RuntimeError(f'{name}: missing Pod/host IP')
-        return pods
+        return refreshed
 
     def deploy_pods(self, namespace, prefix, image, template, replicas, cpu, memory, *, requests_cpu=None,
                     requests_memory=None, host_id_map=None):
