@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT))
 from deploy_compare_ub_rdma import Run, check_memory_budget, component_resources, node_addresses, plan_from_scenario
 from kvtest_demo import Console, Progress, read_result, save_summary
 from kvtest_scenario import NODE_NAME
+from ds_config_template import render_ds_config
 
 COUNTS = (2, 4, 8, 16, 32, 64, 128, 256, 512)
 
@@ -43,7 +44,7 @@ def load_nodes(path, source):
     return value
 
 
-def make_scenarios(source, nodes, control, whl, duration, counts=COUNTS, pod_image=None):
+def make_scenarios(source, nodes, control, whl, duration, counts=COUNTS, pod_image=None, *, reference_dir):
     base = json.loads((ROOT / 'comparison/scenario.2-nodes-1clients.json').read_text(encoding='utf-8'))
     base.setdefault('artifacts', {}).update(source.get('artifacts', {}))
     if pod_image is not None:
@@ -56,8 +57,16 @@ def make_scenarios(source, nodes, control, whl, duration, counts=COUNTS, pod_ima
                 sizes=['2MB'], target_qps={'2MB': [17]}, writer_threads=4, reader_threads=8,
                 notify_count=1, reads_per_notify=1, notify_include_self=False, client_numa_node=None)
     base.pop('writes_per_client', None)
-    base['memory_gib']['datasystem_pod'] = 80
+    base['memory_gib'].update(datasystem_worker=24, datasystem_pod=32)
     ds = base['components']['datasystem']
+    reference_text = (ROOT / ds['worker']['config_file']).read_bytes().decode('utf-8')
+    reference = json.loads(reference_text)
+    value = reference['shared_memory_size_mb']['value']
+    reference['shared_memory_size_mb']['value'] = str(24576) if isinstance(value, str) else 24576
+    reference_dir.mkdir(parents=True, exist_ok=True)
+    worker_reference = (reference_dir / 'worker.reference.json').resolve()
+    worker_reference.write_bytes(render_ds_config(reference_text, reference, {'shared_memory_size_mb'}).encode('utf-8'))
+    ds['worker']['config_file'] = str(worker_reference)
     ds['worker']['config']['host_id_env_name'] = 'HOST_IP'
     config = ds['client']['config']
     config.pop('request_timeout_seconds', None)
@@ -66,8 +75,8 @@ def make_scenarios(source, nodes, control, whl, duration, counts=COUNTS, pod_ima
                   data_placement_policy='PREFERRED_META_OWNER', fast_transport_mem_size='512MB')
     ds['client'].setdefault('env', {}).update(DATASYSTEM_UB_GET_DATA_SIZE_BYTES='10485760',
                                              DATASYSTEM_ENABLE_LOAD_AWARE_SCHEDULER='true')
-    ds['worker']['resources'] = {'cpu': 32, 'requests_cpu': 8, 'memory_gib': 80, 'requests_memory_gib': 64}
-    ds['client']['resources'] = {'cpu': 32, 'requests_cpu': 4, 'memory_gib': 20, 'requests_memory_gib': 4}
+    ds['worker']['resources'] = {'cpu': 32, 'requests_cpu': 4, 'memory_gib': 32, 'requests_memory_gib': 28}
+    ds['client']['resources'] = {'cpu': 32, 'requests_cpu': 2, 'memory_gib': 20, 'requests_memory_gib': 4}
     scenarios = []
     for count in counts:
         chosen = nodes[:min(count, len(nodes))]
@@ -220,19 +229,19 @@ def main():
         parser.error('duration必须为正数，ds-whl必须是已存在的文件')
     source = json.loads(args.source_scenario.read_text(encoding='utf-8'))
     nodes = load_nodes(args.nodes_file, source)
-    if args.counts is None and len(nodes) != 32:
-        parser.error('完整九档默认需要32个节点；小规模试跑请指定 --counts 2 4')
+    if args.counts is None and len(nodes) < 16:
+        parser.error('完整九档默认至少需要16个节点；小规模试跑请指定 --counts 2 4')
     counts = tuple(sorted(args.counts or COUNTS))
     if len(set(counts)) != len(counts):
         parser.error('--counts 不允许重复档位')
     control = args.control_node or source.get('control_node', 'master')
-    scenarios = make_scenarios(source, nodes, control, args.ds_whl.resolve(), args.duration, counts,
-                               pod_image=args.pod_image)
     tag = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ') + '-' + uuid.uuid4().hex[:6]
     output = (args.output or ROOT / 'results' / ('ds-node-demo-' + tag)).resolve()
     output.mkdir(parents=True, exist_ok=False)
     for name in ('scenarios', 'logs'):
         (output / name).mkdir()
+    scenarios = make_scenarios(source, nodes, control, args.ds_whl.resolve(), args.duration, counts,
+                               pod_image=args.pod_image, reference_dir=output / 'scenarios')
     rows = [{'nodes': count, 'size': '2MB', 'status': 'pending', 'directory': f'{index:02d}-nodes-{count:03d}'}
             for index, count in enumerate(counts, 1)]
     for row, scenario in zip(rows, scenarios):

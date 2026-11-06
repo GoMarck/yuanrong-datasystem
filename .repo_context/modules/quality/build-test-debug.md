@@ -281,15 +281,19 @@ Backed by `tests/kvtest/BUILD.bazel` and `tests/kvtest/build.sh`:
   C++ scheduling/transport. The report archives intended groups separately from physical Pod topology. MC matches
   instance counts without adopting DS host affinity; same-group SHM remains possible and these are not independent machines;
 - `tests/kvtest/tools/run_ds_node_demo.py` prepares nine DS-only 2MB/17QPS cases (2 through 512 groups) on a
-  32-node inventory, reusing the same HOST_IP grouping. `kvtest_demo.py` shows stage-derived terminal progress and
+  16-to-32-node inventory, reusing the same HOST_IP grouping. `kvtest_demo.py` shows stage-derived terminal progress and
   reads completed SDK access-log aggregates for CSV/JSON/HTML summaries. The main display labels counts as nodes;
   archived scenarios and per-case reports retain the actual placements. Preflight checks the largest case's device,
   CPU, memory and Pod requests; `--prepare-only` generates configs without cluster access. Optional
   `run.command_timeout_floor_seconds` extends controller-command waits, leaving SDK and workload timing unchanged;
 - demo `--counts` selects a subset on a 2-to-32-node inventory, distributing groups evenly without rounding away
-  workers; the original implicit nine-case run still requires 32 nodes. Small previews use `--counts 2 4`;
+  workers; the implicit nine-case run requires at least 16 nodes. Small previews use `--counts 2 4`;
 - the DS demo defaults to `datasystem-kvtest:rc44-demo-v1` (a retagged existing base). Its `--pod-image` overrides
   source-scenario Pod image fields; SDK version remains controlled by the whl, and MC comparison defaults are unchanged;
+- the demo uses a 24GiB worker pool with worker CPU request/limit 4/32 and memory 28/32GiB; client CPU
+  request/limit is 2/32 with memory 4/20GiB. A per-run reference changes only `shared_memory_size_mb` to 24576
+  through `render_ds_config`; common templates and other suites remain unchanged. The 16-host 512-group case
+  requests 256CPU/1152GiB and 96 UB units per host before coordinator and existing workload overhead;
 - the CMake mode links against a pre-installed SDK (`-s/--sdk`, default `../../output/cpp`), while the Bazel mode
   builds `//tests/kvtest:kvtest` against the in-tree `//src/datasystem/client:datasystem`, producing a self-contained
   binary that does not need `libdatasystem.so` at runtime;
