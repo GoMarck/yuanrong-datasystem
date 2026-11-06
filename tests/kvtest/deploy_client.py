@@ -447,6 +447,8 @@ class Deployer:
     # --- Actions ---
 
     def _host_key(self, node):
+        if self._transport(node) == 'kubectl':
+            return ('kubectl', self._namespace(node), self._exec_target(node))
         return (node.get('host', 'localhost'), node.get('ssh_port'))
 
     def _get_host_lock(self, node):
@@ -502,9 +504,8 @@ class Deployer:
             log_info(f'{tag} mkdir {self.remote_work_dir}')
             self.run_on(node, f'mkdir -p -- {shlex.quote(self.remote_work_dir)}')
 
-            # Step 2: Upload binary + .so (under host lock to avoid concurrent
-            # scp races on the same target file when multiple instances share
-            # a host).
+            # SSH/local instances can share files; Kubernetes Pods have
+            # independent filesystems, so uploads only exclude the same Pod.
             remote_binary = f'{self.remote_work_dir}/kvtest'
             remote_sdk = node.get('remote_sdk_dir', self.deploy.get('remote_sdk_dir', ''))
             local_lib_dir = os.path.join(os.path.dirname(os.path.abspath(self.binary_path)), 'lib')

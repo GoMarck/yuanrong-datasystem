@@ -290,6 +290,8 @@ Backed by `tests/kvtest/BUILD.bazel` and `tests/kvtest/build.sh`:
   workers; the implicit nine-case run requires at least 16 nodes. Small previews use `--counts 2 4`.
   Explicit counts also accept 384; a 15-node workload inventory with a separate control node places at most
   26 workers/52 clients per host (78 UB units, 208CPU and 936GiB requested before other workloads);
+- client binary/library installation locks use namespace and Pod identity for kubectl transport, allowing different
+  Pods on one host to upload concurrently; SSH/local instances retain the existing host/SSH-port exclusion;
 - the DS demo defaults to `datasystem-kvtest:rc44-demo-v1` (a retagged existing base). Its `--pod-image` overrides
   source-scenario Pod image fields; SDK version remains controlled by the whl, and MC comparison defaults are unchanged;
 - the demo uses a 24GiB worker pool with worker CPU request/limit 4/32 and memory 28/32GiB; client CPU

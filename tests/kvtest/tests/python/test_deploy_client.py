@@ -64,6 +64,31 @@ def _make_deployer(nodes, config_template, transport='ssh'):
     return d
 
 
+class TestInstallLocks(unittest.TestCase):
+    def test_kubectl_uploads_only_exclude_same_namespace_and_pod(self):
+        deployer = _make_deployer([], {}, transport='kubectl')
+        node = {'host': '192.0.2.1', 'namespace': 'bench', 'pod_name': 'client-a'}
+        with deployer._get_host_lock(node):
+            same_pod = dict(node, host='192.0.2.2', instance_id=1)
+            self.assertFalse(deployer._get_host_lock(same_pod).acquire(blocking=False))
+            for other in (dict(node, pod_name='client-b'), dict(node, namespace='other')):
+                lock = deployer._get_host_lock(other)
+                self.assertTrue(lock.acquire(blocking=False))
+                lock.release()
+
+    def test_ssh_and_local_uploads_keep_host_exclusion(self):
+        deployer = _make_deployer([], {})
+        for host in ('192.0.2.1', 'localhost'):
+            node = {'host': host, 'instance_id': 0}
+            with deployer._get_host_lock(node):
+                lock = deployer._get_host_lock(dict(node, instance_id=1))
+                self.assertFalse(lock.acquire(blocking=False))
+        node = {'host': '192.0.2.1', 'transport': 'kubectl', 'pod_name': 'client-a'}
+        with deployer._get_host_lock(node):
+            lock = deployer._get_host_lock(dict(node, namespace='default'))
+            self.assertFalse(lock.acquire(blocking=False))
+
+
 class TestSdkOnlyCollect(unittest.TestCase):
     def test_sdk_only_archive_excludes_outputs_and_configs(self):
         from log_collect import REMOTE_ARCHIVE, receive_archive
