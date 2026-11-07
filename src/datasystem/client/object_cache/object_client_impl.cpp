@@ -59,6 +59,7 @@
 #include "datasystem/client/object_cache/routing/broken_filter.h"
 #include "datasystem/client/object_cache/routing/hash_ring_refresher.h"
 #include "datasystem/client/object_cache/routing/worker_router.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include "datasystem/common/device/device_manager_factory.h"
 #include "datasystem/common/device/device_helper.h"
 #include "datasystem/common/device/nvidia/cuda_host_memory.h"
@@ -2499,6 +2500,7 @@ Status ObjectClientImpl::SelectSetRoute(const std::string &objectKey,
                                         SetRouteContext &routeContext,
                                         const std::vector<HostPort> &preferredWorkers)
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_SET_ROUTE);
     if (preferredWorkers.empty()) {
         return SelectSetRouteWithoutHints(objectKey, excludedWorkers, routeContext);
     }
@@ -2817,6 +2819,7 @@ Status ObjectClientImpl::Put(const std::string &objectKey, const uint8_t *data, 
                              const std::unordered_set<std::string> &nestedObjectKeys, uint32_t ttlSecond, int existence,
                              int32_t requestTimeoutMs)
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_SET_ADMISSION);
     std::shared_lock<std::shared_timed_mutex> shutdownLck(shutdownMux_);
     RETURN_IF_NOT_OK(IsClientReady());
     PerfPoint perfPoint(PerfKey::CLIENT_PUT_OBJECT);
@@ -2836,8 +2839,10 @@ Status ObjectClientImpl::Put(const std::string &objectKey, const uint8_t *data, 
     ApiDeadlineGuard deadlineGuard(effectiveTimeoutMs);
     GetRequestContext()->reqTimeoutDuration.InitUs(ApiDeadline::Instance().ApiRemainingUs());
     Timer setTimer;
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_SET_EXECUTE);
     Status rc = ExecuteSetFlow(objectKey, data, size, param, nestedObjectKeys, ttlSecond, existence,
                                requestTimeoutMs);
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_SET_POSTPROCESS);
     if (traceEnabled) {
         Trace::Instance().AddLatencyTick(LatencyTickKey::CLIENT_SET_END);
     }
@@ -3755,6 +3760,7 @@ Status ObjectClientImpl::Get(const std::vector<std::string> &objectKeys, int64_t
                              std::vector<Optional<Buffer>> &buffers, bool queryL2Cache, bool isRH2DSupported,
                              int32_t requestTimeoutMs)
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_GET_INPUT);
     PerfPoint perfPoint(PerfKey::CLIENT_GET_OBJECT);
     AccessTransportTracker::Reset();
     RETURN_IF_NOT_OK(IsClientReady());
@@ -3771,6 +3777,7 @@ Status ObjectClientImpl::Get(const std::vector<std::string> &objectKeys, int64_t
     }
     std::vector<std::shared_ptr<Buffer>> objectBuffers(objectKeys.size());
     Status rc;
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_GET_EXECUTE);
     if (!enableLocalCache_) {
         CHECK_FAIL_RETURN_STATUS(!isRH2DSupported, K_NOT_SUPPORTED,
                                  "Remote H2D is not supported when local cache is disabled");
@@ -3779,6 +3786,7 @@ Status ObjectClientImpl::Get(const std::vector<std::string> &objectKeys, int64_t
         rc = boundMode_->GetFromLocalWorker(objectKeys, subTimeoutMs, objectBuffers, queryL2Cache, isRH2DSupported,
                                             requestTimeoutMs);
     }
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_GET_RESULT);
     buffers.clear();
     for (auto &objectBuffer : objectBuffers) {
         if (objectBuffer == nullptr) {

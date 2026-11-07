@@ -32,6 +32,7 @@ ds_cc_library(
     visibility = ["//visibility:public"],
     alwayslink = True,
     deps = [
+        "//src/datasystem/common/metrics:benchmark_profile",
         ":exist_handler",
         "//include/datasystem:headers",
         "//include/datasystem/object:object_headers",

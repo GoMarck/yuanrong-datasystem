@@ -84,6 +84,7 @@ ds_cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "//src/datasystem/common/metrics:benchmark_profile",
         ":transport_exist_types",
         ":transport_phase_latency_recorder",
         "//include/datasystem:headers",

@@ -114,6 +114,103 @@ python3 tests/kvtest/summarize_stage_profile.py <collected-client-logs> <collect
 unknown 不表示成功，必须结合 API 成功率。`requested_bytes` 是标注阶段的请求字节量，不是已完成流量或线上 RPC 包长。
 本功能没有请求级关联，因此能定位均值与各阶段分布的差距，不能证明某个 API 的 P99 恰由哪一条内部跨度造成。
 
+## 第二层打点：Set
+
+保持 `KVTEST_STAGE_PROFILE=1`，无需额外的细分开关。SDK 和 Worker 都需要新构建产物。
+
+| 观测位置 | phase | 边界 |
+|---|---|---|
+| SDK API | `ds.sdk.set.context/impl/access` | 请求上下文准备 / ObjectClientImpl 调用 / metrics、access记录与退出清理 |
+| SDK Put | `ds.sdk.set.admission/execute/postprocess` | shutdown读锁、输入和UB准入检查 / Set流程 / 延迟汇总及退出处理 |
+| SDK 路由 | `ds.sdk.set.route` | 选Worker及构造SetRouteContext |
+| SDK transport | `ds.sdk.set.create/publish/cleanup` | Create与本地缓冲准备 / transport Set（含UB写和Publish）/ 反馈与buffer析构、释放入队 |
+| SDK RPC | `ds.sdk.create.*`、`ds.sdk.publish.*` | `prepare` 准备；`sign` 签名；`call` RPC桩调用；`result` 响应处理 |
+| Worker Create | `ds.worker.create.auth/lookup/reserve/alloc/response/reference` | 鉴权与路由验证 / 命名空间和对象表查询及已有对象读锁 / allocation ID保留 / ShmUnit及内存分配 / 响应与URMA信息 / 引用登记与退出清理 |
+| Worker Publish | `ds.worker.publish.auth/validate/lock/prepare/metadata/commit/postprocess/cleanup` | 鉴权 / 引用检查和构造参数 / 对象表保留及写锁 / 发布准备 / 请求Master（可走本地捷径）/ 数据保存、通知和状态提交 / 发布后处理与解锁 / 引用清理及返回处理 |
+| Mooncake SDK | `mc.sdk.put.prepare/client_put/result` | 参数检查和切片准备 / Client::Put（嵌套RPC和TE）/ 结果处理与临时对象析构；原alloc、copy保留 |
+
+Set先看 `context + impl + access` 与API总量是否接近，再下钻 `impl`；
+`publish` 包含UB写和Publish RPC，不与两者再次相加。`create` 包含Create RPC。
+
+## 第二层打点：Get
+
+| 观测位置 | phase | 边界 |
+|---|---|---|
+| SDK API | `ds.sdk.get.context/impl/access/return` | 上下文 / ObjectClientImpl调用 / metrics与access / Buffer交还或ReadOnlyBuffer构造；末段包含退出清理 |
+| SDK Get | `ds.sdk.get.input/execute/result` | 输入、就绪和UB准入检查 / routed或bound Get / 输出Buffer转换及延迟汇总 |
+| SDK routed读 | `ds.sdk.get.route/transport/materialize` | 构造读请求和路由 / transport Get / 结果应用及物化 |
+| SDK Query | `ds.sdk.get.query_prepare/ub_prepare/query_attempt_prepare/query_attempt/query_retry/query_apply` | inline传输准备 / UB准入、连接和接收池准备 / 每次请求构造 / 发起Query / 失败重试准备 / 响应解析及引用接管 |
+| SDK RPC | `ds.sdk.query.prepare/sign/call/result` | 前置检查与选项 / 签名 / QueryAndGet RPC / 响应和UB健康反馈 |
+| Worker Query | `ds.worker.query.auth/local/metadata/delivery` | 读取鉴权 / 本地结果构造（包含下层回写）/ miss元数据 / Write、SendPayload、完成响应 |
+| Worker 本地取数 | `ds.worker.query.acquire/encode_shm` | TryAcquireLocalObject / SHM引用登记及响应编码 |
+| Worker UB回写 | `ds.worker.query.ub_latch/ub_prepare/ub_write/ub_result` | 容量、准入和读锁检查 / 段地址及带宽跟踪准备 / UrmaWritePayload（含完成等待）/ 状态、带宽及退出处理 |
+| Mooncake SDK | `mc.sdk.get.prepare/query_call/client_get/result` | 检查、副本选择与切片构造 / Client::Query / Client::Get / 结果和退出；原alloc、TE和RPC保留 |
+
+`ds.worker.query.local` 包含UB或SHM下层阶段；`ds.worker.query.ub_write` 包含 `ds.ub.write`。
+Get服务端回写可能处于Query RPC内，禁止重复求和。Mooncake的 `client_get` 包含TE Read，
+`query_call` 包含控制面Query。磁盘等非内存分支不属于本轮对比，不保证同样细分。
+
+`Span::Next` 结束前一阶段并启动下一阶段；没有显式标记结果的阶段仍为unknown，不推断成功。
+同一函数内的checkpoint阶段不重叠，跨函数层级仍会嵌套。`prepare` 等阶段可能一次请求出现多段，
+重试也会增加次数；不能直接相加各阶段均值。按 **阶段sum_ns / 对应API count / 1000**
+归一化后再核对同层时间，同时检查失败、重试、阶段计数和窗口。观测本身增加时钟/原子开销，
+checkpoint之间的记录开销及部分函数间隙没有归入子阶段，不能宣称精确逐请求时间守恒。
+
+## PollJFC sleep 对照开关
+
+SDK和Worker都支持启动环境变量：
+
+```bash
+# 默认保持现有空轮询sleep；不配置也等价于true
+export DATASYSTEM_URMA_POLL_SLEEP_ENABLED=true
+
+# 对照组：空轮询不sleep，立即继续poll
+export DATASYSTEM_URMA_POLL_SLEEP_ENABLED=false
+```
+
+该值在UrmaManager初始化、启动PollJFC线程前读取一次，使用现有bool环境解析器；非法值回退true。
+修改后重启对应进程。SDK和Worker可独立设置，不会互相下发覆盖。仅影响非event mode的
+`PollJfcWait` 空轮询分支；event mode的等待、CQE检查、错误处理、通知和退出逻辑保持原状。
+false在空闲时也持续轮询，会增加每个URMA进程的CPU消耗；它是受控性能实验开关。
+恢复true或删除变量并重启即可回滚，与阶段打点是否开启无关。
+
+在compare场景中分别修改 `components.datasystem.client.env` 和
+`components.datasystem.worker.env`，不要只在本地部署shell设置。保留其余env项，例如：
+
+```json
+"env": {
+  "KVTEST_STAGE_PROFILE": "1",
+  "KVTEST_STAGE_PROFILE_OUTPUT": "<existing-log-dir>/kvtest-stage-profile",
+  "DATASYSTEM_URMA_POLL_SLEEP_ENABLED": "false"
+}
+```
+
+| 组别 | SDK | Worker | 用途 |
+|---|---|---|---|
+| baseline | true | true | 复现现有路径 |
+| sdk-no-sleep | false | true | 定位SDK发起UB写的完成路径 |
+| worker-no-sleep | true | false | 定位Worker Get回写的完成路径 |
+| both-no-sleep | false | false | 观察两侧合并效果及资源竞争 |
+
+四组固定相同构建、CPU配额/亲和性、QPS、并发、对象大小、路由和日志强度。Set、Get分别统计，
+并同时收集CPU利用率/限流和API失败率。每组独立目录，先重复baseline确认波动，再交错重复对照。
+
+新增完成路径阶段：
+
+- `ds.ub.poll_sleep`：有在途事件时的实际nanosleep调用（不记录空闲sleep），每次sleep一条；
+  关闭sleep时该阶段应无新增记录，缺失不能冒充测得0us，须结合有效配置判断。
+- `ds.ub.notify`：完成集合非空时的CheckAndNotify批次，一批可能含多次请求。
+- `ds.ub.wait_event/wait_result`：WaitForUrmaEvent调用 / 事件状态处理与退出；包含于原 `ds.ub.wait`。
+- `ds.ub.completion_observe/wake_sched/event_process`：复用UrmaEvent已记录的us值，转ns累计，
+  只在非timeout路径记录。分别为通知到调用方观测、有效唤醒调度、顺序等待中的事件处理与等待残余；
+  预完成/分块路径可能是0或复用前一事件的有效唤醒值，不表示独立、不重叠的硬件阶段。
+
+优先比较SDK/Worker各自的 `ds.ub.wait` 与上述阶段，再看Set/Get API是否同步改善。
+若sleep消失但API没有改善，检查RPC、其他等待与busy poll的CPU竞争；不直接认定CQE或网卡为根因。
+
+直接构建已提交埋点的Mooncake分支时正常编译即可，不要再向它运行 `stage_profile.py`；
+该工具仅面向原始固定提交加完整bundle补丁的镜像构建路径。
+
 ## 最小验证
 
 ```bash

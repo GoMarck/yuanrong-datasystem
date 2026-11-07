@@ -36,6 +36,13 @@ int main(int argc, char **argv)
     {
         kvtest_profile::Span span(kvtest_profile::Stage::DS_SET);
     }
+    {
+        kvtest_profile::Span span(kvtest_profile::Stage::COUNT);
+        span.Next(kvtest_profile::Stage::DS_GET_ROUTE);
+        span.Next(kvtest_profile::Stage::DS_GET_MATERIALIZE);
+        span.Finish(true);
+        span.Next(kvtest_profile::Stage::COUNT);
+    }
     if (!enabled) {
         REQUIRE(access(path.c_str(), F_OK) != 0);
         return 0;
@@ -60,6 +67,11 @@ int main(int argc, char **argv)
             REQUIRE(row["requested_bytes"] == 7);
             REQUIRE(row["failed"] == 0);
             REQUIRE(row["unknown"] == 0);
+        } else if (row["phase"] == "ds.sdk.get.route" || row["phase"] == "ds.sdk.get.materialize") {
+            REQUIRE(row["count"] == 1);
+            REQUIRE(row["failed"] == 0);
+            REQUIRE(row["requested_bytes"] == 0);
+            REQUIRE(row["unknown"] == (row["phase"] == "ds.sdk.get.route" ? 1 : 0));
         } else {
             REQUIRE(row["phase"] == "ds.api.set");
             REQUIRE(row["count"] == 1);
@@ -67,7 +79,7 @@ int main(int argc, char **argv)
         }
         ++stages;
     }
-    REQUIRE(stages == 3);
+    REQUIRE(stages == 5);
     kvtest_profile::RecordDuration(kvtest_profile::Stage::DS_RPC_QUERY, 1000, true);
     std::remove(path.c_str());
     return 0;

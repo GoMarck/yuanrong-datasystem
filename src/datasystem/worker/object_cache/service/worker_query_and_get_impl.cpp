@@ -23,6 +23,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include "datasystem/common/inject/inject_point.h"
 #include "datasystem/common/log/access_recorder.h"
 #include "datasystem/common/log/latency_phase.h"
@@ -116,6 +117,7 @@ Status WorkerQueryAndGetImpl::ReadAndAuthenticate(
     const std::shared_ptr<ServerUnaryWriterReader<QueryAndGetRspPb, QueryAndGetReqPb>> &serverApi,
     QueryAndGetReqPb &request) const
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_W_QUERY_AUTH);
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(serverApi->Read(request), "Read QueryAndGet request failed");
     RETURN_RUNTIME_ERROR_IF_NULL(akSkManager_);
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(akSkManager_->VerifySignatureAndTimestamp(request), "AK/SK failed.");
@@ -142,6 +144,7 @@ Status WorkerQueryAndGetImpl::DeliverResponse(
     const std::shared_ptr<ServerUnaryWriterReader<QueryAndGetRspPb, QueryAndGetReqPb>> &serverApi,
     RequestState &state) const
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_W_QUERY_DELIVERY);
     auto provider = std::atomic_load(&ubHealthSummaryProvider_);
     if (provider != nullptr) {
         auto summary = (*provider)();
@@ -173,6 +176,7 @@ Status WorkerQueryAndGetImpl::BuildResponse(RequestState &state)
 
 Status WorkerQueryAndGetImpl::PrepareLocalResponse(RequestState &state)
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_W_QUERY_LOCAL);
     RETURN_IF_NOT_OK(ValidateRequest(state.request));
     RETURN_RUNTIME_ERROR_IF_NULL(getProc_);
     InitializeResponse(state);
@@ -328,7 +332,9 @@ Status WorkerQueryAndGetImpl::EncodeLocalHits(RequestState &state)
         }
         std::unique_ptr<GetObjEntryParams> params;
         const auto acquireStartUs = GetSteadyTimeUs();
+        kvtest_profile::Span benchmarkAcquire(kvtest_profile::Stage::DS_W_QUERY_ACQUIRE);
         auto rc = getProc_->TryAcquireLocalObject(objectKey, params);
+        benchmarkAcquire.Finish(rc.IsOk());
         LogQueryAndGetObjectPhase("acquireLocalObject", static_cast<size_t>(i),
                                   params == nullptr ? 0 : params->dataSize, GetSteadyTimeUs() - acquireStartUs, rc);
         RETURN_IF_NOT_OK(rc);
@@ -417,6 +423,7 @@ Status WorkerQueryAndGetImpl::EncodeUb(const QueryAndGetUbDataReqPb &request, si
                                        const GetObjEntryParams &params, QueryAndGetResultPb &result,
                                        bool &encoded) const
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_W_QUERY_UB_LATCH);
     encoded = false;
     if (params.dataSize > request.buffer_size()) {
         return Status::OK();
@@ -432,6 +439,7 @@ Status WorkerQueryAndGetImpl::EncodeUb(const QueryAndGetUbDataReqPb &request, si
         LogQueryAndGetObjectPhase("shmReadLatch", index, params.dataSize, GetSteadyTimeUs() - latchStartUs, latchRc);
         RETURN_IF_NOT_OK(latchRc);
     }
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_W_QUERY_UB_PREPARE);
     const uint64_t base = reinterpret_cast<uint64_t>(params.shmUnit->GetPointer());
     uint64_t segmentAddress = 0;
     uint64_t segmentSize = 0;
@@ -447,9 +455,11 @@ Status WorkerQueryAndGetImpl::EncodeUb(const QueryAndGetUbDataReqPb &request, si
     auto &readBwTracker = scheduling::WorkerReadBandwidthTracker::Instance();
     auto readBwToken = readBwTracker.BeginRead();
     const auto writeStartUs = GetSteadyTimeUs();
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_W_QUERY_UB_WRITE);
     Status rc = UrmaWritePayload(remote, segmentAddress, segmentSize, base, 0, params.dataSize, params.metaSize,
                                  srcChipId, dstChipId, true, eventKeys, nullptr, &failure,
                                  std::move(lateCompletionContext));
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_W_QUERY_UB_RESULT);
     LogQueryAndGetObjectPhase("urmaWritePayloadTotal", index, params.dataSize, GetSteadyTimeUs() - writeStartUs, rc);
     readBwTracker.CompleteRead(readBwToken, params.dataSize, rc.IsOk());
     if (rc.IsError()) {
@@ -477,6 +487,7 @@ void WorkerQueryAndGetImpl::EncodeShm(const QueryAndGetShmDataReqPb &request, si
                                       const GetObjEntryParams &params, QueryAndGetDataResultPb &result,
                                       RequestState &state, uint64_t &shmBytes) const
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_W_QUERY_ENCODE_SHM);
     const auto clientId = ClientKey::Intern(request.client_id());
     const auto addReferenceStartUs = GetSteadyTimeUs();
     auto shmUnit = params.shmUnit;
@@ -501,6 +512,7 @@ void WorkerQueryAndGetImpl::EncodeShm(const QueryAndGetShmDataReqPb &request, si
 
 Status WorkerQueryAndGetImpl::FillMissLocations(RequestState &state) const
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_W_QUERY_META);
     if (!state.misses.empty()) {
         INJECT_POINT_NO_RETURN("worker.QueryAndGet.QueryMissMetadata");
     }

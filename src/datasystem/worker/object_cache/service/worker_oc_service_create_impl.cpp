@@ -16,6 +16,7 @@
  */
 #include <new>
 
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include "datasystem/common/util/validator.h"
 #include "datasystem/worker/object_cache/service/worker_oc_service_create_impl.h"
 
@@ -166,6 +167,7 @@ Status WorkerOcServiceCreateImpl::FillCreateResponse(const ClientKey &clientId,
 
 Status WorkerOcServiceCreateImpl::AuthenticateCreateRequest(const CreateReqPb &req, std::string &tenantId)
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_W_CREATE_AUTH);
     CHECK_FAIL_RETURN_STATUS(metadataRouteResolver_ != nullptr, StatusCode::K_NOT_READY,
                              "ETCD cluster manager is not provided.");
     Status rc = req.is_routed() ? worker::AuthenticateRequest(akSkManager_, req, req.tenant_id(), tenantId)
@@ -227,6 +229,7 @@ Status WorkerOcServiceCreateImpl::CreateImpl(const std::string &tenantId, const 
                                              int64_t requestTimeoutMs, const std::string &allocationId,
                                              CreateRspPb &resp, CacheType cacheType)
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_W_CREATE_LOOKUP);
     auto objectKey = TenantAuthManager::ConstructNamespaceUriWithTenantId(tenantId, rawObjectKey);
     std::shared_ptr<SafeObjType> entry;
     bool isExist = objectTable_->Get(objectKey, entry).IsOk();
@@ -237,6 +240,7 @@ Status WorkerOcServiceCreateImpl::CreateImpl(const std::string &tenantId, const 
             CHECK_FAIL_RETURN_STATUS(!(*entry)->IsSealed(), K_OC_ALREADY_SEALED, "Cannot create sealed object.");
         }
     }
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_W_CREATE_RESERVE);
     ShmKey shmId;
     bool reserved = false;
     RETURN_IF_NOT_OK(ResolveCreateShmId(allocationId, shmId, reserved));
@@ -246,14 +250,17 @@ Status WorkerOcServiceCreateImpl::CreateImpl(const std::string &tenantId, const 
         }
     });
 
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_W_CREATE_ALLOC);
     auto shmUnit = std::make_shared<ShmUnit>();
     auto metadataSize = GetMetadataSize();
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
         AllocateMemoryForObject(objectKey, dataSize, metadataSize, true, evictionManager_, *shmUnit, cacheType),
         "worker allocate memory failed");
 
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_W_CREATE_RESPONSE);
     shmUnit->id = shmId;
     RETURN_IF_NOT_OK(FillCreateResponse(clientId, shmUnit, metadataSize, resp));
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_W_CREATE_REF);
     bool reclaimable = !ClientShmEnabled(clientId);
     INJECT_POINT_NO_RETURN("worker.Create.reclaimable", [&reclaimable](bool value) { reclaimable = value; });
 #ifdef WITH_TESTS

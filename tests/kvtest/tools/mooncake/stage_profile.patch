@@ -1,251 +1,9 @@
-diff --git a/mooncake-store/src/client_service.cpp b/mooncake-store/src/client_service.cpp
-index 77291f29..2ea26c8c 100644
---- a/mooncake-store/src/client_service.cpp
-+++ b/mooncake-store/src/client_service.cpp
-@@ -1,4 +1,5 @@
- #include "client_service.h"
-+#include "benchmark_profile.h"
- 
- #include <boost/algorithm/string.hpp>
- #include <glog/logging.h>
-@@ -4250,6 +4251,10 @@ void Client::PutToLocalFile(const std::string& key,
- ErrorCode Client::TransferData(const Replica::Descriptor& replica_descriptor,
-                                std::vector<Slice>& slices,
-                                TransferRequest::OpCode op_code) {
-+    kvtest_profile::Span benchmark_transfer(
-+        op_code == TransferRequest::READ ? kvtest_profile::Stage::MC_TE_READ
-+                                        : kvtest_profile::Stage::MC_TE_WRITE,
-+        kvtest_profile::Enabled() ? CalculateSliceSize(slices) : 0);
-     if (!transfer_submitter_) {
-         LOG(ERROR) << "TransferSubmitter not initialized";
-         return ErrorCode::INVALID_PARAMS;
-@@ -4276,7 +4281,11 @@ ErrorCode Client::TransferData(const Replica::Descriptor& replica_descriptor,
- 
-     VLOG(1) << "Using transfer strategy: " << future->strategy();
- 
--    return future->get();
-+    kvtest_profile::Span benchmark_wait(kvtest_profile::Stage::MC_TE_WAIT);
-+    auto result = future->get();
-+    benchmark_wait.Finish(result == ErrorCode::OK);
-+    benchmark_transfer.Finish(result == ErrorCode::OK);
-+    return result;
- }
- 
- std::optional<TransferFuture> Client::SubmitRangeRead(
-diff --git a/mooncake-store/src/master_client.cpp b/mooncake-store/src/master_client.cpp
-index 4dcb58e4..b94d90e1 100644
---- a/mooncake-store/src/master_client.cpp
-+++ b/mooncake-store/src/master_client.cpp
-@@ -1,4 +1,6 @@
- #include "master_client.h"
-+#include "benchmark_profile.h"
-+#include <cstring>
- 
- #include <async_simple/coro/FutureAwaiter.h>
- #include <async_simple/coro/Lazy.h>
-@@ -349,7 +351,19 @@ tl::expected<ReturnType, ErrorCode> MasterClient::invoke_rpc(Args&&... args) {
-     }
- 
-     auto start_time = std::chrono::steady_clock::now();
--    return async_simple::coro::syncAwait(
-+    auto benchmark_stage = kvtest_profile::Stage::COUNT;
-+    if (kvtest_profile::Enabled()) {
-+        const char* name = RpcNameTraits<ServiceMethod>::value;
-+        if (std::strcmp(name, "PutStart") == 0) {
-+            benchmark_stage = kvtest_profile::Stage::MC_RPC_PUT_START;
-+        } else if (std::strcmp(name, "PutEnd") == 0) {
-+            benchmark_stage = kvtest_profile::Stage::MC_RPC_PUT_END;
-+        } else if (std::strcmp(name, "GetReplicaList") == 0) {
-+            benchmark_stage = kvtest_profile::Stage::MC_RPC_QUERY;
-+        }
-+    }
-+    kvtest_profile::Span benchmark_span(benchmark_stage);
-+    auto benchmark_result = async_simple::coro::syncAwait(
-         [&]() -> async_simple::coro::Lazy<tl::expected<ReturnType, ErrorCode>> {
-             auto ret = co_await pool->send_request(
-                 [&](coro_io::client_reuse_hint,
-@@ -380,6 +394,8 @@ tl::expected<ReturnType, ErrorCode> MasterClient::invoke_rpc(Args&&... args) {
-             }
-             co_return result->result();
-         }());
-+    benchmark_span.Finish(benchmark_result.has_value());
-+    return benchmark_result;
- }
- 
- template <auto ServiceMethod, typename ResultType, typename... Args>
-diff --git a/mooncake-store/src/real_client.cpp b/mooncake-store/src/real_client.cpp
-index 5a931696..7cfc3e3e 100644
---- a/mooncake-store/src/real_client.cpp
-+++ b/mooncake-store/src/real_client.cpp
-@@ -17,6 +17,7 @@
- #include <vector>
- 
- #include "real_client.h"
-+#include "benchmark_profile.h"
- #include "registered_pinned_memory.h"
- #include "client_buffer.h"
- #include "replica_selection.h"
-@@ -1960,15 +1961,19 @@ tl::expected<void, ErrorCode> RealClient::put_internal(
-         LOG(ERROR) << "Client buffer allocator is not provided";
-         return tl::unexpected(ErrorCode::INVALID_PARAMS);
-     }
-+    kvtest_profile::Span benchmark_alloc(kvtest_profile::Stage::MC_PUT_ALLOC, value.size_bytes());
-     auto alloc_result = client_buffer_allocator->allocate(value.size_bytes());
-+    benchmark_alloc.Finish(alloc_result.has_value());
-     if (!alloc_result) {
-         LOG(ERROR) << "Failed to allocate buffer for put operation, key: "
-                    << key << ", value size: " << value.size();
-         return tl::unexpected(ErrorCode::INVALID_PARAMS);
-     }
-     auto &buffer_handle = *alloc_result;
-+    kvtest_profile::Span benchmark_copy(kvtest_profile::Stage::MC_COPY, value.size_bytes());
-     auto scatter_result = gather_maybe_device_to_host(
-         buffer_handle.ptr(), value.data(), value.size_bytes(), "put:" + key);
-+    benchmark_copy.Finish(scatter_result.has_value());
-     if (!scatter_result) {
-         return tl::unexpected(scatter_result.error());
-     }
-@@ -1999,6 +2004,7 @@ tl::expected<void, ErrorCode> RealClient::put_dummy_helper(
- 
- int RealClient::put(const std::string &key, std::span<const char> value,
-                     const ReplicateConfig &config) {
-+    kvtest_profile::Span benchmark_span(kvtest_profile::Stage::MC_PUT, value.size_bytes());
-     auto result = execute_timed_operation<tl::expected<void, ErrorCode>>(
-         [&]() {
-             return put_internal(key, value, config, client_buffer_allocator_);
-@@ -2009,6 +2015,7 @@ int RealClient::put(const std::string &key, std::span<const char> value,
-                                               "put", value.size_bytes(),
-                                               latency_us);
-         });
-+    benchmark_span.Finish(result.has_value());
-     return to_py_ret(result);
- }
- 
-@@ -2862,7 +2869,9 @@ std::shared_ptr<BufferHandle> RealClient::get_buffer_internal(
-     }
- 
-     // Allocate buffer
-+    kvtest_profile::Span benchmark_alloc(kvtest_profile::Stage::MC_GET_ALLOC, total_length);
-     auto alloc_result = client_buffer_allocator->allocate(total_length);
-+    benchmark_alloc.Finish(alloc_result.has_value());
-     if (!alloc_result) {
-         LOG(ERROR) << "Failed to allocate buffer for get_buffer, key: " << key;
-         return nullptr;
-@@ -2925,7 +2934,8 @@ std::shared_ptr<BufferHandle> RealClient::get_buffer_internal(
- 
- // Implementation of get_buffer method
- std::shared_ptr<BufferHandle> RealClient::get_buffer(const std::string &key) {
--    return execute_timed_operation<std::shared_ptr<BufferHandle>>(
-+    kvtest_profile::Span benchmark_span(kvtest_profile::Stage::MC_GET);
-+    auto benchmark_result = execute_timed_operation<std::shared_ptr<BufferHandle>>(
-         [&]() { return get_buffer_internal(key, client_buffer_allocator_); },
-         [](const auto &buffer) { return buffer != nullptr; },
-         [&](uint64_t latency_us, const auto &buffer) {
-@@ -2933,6 +2943,8 @@ std::shared_ptr<BufferHandle> RealClient::get_buffer(const std::string &key) {
-                                               "get_buffer", buffer->size(),
-                                               latency_us);
-         });
-+    benchmark_span.Finish(benchmark_result != nullptr);
-+    return benchmark_result;
- }
- 
- tl::expected<std::tuple<uint64_t, size_t>, ErrorCode>
-diff --git a/mooncake-store/src/rpc_service.cpp b/mooncake-store/src/rpc_service.cpp
-index c45c5d6a..3b3b9632 100644
---- a/mooncake-store/src/rpc_service.cpp
-+++ b/mooncake-store/src/rpc_service.cpp
-@@ -1,4 +1,5 @@
- #include "rpc_service.h"
-+#include "benchmark_profile.h"
- 
- #include <cstddef>
- #include <functional>
-@@ -263,7 +264,8 @@ WrappedMasterService::GetReplicaListByRegex(const std::string& str,
- tl::expected<GetReplicaListResponse, ErrorCode>
- WrappedMasterService::GetReplicaList(const std::string& key,
-                                      const std::string& tenant_id) {
--    return execute_rpc(
-+    kvtest_profile::Span benchmark_span(kvtest_profile::Stage::MC_SERVER_QUERY);
-+    auto benchmark_result = execute_rpc(
-         "GetReplicaList",
-         [&] {
-             return WithRequestTenant(master_service_.IsTenantQuotaEnabled()
-@@ -279,6 +281,8 @@ WrappedMasterService::GetReplicaList(const std::string& key,
-         [] {
-             MasterMetricManager::instance().inc_get_replica_list_failures();
-         });
-+    benchmark_span.Finish(benchmark_result.has_value());
-+    return benchmark_result;
- }
- 
- std::vector<tl::expected<GetReplicaListResponse, ErrorCode>>
-@@ -366,7 +370,8 @@ WrappedMasterService::PutStart(const UUID& client_id, const std::string& key,
-                                const uint64_t slice_length,
-                                const ReplicateConfig& config,
-                                const std::string& tenant_id) {
--    return execute_rpc(
-+    kvtest_profile::Span benchmark_span(kvtest_profile::Stage::MC_SERVER_PUT_START);
-+    auto benchmark_result = execute_rpc(
-         "PutStart",
-         [&] {
-             return WithWriteTenant(tenant_id,
-@@ -383,12 +388,15 @@ WrappedMasterService::PutStart(const UUID& client_id, const std::string& key,
-         },
-         [&] { MasterMetricManager::instance().inc_put_start_requests(); },
-         [] { MasterMetricManager::instance().inc_put_start_failures(); });
-+    benchmark_span.Finish(benchmark_result.has_value());
-+    return benchmark_result;
- }
- 
- tl::expected<void, ErrorCode> WrappedMasterService::PutEnd(
-     const UUID& client_id, const ObjectMeta& object_meta,
-     ReplicaType replica_type, const std::string& tenant_id) {
--    return execute_rpc(
-+    kvtest_profile::Span benchmark_span(kvtest_profile::Stage::MC_SERVER_PUT_END);
-+    auto benchmark_result = execute_rpc(
-         "PutEnd",
-         [&] {
-             return WithRequestTenant(master_service_.IsTenantQuotaEnabled()
-@@ -406,6 +414,8 @@ tl::expected<void, ErrorCode> WrappedMasterService::PutEnd(
-         },
-         [] { MasterMetricManager::instance().inc_put_end_requests(); },
-         [] { MasterMetricManager::instance().inc_put_end_failures(); });
-+    benchmark_span.Finish(benchmark_result.has_value());
-+    return benchmark_result;
- }
- 
- tl::expected<void, ErrorCode> WrappedMasterService::PutRevoke(
-diff --git a/mooncake-store/src/transfer_task.cpp b/mooncake-store/src/transfer_task.cpp
-index 711f9b73..3f3d2bc2 100644
---- a/mooncake-store/src/transfer_task.cpp
-+++ b/mooncake-store/src/transfer_task.cpp
-@@ -1,4 +1,5 @@
- #include "transfer_task.h"
-+#include "benchmark_profile.h"
- 
- #include <glog/logging.h>
- 
-@@ -1225,6 +1226,7 @@ std::optional<TransferFuture> TransferSubmitter::submitMemcpyOperation(
- 
- std::optional<TransferFuture> TransferSubmitter::submitMemcpyOperations(
-     std::vector<MemcpyOperation> operations) {
-+    kvtest_profile::Span benchmark_local_copy(kvtest_profile::Stage::MC_LOCAL_COPY);
-     auto state = std::make_shared<MemcpyOperationState>();
-     const size_t operation_count = operations.size();
-     MemcpyTask task(std::move(operations), state);
-@@ -1238,6 +1240,7 @@ std::optional<TransferFuture> TransferSubmitter::submitMemcpyOperations(
- 
- std::optional<TransferFuture> TransferSubmitter::submitTransfer(
-     std::vector<TransferRequest>& requests) {
-+    kvtest_profile::Span benchmark_span(kvtest_profile::Stage::MC_TE_SUBMIT, 0);
-     // Allocate batch ID
-     const size_t batch_size = requests.size();
-     BatchID batch_id = engine_.allocateBatchID(batch_size);
 diff --git a/mooncake-store/include/benchmark_profile.h b/mooncake-store/include/benchmark_profile.h
 new file mode 100644
+index 00000000..b685b280
 --- /dev/null
 +++ b/mooncake-store/include/benchmark_profile.h
-@@ -0,0 +1,270 @@
+@@ -0,0 +1,430 @@
 +/**
 + * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 + * Licensed under the Apache License, Version 2.0 (the "License");
@@ -288,6 +46,82 @@ new file mode 100644
 +    MC_PUT, MC_GET, MC_RPC_PUT_START, MC_RPC_PUT_END, MC_RPC_QUERY,
 +    MC_SERVER_PUT_START, MC_SERVER_PUT_END, MC_SERVER_QUERY,
 +    MC_PUT_ALLOC, MC_GET_ALLOC, MC_COPY, MC_TE_READ, MC_TE_WRITE, MC_TE_SUBMIT, MC_TE_WAIT, MC_LOCAL_COPY,
++    DS_SET_CONTEXT,
++    DS_SET_IMPL,
++    DS_SET_ACCESS,
++    DS_GET_CONTEXT,
++    DS_GET_IMPL,
++    DS_GET_ACCESS,
++    DS_GET_RETURN,
++    DS_SET_ROUTE,
++    DS_SET_CREATE,
++    DS_SET_PUBLISH,
++    DS_SET_CLEANUP,
++    DS_GET_ROUTE,
++    DS_GET_TRANSPORT,
++    DS_GET_MATERIALIZE,
++    DS_QUERY_PREPARE,
++    DS_QUERY_ATTEMPT_PREPARE,
++    DS_QUERY_ATTEMPT,
++    DS_QUERY_RETRY,
++    DS_QUERY_APPLY,
++    DS_GET_UB_PREPARE,
++    DS_CREATE_RPC_PREPARE,
++    DS_CREATE_RPC_SIGN,
++    DS_CREATE_RPC_CALL,
++    DS_CREATE_RPC_RESULT,
++    DS_PUBLISH_RPC_PREPARE,
++    DS_PUBLISH_RPC_SIGN,
++    DS_PUBLISH_RPC_CALL,
++    DS_PUBLISH_RPC_RESULT,
++    DS_QUERY_RPC_PREPARE,
++    DS_QUERY_RPC_SIGN,
++    DS_QUERY_RPC_CALL,
++    DS_QUERY_RPC_RESULT,
++    DS_W_CREATE_AUTH,
++    DS_W_CREATE_LOOKUP,
++    DS_W_CREATE_RESERVE,
++    DS_W_CREATE_ALLOC,
++    DS_W_CREATE_RESPONSE,
++    DS_W_CREATE_REF,
++    DS_W_PUBLISH_AUTH,
++    DS_W_PUBLISH_VALIDATE,
++    DS_W_PUBLISH_LOCK,
++    DS_W_PUBLISH_PREPARE,
++    DS_W_PUBLISH_META,
++    DS_W_PUBLISH_COMMIT,
++    DS_W_PUBLISH_CLEANUP,
++    DS_W_QUERY_AUTH,
++    DS_W_QUERY_LOCAL,
++    DS_W_QUERY_META,
++    DS_W_QUERY_DELIVERY,
++    DS_W_QUERY_ACQUIRE,
++    DS_W_QUERY_UB_LATCH,
++    DS_W_QUERY_UB_PREPARE,
++    DS_W_QUERY_UB_WRITE,
++    DS_W_QUERY_UB_RESULT,
++    DS_W_QUERY_ENCODE_SHM,
++    DS_UB_POLL_SLEEP,
++    DS_UB_NOTIFY,
++    DS_UB_WAIT_EVENT,
++    DS_UB_WAIT_RESULT,
++    MC_PUT_PREPARE,
++    MC_PUT_CLIENT_PUT,
++    MC_GET_PREPARE,
++    MC_GET_CLIENT_GET,
++    MC_GET_QUERY_CALL,
++    MC_GET_RESULT,
++    MC_PUT_RESULT,
++    DS_SET_ADMISSION,
++    DS_SET_EXECUTE,
++    DS_SET_POSTPROCESS,
++    DS_GET_INPUT,
++    DS_GET_EXECUTE,
++    DS_GET_RESULT,
++    DS_UB_WAKE_SCHED,
++    DS_UB_COMPLETION_OBSERVE,
++    DS_UB_EVENT_PROCESS,
++    DS_W_PUBLISH_POSTPROCESS,
 +    COUNT
 +};
 +inline constexpr const char *STAGE_NAMES[] = {
@@ -302,7 +136,83 @@ new file mode 100644
 +    "mc.api.put", "mc.api.get", "mc.rpc.put_start", "mc.rpc.put_end", "mc.rpc.query",
 +    "mc.server.put_start", "mc.server.put_end", "mc.server.query",
 +    "mc.alloc.put", "mc.alloc.get", "mc.copy", "mc.te.read", "mc.te.write", "mc.te.submit", "mc.te.wait",
-+    "mc.local_copy"
++    "mc.local_copy",
++    "ds.sdk.set.context",
++    "ds.sdk.set.impl",
++    "ds.sdk.set.access",
++    "ds.sdk.get.context",
++    "ds.sdk.get.impl",
++    "ds.sdk.get.access",
++    "ds.sdk.get.return",
++    "ds.sdk.set.route",
++    "ds.sdk.set.create",
++    "ds.sdk.set.publish",
++    "ds.sdk.set.cleanup",
++    "ds.sdk.get.route",
++    "ds.sdk.get.transport",
++    "ds.sdk.get.materialize",
++    "ds.sdk.get.query_prepare",
++    "ds.sdk.get.query_attempt_prepare",
++    "ds.sdk.get.query_attempt",
++    "ds.sdk.get.query_retry",
++    "ds.sdk.get.query_apply",
++    "ds.sdk.get.ub_prepare",
++    "ds.sdk.create.prepare",
++    "ds.sdk.create.sign",
++    "ds.sdk.create.call",
++    "ds.sdk.create.result",
++    "ds.sdk.publish.prepare",
++    "ds.sdk.publish.sign",
++    "ds.sdk.publish.call",
++    "ds.sdk.publish.result",
++    "ds.sdk.query.prepare",
++    "ds.sdk.query.sign",
++    "ds.sdk.query.call",
++    "ds.sdk.query.result",
++    "ds.worker.create.auth",
++    "ds.worker.create.lookup",
++    "ds.worker.create.reserve",
++    "ds.worker.create.alloc",
++    "ds.worker.create.response",
++    "ds.worker.create.reference",
++    "ds.worker.publish.auth",
++    "ds.worker.publish.validate",
++    "ds.worker.publish.lock",
++    "ds.worker.publish.prepare",
++    "ds.worker.publish.metadata",
++    "ds.worker.publish.commit",
++    "ds.worker.publish.cleanup",
++    "ds.worker.query.auth",
++    "ds.worker.query.local",
++    "ds.worker.query.metadata",
++    "ds.worker.query.delivery",
++    "ds.worker.query.acquire",
++    "ds.worker.query.ub_latch",
++    "ds.worker.query.ub_prepare",
++    "ds.worker.query.ub_write",
++    "ds.worker.query.ub_result",
++    "ds.worker.query.encode_shm",
++    "ds.ub.poll_sleep",
++    "ds.ub.notify",
++    "ds.ub.wait_event",
++    "ds.ub.wait_result",
++    "mc.sdk.put.prepare",
++    "mc.sdk.put.client_put",
++    "mc.sdk.get.prepare",
++    "mc.sdk.get.client_get",
++    "mc.sdk.get.query_call",
++    "mc.sdk.get.result",
++    "mc.sdk.put.result",
++    "ds.sdk.set.admission",
++    "ds.sdk.set.execute",
++    "ds.sdk.set.postprocess",
++    "ds.sdk.get.input",
++    "ds.sdk.get.execute",
++    "ds.sdk.get.result",
++    "ds.ub.wake_sched",
++    "ds.ub.completion_observe",
++    "ds.ub.event_process",
++    "ds.worker.publish.postprocess"
 +};
 +inline constexpr std::array<uint64_t, 22> BUCKET_NS = {
 +    100, 250, 500, 1000, 2000, 4000, 8000, 16000, 32000, 64000, 128000, 256000,
@@ -497,6 +407,14 @@ new file mode 100644
 +    Span &operator=(const Span &) = delete;
 +    ~Span() { FinishUnknown(); }
 +
++    void Next(Stage stage)
++    {
++        FinishUnknown();
++        slot_ = detail::GetSlot(stage);
++        bytes_ = 0;
++        start_ = slot_ == nullptr ? 0 : detail::NowNs();
++    }
++
 +    void Finish(bool success)
 +    {
 +        Record(success ? 1 : 0);
@@ -516,3 +434,300 @@ new file mode 100644
 +};
 +}  // namespace kvtest_profile
 +#endif
+diff --git a/mooncake-store/src/client_service.cpp b/mooncake-store/src/client_service.cpp
+index 77291f29..2ea26c8c 100644
+--- a/mooncake-store/src/client_service.cpp
++++ b/mooncake-store/src/client_service.cpp
+@@ -1,4 +1,5 @@
+ #include "client_service.h"
++#include "benchmark_profile.h"
+ 
+ #include <boost/algorithm/string.hpp>
+ #include <glog/logging.h>
+@@ -4250,6 +4251,10 @@ void Client::PutToLocalFile(const std::string& key,
+ ErrorCode Client::TransferData(const Replica::Descriptor& replica_descriptor,
+                                std::vector<Slice>& slices,
+                                TransferRequest::OpCode op_code) {
++    kvtest_profile::Span benchmark_transfer(
++        op_code == TransferRequest::READ ? kvtest_profile::Stage::MC_TE_READ
++                                        : kvtest_profile::Stage::MC_TE_WRITE,
++        kvtest_profile::Enabled() ? CalculateSliceSize(slices) : 0);
+     if (!transfer_submitter_) {
+         LOG(ERROR) << "TransferSubmitter not initialized";
+         return ErrorCode::INVALID_PARAMS;
+@@ -4276,7 +4281,11 @@ ErrorCode Client::TransferData(const Replica::Descriptor& replica_descriptor,
+ 
+     VLOG(1) << "Using transfer strategy: " << future->strategy();
+ 
+-    return future->get();
++    kvtest_profile::Span benchmark_wait(kvtest_profile::Stage::MC_TE_WAIT);
++    auto result = future->get();
++    benchmark_wait.Finish(result == ErrorCode::OK);
++    benchmark_transfer.Finish(result == ErrorCode::OK);
++    return result;
+ }
+ 
+ std::optional<TransferFuture> Client::SubmitRangeRead(
+diff --git a/mooncake-store/src/master_client.cpp b/mooncake-store/src/master_client.cpp
+index 4dcb58e4..b94d90e1 100644
+--- a/mooncake-store/src/master_client.cpp
++++ b/mooncake-store/src/master_client.cpp
+@@ -1,4 +1,6 @@
+ #include "master_client.h"
++#include "benchmark_profile.h"
++#include <cstring>
+ 
+ #include <async_simple/coro/FutureAwaiter.h>
+ #include <async_simple/coro/Lazy.h>
+@@ -349,7 +351,19 @@ tl::expected<ReturnType, ErrorCode> MasterClient::invoke_rpc(Args&&... args) {
+     }
+ 
+     auto start_time = std::chrono::steady_clock::now();
+-    return async_simple::coro::syncAwait(
++    auto benchmark_stage = kvtest_profile::Stage::COUNT;
++    if (kvtest_profile::Enabled()) {
++        const char* name = RpcNameTraits<ServiceMethod>::value;
++        if (std::strcmp(name, "PutStart") == 0) {
++            benchmark_stage = kvtest_profile::Stage::MC_RPC_PUT_START;
++        } else if (std::strcmp(name, "PutEnd") == 0) {
++            benchmark_stage = kvtest_profile::Stage::MC_RPC_PUT_END;
++        } else if (std::strcmp(name, "GetReplicaList") == 0) {
++            benchmark_stage = kvtest_profile::Stage::MC_RPC_QUERY;
++        }
++    }
++    kvtest_profile::Span benchmark_span(benchmark_stage);
++    auto benchmark_result = async_simple::coro::syncAwait(
+         [&]() -> async_simple::coro::Lazy<tl::expected<ReturnType, ErrorCode>> {
+             auto ret = co_await pool->send_request(
+                 [&](coro_io::client_reuse_hint,
+@@ -380,6 +394,8 @@ tl::expected<ReturnType, ErrorCode> MasterClient::invoke_rpc(Args&&... args) {
+             }
+             co_return result->result();
+         }());
++    benchmark_span.Finish(benchmark_result.has_value());
++    return benchmark_result;
+ }
+ 
+ template <auto ServiceMethod, typename ResultType, typename... Args>
+diff --git a/mooncake-store/src/real_client.cpp b/mooncake-store/src/real_client.cpp
+index 5a931696..43d94b2a 100644
+--- a/mooncake-store/src/real_client.cpp
++++ b/mooncake-store/src/real_client.cpp
+@@ -17,6 +17,7 @@
+ #include <vector>
+ 
+ #include "real_client.h"
++#include "benchmark_profile.h"
+ #include "registered_pinned_memory.h"
+ #include "client_buffer.h"
+ #include "replica_selection.h"
+@@ -1948,6 +1949,7 @@ tl::expected<void, ErrorCode> RealClient::put_internal(
+     const std::string &key, std::span<const char> value,
+     const ReplicateConfig &config,
+     const std::shared_ptr<ClientBufferAllocator> &client_buffer_allocator) {
++    kvtest_profile::Span benchmark_phase(kvtest_profile::Stage::MC_PUT_PREPARE);
+     if (config.prefer_alloc_in_same_node) {
+         LOG(ERROR) << "prefer_alloc_in_same_node is not supported.";
+         return tl::unexpected(ErrorCode::INVALID_PARAMS);
+@@ -1960,22 +1962,30 @@ tl::expected<void, ErrorCode> RealClient::put_internal(
+         LOG(ERROR) << "Client buffer allocator is not provided";
+         return tl::unexpected(ErrorCode::INVALID_PARAMS);
+     }
++    benchmark_phase.Finish(true);
++    kvtest_profile::Span benchmark_alloc(kvtest_profile::Stage::MC_PUT_ALLOC, value.size_bytes());
+     auto alloc_result = client_buffer_allocator->allocate(value.size_bytes());
++    benchmark_alloc.Finish(alloc_result.has_value());
+     if (!alloc_result) {
+         LOG(ERROR) << "Failed to allocate buffer for put operation, key: "
+                    << key << ", value size: " << value.size();
+         return tl::unexpected(ErrorCode::INVALID_PARAMS);
+     }
+     auto &buffer_handle = *alloc_result;
++    kvtest_profile::Span benchmark_copy(kvtest_profile::Stage::MC_COPY, value.size_bytes());
+     auto scatter_result = gather_maybe_device_to_host(
+         buffer_handle.ptr(), value.data(), value.size_bytes(), "put:" + key);
++    benchmark_copy.Finish(scatter_result.has_value());
+     if (!scatter_result) {
+         return tl::unexpected(scatter_result.error());
+     }
+ 
++    benchmark_phase.Next(kvtest_profile::Stage::MC_PUT_PREPARE);
+     std::vector<Slice> slices = split_into_slices(buffer_handle);
+ 
++    benchmark_phase.Next(kvtest_profile::Stage::MC_PUT_CLIENT_PUT);
+     auto put_result = client_->Put(key, slices, config);
++    benchmark_phase.Next(kvtest_profile::Stage::MC_PUT_RESULT);
+     if (!put_result) {
+         return tl::unexpected(put_result.error());
+     }
+@@ -1999,6 +2009,7 @@ tl::expected<void, ErrorCode> RealClient::put_dummy_helper(
+ 
+ int RealClient::put(const std::string &key, std::span<const char> value,
+                     const ReplicateConfig &config) {
++    kvtest_profile::Span benchmark_span(kvtest_profile::Stage::MC_PUT, value.size_bytes());
+     auto result = execute_timed_operation<tl::expected<void, ErrorCode>>(
+         [&]() {
+             return put_internal(key, value, config, client_buffer_allocator_);
+@@ -2009,6 +2020,7 @@ int RealClient::put(const std::string &key, std::span<const char> value,
+                                               "put", value.size_bytes(),
+                                               latency_us);
+         });
++    benchmark_span.Finish(result.has_value());
+     return to_py_ret(result);
+ }
+ 
+@@ -2815,6 +2827,7 @@ tl::expected<void, ErrorCode> RealClient::unregister_shm_buffer_internal(
+ std::shared_ptr<BufferHandle> RealClient::get_buffer_internal(
+     const std::string &key,
+     const std::shared_ptr<ClientBufferAllocator> &client_buffer_allocator) {
++    kvtest_profile::Span benchmark_phase(kvtest_profile::Stage::MC_GET_PREPARE);
+     if (!client_) {
+         LOG(ERROR) << "Client is not initialized";
+         return nullptr;
+@@ -2825,7 +2838,9 @@ std::shared_ptr<BufferHandle> RealClient::get_buffer_internal(
+     }
+ 
+     // Query the object info
++    benchmark_phase.Next(kvtest_profile::Stage::MC_GET_QUERY_CALL);
+     auto query_result = client_->Query(key);
++    benchmark_phase.Next(kvtest_profile::Stage::MC_GET_PREPARE);
+     if (!query_result) {
+         if (query_result.error() == ErrorCode::OBJECT_NOT_FOUND ||
+             query_result.error() == ErrorCode::REPLICA_IS_NOT_READY) {
+@@ -2862,12 +2877,16 @@ std::shared_ptr<BufferHandle> RealClient::get_buffer_internal(
+     }
+ 
+     // Allocate buffer
++    benchmark_phase.Finish(true);
++    kvtest_profile::Span benchmark_alloc(kvtest_profile::Stage::MC_GET_ALLOC, total_length);
+     auto alloc_result = client_buffer_allocator->allocate(total_length);
++    benchmark_alloc.Finish(alloc_result.has_value());
+     if (!alloc_result) {
+         LOG(ERROR) << "Failed to allocate buffer for get_buffer, key: " << key;
+         return nullptr;
+     }
+ 
++    benchmark_phase.Next(kvtest_profile::Stage::MC_GET_PREPARE);
+     auto buffer_handle =
+         std::make_shared<BufferHandle>(std::move(*alloc_result));
+ 
+@@ -2913,7 +2932,9 @@ std::shared_ptr<BufferHandle> RealClient::get_buffer_internal(
+     std::vector<Slice> slices;
+     allocateSlices(slices, replica, buffer_handle->ptr());
+     auto filtered_qr = FilterQueryResult(query_result.value(), replica);
++    benchmark_phase.Next(kvtest_profile::Stage::MC_GET_CLIENT_GET);
+     auto get_result = client_->Get(key, filtered_qr, slices);
++    benchmark_phase.Next(kvtest_profile::Stage::MC_GET_RESULT);
+     if (!get_result) {
+         LOG(ERROR) << "Get failed for key: " << key
+                    << " with error: " << toString(get_result.error());
+@@ -2925,7 +2946,8 @@ std::shared_ptr<BufferHandle> RealClient::get_buffer_internal(
+ 
+ // Implementation of get_buffer method
+ std::shared_ptr<BufferHandle> RealClient::get_buffer(const std::string &key) {
+-    return execute_timed_operation<std::shared_ptr<BufferHandle>>(
++    kvtest_profile::Span benchmark_span(kvtest_profile::Stage::MC_GET);
++    auto benchmark_result = execute_timed_operation<std::shared_ptr<BufferHandle>>(
+         [&]() { return get_buffer_internal(key, client_buffer_allocator_); },
+         [](const auto &buffer) { return buffer != nullptr; },
+         [&](uint64_t latency_us, const auto &buffer) {
+@@ -2933,6 +2955,8 @@ std::shared_ptr<BufferHandle> RealClient::get_buffer(const std::string &key) {
+                                               "get_buffer", buffer->size(),
+                                               latency_us);
+         });
++    benchmark_span.Finish(benchmark_result != nullptr);
++    return benchmark_result;
+ }
+ 
+ tl::expected<std::tuple<uint64_t, size_t>, ErrorCode>
+diff --git a/mooncake-store/src/rpc_service.cpp b/mooncake-store/src/rpc_service.cpp
+index c45c5d6a..3b3b9632 100644
+--- a/mooncake-store/src/rpc_service.cpp
++++ b/mooncake-store/src/rpc_service.cpp
+@@ -1,4 +1,5 @@
+ #include "rpc_service.h"
++#include "benchmark_profile.h"
+ 
+ #include <cstddef>
+ #include <functional>
+@@ -263,7 +264,8 @@ WrappedMasterService::GetReplicaListByRegex(const std::string& str,
+ tl::expected<GetReplicaListResponse, ErrorCode>
+ WrappedMasterService::GetReplicaList(const std::string& key,
+                                      const std::string& tenant_id) {
+-    return execute_rpc(
++    kvtest_profile::Span benchmark_span(kvtest_profile::Stage::MC_SERVER_QUERY);
++    auto benchmark_result = execute_rpc(
+         "GetReplicaList",
+         [&] {
+             return WithRequestTenant(master_service_.IsTenantQuotaEnabled()
+@@ -279,6 +281,8 @@ WrappedMasterService::GetReplicaList(const std::string& key,
+         [] {
+             MasterMetricManager::instance().inc_get_replica_list_failures();
+         });
++    benchmark_span.Finish(benchmark_result.has_value());
++    return benchmark_result;
+ }
+ 
+ std::vector<tl::expected<GetReplicaListResponse, ErrorCode>>
+@@ -366,7 +370,8 @@ WrappedMasterService::PutStart(const UUID& client_id, const std::string& key,
+                                const uint64_t slice_length,
+                                const ReplicateConfig& config,
+                                const std::string& tenant_id) {
+-    return execute_rpc(
++    kvtest_profile::Span benchmark_span(kvtest_profile::Stage::MC_SERVER_PUT_START);
++    auto benchmark_result = execute_rpc(
+         "PutStart",
+         [&] {
+             return WithWriteTenant(tenant_id,
+@@ -383,12 +388,15 @@ WrappedMasterService::PutStart(const UUID& client_id, const std::string& key,
+         },
+         [&] { MasterMetricManager::instance().inc_put_start_requests(); },
+         [] { MasterMetricManager::instance().inc_put_start_failures(); });
++    benchmark_span.Finish(benchmark_result.has_value());
++    return benchmark_result;
+ }
+ 
+ tl::expected<void, ErrorCode> WrappedMasterService::PutEnd(
+     const UUID& client_id, const ObjectMeta& object_meta,
+     ReplicaType replica_type, const std::string& tenant_id) {
+-    return execute_rpc(
++    kvtest_profile::Span benchmark_span(kvtest_profile::Stage::MC_SERVER_PUT_END);
++    auto benchmark_result = execute_rpc(
+         "PutEnd",
+         [&] {
+             return WithRequestTenant(master_service_.IsTenantQuotaEnabled()
+@@ -406,6 +414,8 @@ tl::expected<void, ErrorCode> WrappedMasterService::PutEnd(
+         },
+         [] { MasterMetricManager::instance().inc_put_end_requests(); },
+         [] { MasterMetricManager::instance().inc_put_end_failures(); });
++    benchmark_span.Finish(benchmark_result.has_value());
++    return benchmark_result;
+ }
+ 
+ tl::expected<void, ErrorCode> WrappedMasterService::PutRevoke(
+diff --git a/mooncake-store/src/transfer_task.cpp b/mooncake-store/src/transfer_task.cpp
+index 711f9b73..3f3d2bc2 100644
+--- a/mooncake-store/src/transfer_task.cpp
++++ b/mooncake-store/src/transfer_task.cpp
+@@ -1,4 +1,5 @@
+ #include "transfer_task.h"
++#include "benchmark_profile.h"
+ 
+ #include <glog/logging.h>
+ 
+@@ -1225,6 +1226,7 @@ std::optional<TransferFuture> TransferSubmitter::submitMemcpyOperation(
+ 
+ std::optional<TransferFuture> TransferSubmitter::submitMemcpyOperations(
+     std::vector<MemcpyOperation> operations) {
++    kvtest_profile::Span benchmark_local_copy(kvtest_profile::Stage::MC_LOCAL_COPY);
+     auto state = std::make_shared<MemcpyOperationState>();
+     const size_t operation_count = operations.size();
+     MemcpyTask task(std::move(operations), state);
+@@ -1238,6 +1240,7 @@ std::optional<TransferFuture> TransferSubmitter::submitMemcpyOperations(
+ 
+ std::optional<TransferFuture> TransferSubmitter::submitTransfer(
+     std::vector<TransferRequest>& requests) {
++    kvtest_profile::Span benchmark_span(kvtest_profile::Stage::MC_TE_SUBMIT, 0);
+     // Allocate batch ID
+     const size_t batch_size = requests.size();
+     BatchID batch_id = engine_.allocateBatchID(batch_size);

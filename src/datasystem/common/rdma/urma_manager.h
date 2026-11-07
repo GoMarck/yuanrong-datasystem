@@ -1019,6 +1019,7 @@ private:
     std::deque<uint64_t> retainedTimeoutOrder_;
     std::atomic<uint64_t> nextRetainedTimeoutPruneMs_{ 0 };
     std::atomic<bool> serverStop_{ false };
+    bool pollJfcSleepEnabled_{ true };
     std::atomic<uint64_t> affinitySrcChipIdSequence_{ 0 };
     // Isolate chips on separate cache lines because completion threads update these counters concurrently.
     std::vector<SrcChipInflightCounter> srcChipInflightWrCounts_;

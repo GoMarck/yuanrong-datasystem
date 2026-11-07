@@ -23,6 +23,7 @@
 #include <exception>
 #include <utility>
 
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include "datasystem/common/inject/inject_point.h"
 #include "datasystem/common/log/latency_phase.h"
 #include "datasystem/common/object_cache/ub_health_summary_codec.h"
@@ -308,6 +309,7 @@ Status WorkerRpcClient::InvokeBatchGetObject(BatchGetObjectRemoteReqPb &request,
 Status WorkerRpcClient::InvokeQueryAndGet(QueryAndGetReqPb &request, QueryAndGetRspPb &response,
                                           std::vector<RpcMessage> &payloads, bool *rpcDispatched)
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_QUERY_RPC_PREPARE);
     if (rpcDispatched != nullptr) {
         *rpcDispatched = false;
     }
@@ -327,7 +329,10 @@ Status WorkerRpcClient::InvokeQueryAndGet(QueryAndGetReqPb &request, QueryAndGet
             "before_rpc.timeout");
     }
 
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_QUERY_RPC_SIGN);
     RETURN_IF_NOT_OK(signature_->GenerateSignature(request));
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_QUERY_RPC_PREPARE);
+
     RpcOptions options;
     options.SetTimeout(rpcTimeout);
     INJECT_POINT("client.transport.query_and_get", []() { return Status::OK(); });
@@ -335,7 +340,9 @@ Status WorkerRpcClient::InvokeQueryAndGet(QueryAndGetReqPb &request, QueryAndGet
         *rpcDispatched = true;
     }
     INJECT_POINT("client.transport.query_and_get.after_dispatch");
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_QUERY_RPC_CALL);
     Status rc = DoInvokeQueryAndGet(options, request, response, payloads);
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_QUERY_RPC_RESULT);
     if (response.has_ub_health_summary()) {
         ObserveUbHealthSummary(response.ub_health_summary());
     }
@@ -441,6 +448,7 @@ Status WorkerRpcClient::InvokeDisconnectShmClient(DisconnectClientReqPb &request
 Status WorkerRpcClient::InvokeCreate(int64_t subTimeoutMs, CreateReqPb &request, CreateRspPb &response,
                                      uint32_t &workerVersion)
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_CREATE_RPC_PREPARE);
     if (!IsAlive()) {
         return WithRpcDiag(
             Status(K_RPC_UNAVAILABLE, __LINE__, __FILE__,
@@ -458,13 +466,18 @@ Status WorkerRpcClient::InvokeCreate(int64_t subTimeoutMs, CreateReqPb &request,
             "before_rpc.timeout");
     }
 
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_CREATE_RPC_SIGN);
     RETURN_IF_NOT_OK(signature_->GenerateSignature(request));
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_CREATE_RPC_PREPARE);
+
     RpcOptions options;
     options.SetTimeout(rpcTimeout);
     PerfPoint perfPoint(PerfKey::RPC_CLIENT_CREATE_OBJECT);
     const bool traceEnabled = IsClientLatencyTraceActive();
     const auto rpcStart = traceEnabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_CREATE_RPC_CALL);
     Status rc = DoInvokeCreate(options, request, response);
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_CREATE_RPC_RESULT);
     RecordRpcTotalLatency(LatencySummaryPhase::CLIENT_RPC_CREATE_TOTAL, traceEnabled, rpcStart);
     if (rc.IsError()) {
         return WithRpcDiag(
@@ -484,6 +497,7 @@ Status WorkerRpcClient::InvokeSet(int64_t subTimeoutMs, PublishReqPb &request,
                                   const std::vector<MemView> &payloads, PublishRspPb &response,
                                   uint32_t &workerVersion)
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_PUBLISH_RPC_PREPARE);
     if (!IsAlive()) {
         return WithRpcDiag(
             Status(K_RPC_UNAVAILABLE, __LINE__, __FILE__,
@@ -501,14 +515,19 @@ Status WorkerRpcClient::InvokeSet(int64_t subTimeoutMs, PublishReqPb &request,
             "before_rpc.timeout");
     }
 
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_PUBLISH_RPC_SIGN);
     RETURN_IF_NOT_OK(signature_->GenerateSignature(request));
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_PUBLISH_RPC_PREPARE);
+
     RpcOptions options;
     options.SetTimeout(rpcTimeout);
     PerfPoint perfPoint(PerfKey::RPC_CLIENT_PUBLISH_OBJECT);
     INJECT_POINT("WorkerRpcClient.InvokeSet.beforeRpc");
     const bool traceEnabled = IsClientLatencyTraceActive();
     const auto rpcStart = traceEnabled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_PUBLISH_RPC_CALL);
     Status rc = DoInvokeSet(options, request, response, payloads);
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_PUBLISH_RPC_RESULT);
     if (response.has_ub_health_summary()) {
         ObserveUbHealthSummary(response.ub_health_summary());
     }

@@ -159,3 +159,18 @@
 
 - Keep this file focused on performance-localization workflow, not on duplicating metric-family or logging implementation details.
 - Update it when new recurring bottleneck classes or better reproduction routes are identified.
+
+## PollJFC Sleep Experiment
+
+- Both SDK and Worker read `DATASYSTEM_URMA_POLL_SLEEP_ENABLED` through `GetBoolFromEnv` during
+  `UrmaManager::Init`, before starting the poll thread. Default and invalid input fallback are true.
+  Each process owns its setting; it is immutable while that poll thread runs and requires restart to change.
+- False skips empty-poll nanosleep in non-event `PollJfcWait`, including idle polling. It does not change
+  event-mode waits, completion checks, stop checks, timeout/retry policy, or memory ownership. Busy polling
+  increases CPU demand and can compete with foreground work. Revert by unsetting/true and restarting.
+- Run baseline, SDK-only false, Worker-only false, and both false with the same routing and load.
+  Inspect `ds.ub.poll_sleep`, `notify`, `wait_event`, `wait_result`, `completion_observe`, `wake_sched` and
+  `event_process` separately by process. Sleep has no new samples when disabled; missing is not measured zero.
+- SDK `ds.sdk.*` and Worker `ds.worker.*` Set/Get subphases retain existing outer spans. See
+  `tests/kvtest/docs/rpc-data-plane-profile.md` for boundaries and nested-span accounting. No hardware
+  performance benefit or busy-poll resource safety is established by source inspection alone.

@@ -383,6 +383,9 @@ Status UrmaManager::Init(const HostPort &hostport)
     }
     RETURN_IF_NOT_OK(lastErr);
     RETURN_IF_NOT_OK(InitLocalUrmaInfo(hostport));
+    pollJfcSleepEnabled_ = GetBoolFromEnv("DATASYSTEM_URMA_POLL_SLEEP_ENABLED", true);
+    LOG(INFO) << "URMA PollJFC: eventMode=" << IsEventModeEnabled()
+              << ", pollSleepEnabled=" << pollJfcSleepEnabled_;
     serverStop_ = false;
     serverEventThread_ = std::make_unique<Thread>(&UrmaManager::ServerEventHandleThreadMain, this);
     serverEventThread_->set_name("UrmaPollJfc");
@@ -1216,6 +1219,7 @@ Status UrmaManager::CheckAndNotify(const UrmaWriteTrace &pollTrace)
         return Status::OK();
     }
 
+    kvtest_profile::Span benchmarkNotify(kvtest_profile::Stage::DS_UB_NOTIFY);
     // Iterate through the finishedRequests_ set and notify request threads
     Timer timer;
     auto count = finishedRequests_.size();
@@ -1874,6 +1878,15 @@ Status UrmaManager::WaitForUrmaEvent(uint64_t requestId, int64_t timeoutMs,
     }
     auto wakeSchedLatencyUs = event->GetWakeSchedLatencyUs();
     auto eventProcessingAndWaitLatencyUs = event->GetEventProcessingAndWaitLatencyUs();
+    if (kvtest_profile::Enabled()) {
+        const bool success = waitRc.IsOk() && !event->IsFailed();
+        kvtest_profile::RecordDuration(kvtest_profile::Stage::DS_UB_WAKE_SCHED,
+                                      wakeSchedLatencyUs * 1000, success);
+        kvtest_profile::RecordDuration(kvtest_profile::Stage::DS_UB_COMPLETION_OBSERVE,
+                                      completionObservationLatencyUs * 1000, success);
+        kvtest_profile::RecordDuration(kvtest_profile::Stage::DS_UB_EVENT_PROCESS,
+                                      eventProcessingAndWaitLatencyUs * 1000, success);
+    }
     LogUrmaWaitToFinishElapsed(requestId, event, totalElapsedUs, totalElapsedMs, waitElapsedMs, wakeSchedLatencyUs,
                                completionObservationLatencyUs, eventProcessingAndWaitLatencyUs, waitRc, false);
     if (event->IsFailed() && failure != nullptr) {
@@ -1912,7 +1925,9 @@ Status UrmaManager::WaitToFinish(uint64_t requestId, int64_t timeoutMs, UrmaWrit
             DeleteEvent(requestId);
         }
     });
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_UB_WAIT_EVENT);
     Status waitRc = WaitForUrmaEvent(requestId, timeoutMs, event, failure, waitContext);
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_UB_WAIT_RESULT);
     retainTimedOutEvent = event->IsTimedOutRetained();
     RETURN_IF_NOT_OK(waitRc);
     RETURN_IF_NOT_OK(HandleUrmaEvent(requestId, event));
@@ -2190,12 +2205,13 @@ Status UrmaManager::PollJfcWait(urma_jfc_t *urmaJfc, const uint64_t maxTryCount,
         LOG_IF(INFO, pollElapsedUs > logThresholdUs)
             << "[URMA_ELAPSED_POLL_JFC]: urma_poll_jfc cost " << pollElapsedUs << "us, cpuid: " << sched_getcpu()
             << ", suggest: " << URMA_ELAPSED_POLL_JFC_SUGGEST;
-        if (cnt == 0) {
+        if (cnt == 0 && pollJfcSleepEnabled_) {
             // If there is nothing to poll, just sleep.
             // Note that it takes on average 50us to wake up with usleep(0), due to OS timerslack settings.
             Timer sleepTimer;
             const struct timespec ts{ 0, 1000 };
             if (!tbbEventMap_.empty()) {
+                kvtest_profile::Span benchmarkSleep(kvtest_profile::Stage::DS_UB_POLL_SLEEP);
                 METRIC_TIMER(metrics::KvMetricId::URMA_NANOSLEEP_LATENCY);
                 nanosleep(&ts, nullptr);
             } else {

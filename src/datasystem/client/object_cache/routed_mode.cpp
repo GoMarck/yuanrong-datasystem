@@ -426,6 +426,7 @@ Status RoutedMode::ProcessTransportPut(
     const SetRouteContext &routeContext, SetFailureStage &failureStage,
     client::TransportSetResult &transportResult, int32_t requestTimeoutMs, bool isSeal)
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_SET_CREATE);
     RETURN_RUNTIME_ERROR_IF_NULL(transportLayer_);
     const int32_t subTimeoutMs = requestTimeoutMs > 0 ? requestTimeoutMs : requestTimeoutMs_;
     const auto requestContext = host_.buildTransportRequestContext(routeContext);
@@ -441,6 +442,7 @@ Status RoutedMode::ProcessTransportPut(
     std::shared_ptr<ObjectBuffer> buffer;
     RETURN_IF_NOT_OK(transportLayer_->Create(routeContext.worker, objectKey, size, std::move(createParam), buffer));
 
+    benchmarkPhase.Finish(true);
     failureStage = SetFailureStage::TRANSFER;
     const bool traceEnabled = IsClientLatencyTraceActive();
     AddLatencyTickIfEnabled(traceEnabled, LatencyTickKey::CLIENT_MEMORY_COPY_START);
@@ -464,7 +466,9 @@ Status RoutedMode::ProcessTransportPut(
     setParam.isSeal = isSeal;
     setParam.subTimeoutMs = subTimeoutMs;
     failureStage = SetFailureStage::PUBLISH;
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_SET_PUBLISH);
     Status setRc = transportLayer_->Set(*buffer, setParam, transportResult);
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_SET_CLEANUP);
     if (setRc.GetCode() == K_URMA_NEED_CONNECT) {
         // TransportLayer returns this only after same-worker UB reconnect failed, before Publish was sent.
         failureStage = SetFailureStage::TRANSFER;
@@ -734,14 +738,17 @@ Status RoutedMode::ReadTransportRound(const std::vector<std::string> &objectKeys
                                       std::vector<Status> &itemStatuses, AccessTransportKind &actualKind,
                                       Status &transportStatus, std::vector<HostPort> &excludedWorkers)
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_GET_ROUTE);
     client::ObjectReadRequest request;
     request.traceEnabled = traceEnabled;
     AddLatencyTickIfEnabled(traceEnabled, LatencyTickKey::CLIENT_DIRECT_ROUTE_START);
     BuildTransportReadRequest(objectKeys, request, itemStatuses, subTimeoutMs, queryL2Cache, excludedWorkers);
     AddLatencyTickIfEnabled(traceEnabled, LatencyTickKey::CLIENT_DIRECT_ROUTE_END);
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_GET_TRANSPORT);
     client::ObjectReadResult result;
     transportStatus = request.items.empty() ? Status(K_NOT_READY, "No object route is available")
                                             : transportLayer_->Get(request, result);
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_GET_MATERIALIZE);
     AddLatencyTickIfEnabled(traceEnabled, LatencyTickKey::CLIENT_DIRECT_MATERIALIZE_START);
     Status applyStatus = ApplyTransportReadResult(objectKeys, request, result, transportStatus, buffers, itemStatuses,
                                                   actualKind, excludedWorkers);

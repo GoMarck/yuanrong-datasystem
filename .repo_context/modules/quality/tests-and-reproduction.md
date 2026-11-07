@@ -694,3 +694,10 @@ and CTest `^stage_profile_` cover the disabled path and sharded concurrent aggre
 `tests/kvtest/tests/python/test_stage_profile.py` covers cumulative snapshot aggregation, weighted sums,
 warmup subtraction, deduplication and safe patch application. These do not establish SDK/Worker/Master
 build closure, hardware transfer correctness or instrumentation overhead on deployment targets.
+
+The stage profiler source additionally covers transitions from an ignored COUNT span through two
+checkpoint phases, explicit Finish and a return to COUNT, in enabled and disabled modes.
+Second-level Set/Get and the per-process PollJFC sleep experiment are described in the same runbook;
+SDK and Worker sleep controls must be varied independently and CPU demand collected with latency.
+The switch and new service instrumentation require deployment validation; standalone observer checks
+do not exercise URMA completion behavior.

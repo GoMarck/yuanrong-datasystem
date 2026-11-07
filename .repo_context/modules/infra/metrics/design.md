@@ -658,3 +658,15 @@ Failure-sensitive steps:
 - When module boundaries, major flows, config semantics, external interfaces, or compatibility rules change, update this doc in the same task when practical.
 - When DFX expectations change, update the Availability, Reliability, Resilience, Security, Privacy, Safety, and Observability sections in the same task when practical.
 - If a section becomes speculative or stale, narrow it or move it to `Pending verification` until confirmed from source.
+
+### Second-level KVTest timing
+
+- The same opt-in observer also exports SDK `ds.sdk.*`, Worker `ds.worker.*`, and Mooncake
+  `mc.sdk.*` phases. `Span::Next` ends a phase and starts the next without a new request-owned allocation.
+  Disabled calls still avoid clocks/counters; enabled transitions add clock and atomic cost.
+- Checkpoint phases are disjoint within one function, but outer/inner function spans nest. A phase can occur
+  multiple times per API (preparation segments, retry attempts). Use phase `sum_ns / API count`, not a sum
+  of per-phase means, when reconciling time. Unmarked outcomes remain unknown.
+- URMA exports pending-event poll sleeps, nonempty completion-notification batches, wait/result scopes and
+  existing event observation/wake timing. Batch, event and API counts differ; event timing can overlap or
+  reuse a previous chunk wake value. None measures isolated NIC latency.

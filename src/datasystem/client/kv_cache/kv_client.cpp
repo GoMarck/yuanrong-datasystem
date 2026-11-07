@@ -217,18 +217,22 @@ Status KVClient::MSet(const std::vector<std::shared_ptr<Buffer>> &buffers)
 Status KVClient::Get(const std::string &key, Optional<Buffer> &buffer, int32_t subTimeoutMs)
 {
     kvtest_profile::Span benchmarkSpan(kvtest_profile::Stage::DS_GET, 0);
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_GET_CONTEXT);
     ScopedClientRequestContext requestContext;
     TraceGuard traceGuard = Trace::Instance().SetRequestTraceUUID();
     PerfPoint point(PerfKey::KV_CLIENT_GET_BUFFER);
     std::vector<Optional<Buffer>> buffers;
     auto access = AccessRecorder::Object(AccessRecorderKey::DS_KV_CLIENT_GET);
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_GET_IMPL);
     Status rc = impl_->Get({ key }, subTimeoutMs, buffers);
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_GET_ACCESS);
     METRIC_INC(metrics::KvMetricId::CLIENT_GET_REQUEST_TOTAL);
     METRIC_ERROR_IF(rc.IsError(), metrics::KvMetricId::CLIENT_GET_ERROR_TOTAL);
     size_t dataSize = rc.IsOk() ? buffers[0]->GetSize() : 0;
     Status accessRc = (rc.GetCode() == K_NOT_FOUND) ? Status::OK() : rc;
     access.ObjectKeyRef(key).TimeoutMs(subTimeoutMs).TrackedTransportType()
         .DataSize(dataSize).Result(accessRc).Record();
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_GET_RETURN);
     RETURN_IF_NOT_OK(rc);
     buffer = std::move(buffers[0]);
     return rc;
@@ -254,11 +258,14 @@ Status KVClient::Get(const std::vector<std::string> &keys,
 Status KVClient::Set(const std::string &key, const StringView &val, const SetParam &setParam)
 {
     kvtest_profile::Span benchmarkSpan(kvtest_profile::Stage::DS_SET, val.size());
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_SET_CONTEXT);
     ScopedClientRequestContext requestContext;
     TraceGuard traceGuard = Trace::Instance().SetRequestTraceUUID();
     PerfPoint point(PerfKey::KV_CLIENT_SET_OBJECT);
     auto access = AccessRecorder::Object(AccessRecorderKey::DS_KV_CLIENT_SET);
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_SET_IMPL);
     Status rc = impl_->Set(key, val, setParam);
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_SET_ACCESS);
     METRIC_INC(metrics::KvMetricId::CLIENT_PUT_REQUEST_TOTAL);
     METRIC_ERROR_IF(rc.IsError(), metrics::KvMetricId::CLIENT_PUT_ERROR_TOTAL);
     access.ObjectKeyRef(key).WriteMode(static_cast<int>(setParam.writeMode)).TtlSecond(setParam.ttlSecond)
@@ -363,17 +370,21 @@ Status KVClient::Get(const std::vector<std::string> &keys, std::vector<std::stri
 Status KVClient::Get(const std::string &key, Optional<ReadOnlyBuffer> &readOnlyBuffer, int32_t subTimeoutMs)
 {
     kvtest_profile::Span benchmarkSpan(kvtest_profile::Stage::DS_GET, 0);
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_GET_CONTEXT);
     ScopedClientRequestContext requestContext;
     TraceGuard traceGuard = Trace::Instance().SetRequestTraceUUID();
     PerfPoint point(PerfKey::KV_CLIENT_GET_BUFFER);
     std::vector<Optional<Buffer>> buffers;
     auto access = AccessRecorder::Object(AccessRecorderKey::DS_KV_CLIENT_GET);
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_GET_IMPL);
     Status rc = impl_->Get({ key }, subTimeoutMs, buffers);
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_GET_RETURN);
     size_t dataSize = rc.IsOk() ? buffers[0]->GetSize() : 0;
     if (rc.IsOk()) {
         auto bufferSharedPtr = std::make_shared<Buffer>(std::move(buffers[0].value()));
         readOnlyBuffer = Optional<ReadOnlyBuffer>(ReadOnlyBuffer(bufferSharedPtr));
     }
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_GET_ACCESS);
     METRIC_INC(metrics::KvMetricId::CLIENT_GET_REQUEST_TOTAL);
     METRIC_ERROR_IF(rc.IsError(), metrics::KvMetricId::CLIENT_GET_ERROR_TOTAL);
     Status accessRc = (rc.GetCode() == K_NOT_FOUND) ? Status::OK() : rc;

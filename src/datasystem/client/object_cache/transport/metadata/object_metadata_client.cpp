@@ -26,6 +26,7 @@
 #include <optional>
 #include <utility>
 
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include "datasystem/common/inject/inject_point.h"
 #include "datasystem/common/log/log.h"
 #include "datasystem/common/rdma/fast_transport_base.h"
@@ -174,6 +175,7 @@ Status ObjectMetadataClient::PrepareUbInlineRequest(const HostPort &address, con
                                                     InlineRequestContext &context,
                                                     TransportPhaseLatencyRecorder *recorder) const
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_GET_UB_PREPARE);
     if (ubBufferSize_ == 0 || ubBufferProvider_ == nullptr || ubBufferSize_ > ubBufferProvider_->MaxGetSize()
         || items.size() > ubBufferProvider_->MaxGetSize() / ubBufferSize_) {
         context.mode = InlineTransportMode::TCP;
@@ -376,6 +378,7 @@ Status ObjectMetadataClient::QueryWithRetry(const HostPort &address, const Objec
     while (true) {
         ++attempt;
         RETURN_IF_NOT_OK(retry_->CheckDeadline());
+        kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_QUERY_ATTEMPT_PREPARE);
         QueryAndGetReqPb request;
         RETURN_IF_NOT_OK(BuildQueryRequest(address, items, context, request, recorder));
         response.Clear();
@@ -383,8 +386,12 @@ Status ObjectMetadataClient::QueryWithRetry(const HostPort &address, const Objec
         VLOG(1) << "[TransportGet][Metadata] Query, meta owner: " << address.ToString()
                 << ", key count: " << items.size() << ", attempt: " << attempt;
         bool rpcDispatched = false;
+        benchmarkPhase.Next(kvtest_profile::Stage::DS_QUERY_ATTEMPT);
         Status rc = InvokeQueryAndGet(address, request, response, payloads, context, rpcDispatched, recorder);
+        benchmarkPhase.Finish(rc.IsOk());
         RETURN_OK_IF_TRUE(rc.IsOk());
+        benchmarkPhase.Next(kvtest_profile::Stage::DS_QUERY_RETRY);
+
         RETURN_IF_NOT_OK(
             PrepareQueryRetry(address, items, rc, rpcDispatched, context, backoffMs, routeDegradationRetries,
                               ubReconnectAttempted, recorder));
@@ -713,6 +720,7 @@ Status ObjectMetadataClient::Query(const HostPort &address, const ObjectMetadata
                                    bool enableInlineData, std::shared_ptr<const TransportReadContext> readContext,
                                    bool traceEnabled)
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_QUERY_PREPARE);
     RETURN_IF_NOT_OK(ValidateAndResetItems(items));
     const auto method = enableInlineData ? "QueryAndGet" : "QueryMetadata";
     std::optional<TransportPhaseLatencyRecorder> recorder;
@@ -726,10 +734,12 @@ Status ObjectMetadataClient::Query(const HostPort &address, const ObjectMetadata
             method, address));
     }
 
+    benchmarkPhase.Finish(true);
     QueryAndGetRspPb response;
     std::vector<RpcMessage> payloads;
     RETURN_IF_NOT_OK(WithRpcDiag(
         QueryWithRetry(address, items, response, payloads, context, recorder ? &*recorder : nullptr), method, address));
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_QUERY_APPLY);
     return WithRpcDiag(ApplyResults(address, items, response, payloads, context), method, address);
 }
 

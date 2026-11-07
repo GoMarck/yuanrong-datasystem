@@ -21,6 +21,7 @@
 #include <utility>
 
 
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include "datasystem/common/flags/flags.h"
 #include "datasystem/common/iam/tenant_auth_manager.h"
 #include "datasystem/common/inject/inject_point.h"
@@ -529,6 +530,7 @@ Status WorkerOcServicePublishImpl::RollbackPublishFailure(ObjectKV &objectKV, Ob
 Status WorkerOcServicePublishImpl::PublishObject(ObjectKV &objectKV, const PublishParams &params,
                                                  std::vector<RpcMessage> &payloads)
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_W_PUBLISH_META);
     const auto &objectKey = objectKV.GetObjKey();
     SafeObjType &safeObj = objectKV.GetObjEntry();
     auto oldLifeState = safeObj->GetLifeState();
@@ -537,6 +539,7 @@ Status WorkerOcServicePublishImpl::PublishObject(ObjectKV &objectKV, const Publi
     // Step 1: Verify and request to master, object may be expired due to network latency.
     RETURN_IF_NOT_OK(RequestingToMaster(objectKV, params));
 
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_W_PUBLISH_COMMIT);
     if (!payloads.empty()) {
         RETURN_IF_NOT_OK(SaveBinaryObjectToMemory(objectKV, payloads, evictionManager_, memCpyThreadPool_));
     }
@@ -575,6 +578,7 @@ Status WorkerOcServicePublishImpl::PublishObjectWithLock(const std::string &obje
                                                          const std::vector<std::string> &nestedObjectKeys,
                                                          std::vector<RpcMessage> &payloads, std::future<Status> &future)
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_W_PUBLISH_LOCK);
     INJECT_POINT("worker.PublishObjectWithLock.begin");
     std::shared_ptr<SafeObjType> entry;
     bool isInsert;
@@ -586,6 +590,7 @@ Status WorkerOcServicePublishImpl::PublishObjectWithLock(const std::string &obje
         return Status::OK();
     }
     RETURN_IF_NOT_OK(status);
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_W_PUBLISH_PREPARE);
     int64_t elapsed = timer.ElapsedMilliSecond();
     Raii unlock([&entry]() { entry->WUnlock(); });
     ObjectKV objectKV(objectKey, *entry);
@@ -604,7 +609,9 @@ Status WorkerOcServicePublishImpl::PublishObjectWithLock(const std::string &obje
                                    .ttlSecond = req.ttl_second(),
                                    .existence = req.existence(),
                                    .cacheType = static_cast<CacheType>(req.cache_type()) };
+    benchmarkPhase.Finish(true);
     auto rc = PublishObject(objectKV, params, payloads);
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_W_PUBLISH_POSTPROCESS);
     INJECT_POINT("publish.sleep");
     if (rc.IsError()) {
         if (req.existence() == ExistenceOptPb::NX && rc.GetCode() == K_OC_KEY_ALREADY_EXIST) {
@@ -644,12 +651,14 @@ Status WorkerOcServicePublishImpl::TryDeleteObjFromEvictionAndSpillFile(ObjectKV
 Status WorkerOcServicePublishImpl::PublishImpl(const PublishReqPb &req, PublishRspPb &resp,
                                                std::vector<RpcMessage> &payloads)
 {
+    kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_W_PUBLISH_AUTH);
     // Step1: Add namespace for objectKeys.
     VLOG(1) << FormatString("[ObjectKey %s] is being publishing [Sz: %zu].", req.object_key(), req.data_size());
     std::string tenantId;
     Status authRc = req.is_routed() ? worker::AuthenticateRequest(akSkManager_, req, req.tenant_id(), tenantId)
                                     : worker::Authenticate(akSkManager_, req, tenantId);
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(authRc, "Authenticate failed.");
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_W_PUBLISH_VALIDATE);
     std::vector<ShmKey> shmUnits = std::vector<ShmKey>{ ShmKey::Intern(req.shm_id()) };
     RETURN_IF_NOT_OK(WorkerOcServiceCrudCommonApi::CheckShmUnitByTenantId(tenantId, ClientKey::Intern(req.client_id()),
                                                                           shmUnits, memoryRefTable_));
@@ -661,11 +670,13 @@ Status WorkerOcServicePublishImpl::PublishImpl(const PublishReqPb &req, PublishR
     std::future<Status> future;
     auto shmUnitId = ShmKey::Intern(req.shm_id());
     auto clientId = ClientKey::Intern(req.client_id());
+    benchmarkPhase.Finish(true);
     Status rc =
         RetryWhenDeadlock([this, &namespaceUri, &req, &clientId, &shmUnitId, &nestedObjectKeys, &payloads, &future] {
             return PublishObjectWithLock(namespaceUri, req, clientId, shmUnitId, nestedObjectKeys, payloads, future);
         });
 
+    benchmarkPhase.Next(kvtest_profile::Stage::DS_W_PUBLISH_CLEANUP);
     // If worker diable shared-memory transfer but the request still carries shmUnitId, client-to-worker data transfer
     // is through UB; we need clean memoryRefTable to avoid memory leak.
     if (!shmUnitId.Empty() && !(ShmEnable() && ClientShmEnabled(clientId))) {
