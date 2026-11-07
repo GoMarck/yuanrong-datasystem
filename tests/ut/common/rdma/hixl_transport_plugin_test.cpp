@@ -29,6 +29,11 @@
 DS_DECLARE_string(remote_h2d_hccs_buffer_pool);
 DS_DECLARE_bool(log_monitor);
 DS_DECLARE_bool(json_log_monitor);
+#include "datasystem/common/perf/perf_manager.h"
+#include "datasystem/common/util/raii.h"
+
+DS_DECLARE_string(remote_h2d_hccs_buffer_pool);
+DS_DECLARE_bool(remote_h2d_hccs_enable_fabric_mem);
 
 namespace datasystem {
 namespace {
@@ -334,6 +339,81 @@ TEST_F(HixlTransportPluginTest, SixteenWorkerDevicesShareRoundRobinEndpoints)
     EXPECT_EQ(g_state.finalizeCalls, deviceCount);
     EXPECT_EQ(g_state.destroyCalls, deviceCount);
 }
+#ifdef ENABLE_PERF
+TEST_F(HixlTransportPluginTest, FabricMemRecordsReadWriteStagesIncludingTransferFailure)
+{
+    const bool savedFabricMem = FLAGS_remote_h2d_hccs_enable_fabric_mem;
+    const char *parallelism = std::getenv("DS_HIXL_TRANSFER_SYNC_PARALLELISM");
+    const bool hadParallelism = parallelism != nullptr;
+    const std::string savedParallelism = parallelism == nullptr ? "" : parallelism;
+    Raii restore([&] {
+        FLAGS_remote_h2d_hccs_enable_fabric_mem = savedFabricMem;
+        if (hadParallelism) {
+            setenv("DS_HIXL_TRANSFER_SYNC_PARALLELISM", savedParallelism.c_str(), 1);
+        } else {
+            unsetenv("DS_HIXL_TRANSFER_SYNC_PARALLELISM");
+        }
+        PerfManager::Instance()->ResetPerfLog();
+    });
+    FLAGS_remote_h2d_hccs_enable_fabric_mem = true;
+    ASSERT_EQ(unsetenv("HCCL_INTRA_ROCE_ENABLE"), 0);
+    ASSERT_EQ(setenv("DS_HIXL_TRANSFER_SYNC_PARALLELISM", "4", 1), 0);
+    DsHixlApi api = FAKE_API;
+    // The fake engine borrows fixture state, so it needs neither ACL nor vendor resource cleanup.
+    api.create_engine = [](DsHixlEngineHandle *engine) {
+        *engine = reinterpret_cast<DsHixlEngineHandle>(&g_state);
+        return DS_HIXL_OK;
+    };
+    api.destroy_engine = [](DsHixlEngineHandle) { return DS_HIXL_OK; };
+    api.transfer_sync = [](DsHixlEngineHandle, const DsHixlTransferRequest *request, uint32_t *) {
+        return request->operation == DS_HIXL_TRANSFER_WRITE ? DS_HIXL_RUNTIME_ERROR : DS_HIXL_OK;
+    };
+    HixlTransport transport(&api, true);
+    transport.SetLocalEndpoint("127.0.0.1");
+    ASSERT_TRUE(transport.Init({ 0 }).IsOk());
+    constexpr uintptr_t localAddress = 0x1000;
+    constexpr uintptr_t remoteAddress = 0x2000;
+    constexpr uint64_t transferLength = 64;
+    const std::vector<HixlTransferDesc> descriptors{
+        { localAddress, remoteAddress, transferLength },
+        { localAddress + transferLength, remoteAddress + transferLength, transferLength },
+    };
+    auto *manager = PerfManager::Instance();
+    manager->ResetPerfLog();
+    ASSERT_TRUE(transport.TransferBatch(HixlTransferOp::READ, descriptors, "127.0.0.1:12345", nullptr).IsOk());
+    EXPECT_EQ(transport.TransferBatch(HixlTransferOp::WRITE, descriptors, "127.0.0.1:12345", nullptr).GetCode(),
+              K_RUNTIME_ERROR);
+    std::vector<std::pair<std::string, PerfInfo>> info;
+    manager->GetPerfInfoList(info);
+    const auto count = [&info](const std::string &key) -> uint64_t {
+        for (const auto &entry : info) {
+            if (entry.first == key) {
+                return entry.second.count.load();
+            }
+        }
+        return 0;
+    };
+    for (const std::string direction : { "READ", "WRITE" }) {
+        EXPECT_EQ(count("HCCS_FABRIC_PREPARE_" + direction), 1);
+        EXPECT_EQ(count("HCCS_FABRIC_SUBMIT_" + direction), 1);
+        EXPECT_EQ(count("HCCS_FABRIC_WAIT_" + direction), 1);
+        EXPECT_EQ(count("HCCS_FABRIC_QUEUE_WAIT_" + direction), descriptors.size());
+        EXPECT_EQ(count("HCCS_FABRIC_BIND_DEVICE_" + direction), descriptors.size());
+        EXPECT_EQ(count("HCCS_HIXL_TRANSFER_SYNC_" + direction), descriptors.size());
+    }
+    manager->ResetPerfLog();
+    ASSERT_TRUE(transport.TransferBatch(HixlTransferOp::READ, { descriptors.front() },
+                                       "127.0.0.1:12345", nullptr).IsOk());
+    info.clear();
+    manager->GetPerfInfoList(info);
+    EXPECT_EQ(count("HCCS_FABRIC_PREPARE_READ"), 1);
+    EXPECT_EQ(count("HCCS_FABRIC_BIND_DEVICE_READ"), 1);
+    EXPECT_EQ(count("HCCS_HIXL_TRANSFER_SYNC_READ"), 1);
+    EXPECT_EQ(count("HCCS_FABRIC_SUBMIT_READ"), 0);
+    EXPECT_EQ(count("HCCS_FABRIC_QUEUE_WAIT_READ"), 0);
+    EXPECT_EQ(count("HCCS_FABRIC_WAIT_READ"), 0);
+}
+#endif
 
 }  // namespace
 }  // namespace datasystem

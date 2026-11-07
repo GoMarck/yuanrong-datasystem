@@ -2101,6 +2101,7 @@ static ThreadPool &GetRemoteH2DGroupThreadPool()
 
 static Status ImportRemoteH2DGroups(const std::vector<RemoteH2DGroup> &remoteGroups)
 {
+    PerfPoint totalPoint(PerfKey::CLIENT_RH2D_GROUPS_TOTAL);
     size_t parallelism = GetRemoteH2DGroupParallelism(remoteGroups.size());
     if (parallelism <= 1) {
         for (const auto &group : remoteGroups) {
@@ -2111,15 +2112,28 @@ static Status ImportRemoteH2DGroups(const std::vector<RemoteH2DGroup> &remoteGro
 
     LOG(INFO) << "[RH2D] Parallel remote H2D groups enabled, groups=" << remoteGroups.size()
               << ", parallelism=" << parallelism;
+    PerfPoint stagePoint(PerfKey::CLIENT_RH2D_GROUPS_SUBMIT);
     Status firstError = Status::OK();
     auto &pool = GetRemoteH2DGroupThreadPool();
     std::vector<std::future<Status>> futures;
     futures.reserve(remoteGroups.size());
     for (size_t i = 0; i < remoteGroups.size(); ++i) {
-        futures.emplace_back(pool.Submit([&remoteGroups, i] {
+        std::chrono::steady_clock::time_point submittedAt{};
+#ifdef ENABLE_PERF
+        submittedAt = std::chrono::steady_clock::now();
+#endif
+        futures.emplace_back(pool.Submit([&remoteGroups, i, submittedAt] {
+#ifdef ENABLE_PERF
+            PerfPoint::RecordElapsed(PerfKey::CLIENT_RH2D_GROUP_QUEUE_WAIT,
+                                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                        std::chrono::steady_clock::now() - submittedAt).count());
+#else
+            (void)submittedAt;
+#endif
             return ImportSegAndReadHostMemory(remoteGroups[i].objects);
         }));
     }
+    stagePoint.RecordAndReset(PerfKey::CLIENT_RH2D_GROUPS_WAIT);
     for (auto &future : futures) {
         Status status = future.get();
         if (status.IsError() && firstError.IsOk()) {
@@ -2452,8 +2466,10 @@ Status ObjectClientImpl::DeviceDataCreate(const std::vector<std::string> &object
     prepareInputPoint.Record();
     VLOG(1) << blobInfo.ToString(true);
     exists.resize(objectKeys.size(), false);
+    PerfPoint createPoint(PerfKey::CLIENT_D2H_MULTI_CREATE);
     RETURN_IF_NOT_OK(
         MultiCreate(objectKeys, dataSizeList, param, false, bufferList, exists, useHixlPayloadOnlyLayout));
+    createPoint.Record();
     RETURN_IF_NOT_OK(ValidateDeviceDataCreatePayload(devBlobList, exists));
     PerfPoint filterPoint(PerfKey::CLIENT_D2H_FILTER_SOURCES);
     std::vector<D2HObjectView> d2hObjects;
@@ -5521,6 +5537,7 @@ Status ObjectClientImpl::GetMetaInfo(const std::vector<std::string> &keys, const
 
 Status ObjectClientImpl::UpdateClientHeteroTransportConfig(int32_t devId)
 {
+    PerfPoint point(PerfKey::CLIENT_HETERO_TRANSPORT_CONFIG);
     const char *localIp = std::getenv("DS_HIXL_D2RH_LOCAL_IP");
     const auto &endpointIp = UseRoutedDeviceWrites() && localIp != nullptr && localIp[0] != '\0'
                                 ? std::string(localIp) : ipAddress_.Host();

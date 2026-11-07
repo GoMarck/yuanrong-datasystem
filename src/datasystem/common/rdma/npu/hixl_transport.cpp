@@ -301,7 +301,16 @@ int AllocateRandomPort()
     return 0;  // all attempts failed
 }
 
-std::string BuildGlobalResourceConfig(bool isClient, datasystem::HixlMemoryMode mode)
+int ResolveEndpointPort(const std::string &endpoint)
+{
+    const auto separator = endpoint.rfind(':');
+    if (separator == std::string::npos || separator + 1 >= endpoint.size()) {
+        return 0;
+    }
+    return std::atoi(endpoint.c_str() + separator + 1);
+}
+
+std::string BuildGlobalResourceConfig(datasystem::HixlMemoryMode mode, int deviceCommPort)
 {
     std::string config = "{";
     bool hasConfig = false;
@@ -312,10 +321,9 @@ std::string BuildGlobalResourceConfig(bool isClient, datasystem::HixlMemoryMode 
         hasConfig = true;
     };
 
-    if (!isClient) {
-        appendCommaIfNeeded();
-        config += R"("comm_resource_config.listen_port":")" + std::to_string(ResolveWorkerDeviceCommPort()) + R"(")";
-    }
+    // Both roles advertise the port their own HIXL engine listens on, so a peer can route back to it.
+    appendCommaIfNeeded();
+    config += R"("comm_resource_config.listen_port":")" + std::to_string(deviceCommPort) + R"(")";
     if (mode == datasystem::HixlMemoryMode::FABRIC_MEM) {
         appendCommaIfNeeded();
         config += R"("fabric_memory.max_capacity":)" + std::to_string(K_FABRIC_MEM_MAX_CAPACITY_TB);
@@ -330,9 +338,10 @@ std::string BuildGlobalResourceConfig(bool isClient, datasystem::HixlMemoryMode 
     return hasConfig ? config : "";
 }
 
-std::vector<std::pair<std::string, std::string>> BuildHixlOptions(const std::string &bufferPool, bool isClient,
-                                                                  datasystem::HixlMemoryMode mode,
-                                                                  const std::string &localCommRes)
+std::vector<std::pair<std::string, std::string>> BuildHixlOptions(const std::string &bufferPool,
+                                                                 datasystem::HixlMemoryMode mode,
+                                                                 const std::string &localCommRes,
+                                                                 int deviceCommPort)
 {
     std::vector<std::pair<std::string, std::string>> optionValues;
     if (mode == datasystem::HixlMemoryMode::FABRIC_MEM) {
@@ -343,7 +352,7 @@ std::vector<std::pair<std::string, std::string>> BuildHixlOptions(const std::str
     if (!localCommRes.empty()) {
         optionValues.emplace_back(K_HIXL_OPTION_LOCAL_COMM_RES, localCommRes);
     }
-    std::string resourceConfig = BuildGlobalResourceConfig(isClient, mode);
+    std::string resourceConfig = BuildGlobalResourceConfig(mode, deviceCommPort);
     if (!resourceConfig.empty()) {
         optionValues.emplace_back(K_HIXL_OPTION_GLOBAL_RESOURCE_CONFIG, std::move(resourceConfig));
     }
@@ -434,15 +443,18 @@ Status HixlTransport::InitializeSingleDevice(int32_t devId, const Options &optio
         }
     });
 
+    const int deviceCommPort = isClient_ ? ResolveEndpointPort(endpoint) : ResolveWorkerDeviceCommPort();
+    CHECK_FAIL_RETURN_STATUS(deviceCommPort > 0, StatusCode::K_RUNTIME_ERROR,
+                             "HIXL device comm port is not resolved for role=" + RoleName());
     const std::string localCommRes = ResolveLocalCommRes(options.bufferPool);
-    auto optionValues = BuildHixlOptions(options.bufferPool, isClient_, hixlMemoryMode_, localCommRes);
+    auto optionValues = BuildHixlOptions(options.bufferPool, hixlMemoryMode_, localCommRes, deviceCommPort);
     std::vector<DsHixlOption> pluginOptions;
     pluginOptions.reserve(optionValues.size());
     for (const auto &option : optionValues) {
         pluginOptions.push_back(DsHixlOption{ { option.first.data(), option.first.size() },
                                               { option.second.data(), option.second.size() } });
     }
-    const std::string globalResourceConfig = BuildGlobalResourceConfig(isClient_, hixlMemoryMode_);
+    const std::string globalResourceConfig = BuildGlobalResourceConfig(hixlMemoryMode_, deviceCommPort);
     LOG(INFO) << "[HCCS] Hixl::Initialize start role=" << RoleName() << " devId=" << devId
               << " endpoint=" << endpoint << " memoryMode=" << HixlMemoryModeName(hixlMemoryMode_)
               << " bufferPool=" << (bufferPoolEnabled_ ? options.bufferPool : "<disabled>")
@@ -1495,6 +1507,8 @@ Status HixlTransport::TransferFabricMemBatchParallel(HixlTransferOp op, const st
                                                      const std::string &remoteEndpoint)
 {
     PerfPoint point(PerfKey::HCCS_TRANSPORT_SCATTER_BATCH);
+    PerfPoint stagePoint(op == HixlTransferOp::WRITE ? PerfKey::HCCS_FABRIC_PREPARE_WRITE
+                                                    : PerfKey::HCCS_FABRIC_PREPARE_READ);
     auto engineIter = engines_.begin();
     CHECK_FAIL_RETURN_STATUS(engineIter != engines_.end(), StatusCode::K_RUNTIME_ERROR, "No HCCS engines available");
     const int32_t devId = engineIter->first;
@@ -1512,23 +1526,45 @@ Status HixlTransport::TransferFabricMemBatchParallel(HixlTransferOp op, const st
               << ", descs=" << hixlDescs.size() << ", bytes=" << SumTransferBytes(descs)
               << ", parallelism=" << chunks.size();
     if (chunks.size() == 1) {
+        stagePoint.RecordAndReset(op == HixlTransferOp::WRITE ? PerfKey::HCCS_FABRIC_BIND_DEVICE_WRITE
+                                                              : PerfKey::HCCS_FABRIC_BIND_DEVICE_READ);
         RETURN_IF_NOT_OK(BindDeviceForEngine(devId));
+        stagePoint.Record();
         return FlushHixlDescriptors(batch, op, hixlDescs.data(), hixlDescs.size());
     }
 
+    stagePoint.RecordAndReset(op == HixlTransferOp::WRITE ? PerfKey::HCCS_FABRIC_SUBMIT_WRITE
+                                                          : PerfKey::HCCS_FABRIC_SUBMIT_READ);
     std::vector<std::future<Status>> futures;
     futures.reserve(chunks.size());
     auto &pool = GetHixlTransferThreadPool();
     // FabricMem chunks only touch already-registered host backing, so they never take temporary HIXL handles.
     // The caller keeps the shared lifecycle lease until every future is joined.
     for (const auto &chunk : chunks) {
-        futures.emplace_back(pool.Submit([this, devId, engine, remoteEndpoint, op, chunk] {
+        std::chrono::steady_clock::time_point submittedAt{};
+#ifdef ENABLE_PERF
+        submittedAt = std::chrono::steady_clock::now();
+#endif
+        futures.emplace_back(pool.Submit([this, devId, engine, remoteEndpoint, op, chunk, submittedAt] {
+#ifdef ENABLE_PERF
+            PerfPoint::RecordElapsed(op == HixlTransferOp::WRITE ? PerfKey::HCCS_FABRIC_QUEUE_WAIT_WRITE
+                                                                : PerfKey::HCCS_FABRIC_QUEUE_WAIT_READ,
+                                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                        std::chrono::steady_clock::now() - submittedAt).count());
+#else
+            (void)submittedAt;
+#endif
+            PerfPoint bindPoint(op == HixlTransferOp::WRITE ? PerfKey::HCCS_FABRIC_BIND_DEVICE_WRITE
+                                                           : PerfKey::HCCS_FABRIC_BIND_DEVICE_READ);
             RETURN_IF_NOT_OK(BindDeviceForEngine(devId));
+            bindPoint.Record();
             Batch chunkBatch(api_, engine, remoteEndpoint, 0, 0, transferFailed_);
             return FlushHixlDescriptors(chunkBatch, op, chunk.descs, chunk.count);
         }));
     }
 
+    stagePoint.RecordAndReset(op == HixlTransferOp::WRITE ? PerfKey::HCCS_FABRIC_WAIT_WRITE
+                                                          : PerfKey::HCCS_FABRIC_WAIT_READ);
     Status firstError = Status::OK();
     for (auto &future : futures) {
         Status status = future.get();
@@ -1548,7 +1584,9 @@ Status HixlTransport::TransferBatch(HixlTransferOp op, const std::vector<HixlTra
     PerfPoint::RecordElapsed(HixlTransferBytesPerfKey(op), SumTransferBytes(descs));
 
     // FabricMem chunks run concurrently, so the shared lifecycle lease must cover the whole call.
+    PerfPoint lockPoint(PerfKey::HCCS_TRANSPORT_TRANSFER_LOCK_WAIT);
     std::shared_lock<std::shared_timed_mutex> lock(lifecycleMutex_);
+    lockPoint.Record();
     RETURN_IF_NOT_OK(CheckReadyLocked());
     if (IsHixlFabricMemMode() && GetHixlTransferSyncParallelism() > 1) {
         return TransferFabricMemBatchParallel(op, descs, remoteEndpoint);

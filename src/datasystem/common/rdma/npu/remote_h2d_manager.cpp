@@ -1140,7 +1140,9 @@ Status RemoteH2DManager::ScatterBatch(P2pScatterEntry *entries, uint32_t size,
     PerfPoint readPoint(PerfKey::RH2D_MANAGER_SCATTER_BATCH_READ);
 
     // Thread safety needs to be ensured for the p2p communicator.
+    PerfPoint lockPoint(PerfKey::RH2D_MANAGER_COMM_LOCK_WAIT_READ);
     std::lock_guard<std::mutex> lock(p2pComm->mutex);
+    lockPoint.Record();
     PerfPoint waitPoint(PerfKey::P2P_COMM_INIT_WAIT_READY);
     PerfPoint readWaitPoint(PerfKey::RH2D_MANAGER_COMM_WAIT_READY_READ);
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(p2pComm->waitPost.WaitAndGetStatus(),
@@ -1165,7 +1167,10 @@ Status RemoteH2DManager::TransferBatch(HixlTransferOp op, const std::vector<Hixl
     PerfPoint point(PerfKey::P2P_SCATTER_BATCH);
     PerfPoint directionPoint(Rh2dTransferBatchPerfKey(op));
 
+    PerfPoint lockPoint(op == HixlTransferOp::WRITE ? PerfKey::RH2D_MANAGER_COMM_LOCK_WAIT_WRITE
+                                                   : PerfKey::RH2D_MANAGER_COMM_LOCK_WAIT_READ);
     std::lock_guard<std::mutex> lock(p2pComm->mutex);
+    lockPoint.Record();
     PerfPoint waitPoint(PerfKey::P2P_COMM_INIT_WAIT_READY);
     PerfPoint directionWaitPoint(Rh2dCommWaitReadyPerfKey(op));
     RETURN_IF_NOT_OK(p2pComm->waitPost.WaitAndGetStatus());

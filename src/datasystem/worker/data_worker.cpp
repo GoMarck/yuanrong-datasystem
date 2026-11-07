@@ -20,6 +20,7 @@
 #include "datasystem/data_worker.h"
 
 #include <atomic>
+#include <cerrno>
 #include <condition_variable>
 #include <exception>
 #include <mutex>
@@ -41,6 +42,7 @@
 #include "datasystem/common/util/uuid_generator.h"
 #include "datasystem/common/metrics/metrics.h"
 #include "datasystem/common/perf/perf_manager.h"
+#include "datasystem/common/signal/perf_signal.h"
 #include "datasystem/common/signal/signal.h"
 #include "datasystem/common/util/format.h"
 #include "datasystem/common/flags/dynamic_flag_config.h"
@@ -457,6 +459,16 @@ Status DataWorker::InitEmbeddedWorker(const EmbeddedConfig &config)
 Status DataWorker::RunEventLoopAndShutdown(DynamicFlagConfig &flags)
 {
     Trace::Instance().SetTraceNewID("WorkerMain;" + GetStringUuid(), true);
+    ScopedPerfSignals perfSignals;
+    if (!perfSignals.Install()) {
+        return FinishShutdown(
+            Status(K_RUNTIME_ERROR, FormatString("Failed to install worker perf signal handlers, errno=%d", errno)));
+    }
+#ifdef ENABLE_PERF
+    LOG(INFO) << "[Worker Perf Signal] ready: SIGUSR1=dump, SIGUSR2=reset";
+#else
+    LOG(INFO) << "[Worker Perf Signal] ready, perf collection disabled; rebuild with -p on";
+#endif
     PerfManager *perfManager = PerfManager::Instance();
     Timer timer;
     std::unique_lock<std::mutex> termSignalLock(g_termSignalMutex);
@@ -469,6 +481,24 @@ Status DataWorker::RunEventLoopAndShutdown(DynamicFlagConfig &flags)
         auto elapsedMs = timer.ElapsedMilliSecondAndReset();
         if (elapsedMs > REPORTING_THRESHOLD_MS) {
             LOG(ERROR) << FormatString("Worker was hanged about %.2f ms", elapsedMs);
+        }
+        const auto perfRequests = perfSignals.Consume();
+        if (perfRequests != 0) {
+            termSignalLock.unlock();
+#ifdef ENABLE_PERF
+            if (perfRequests & ScopedPerfSignals::DUMP) {
+                LOG(INFO) << "[Worker Perf Signal] dump begin";
+                perfManager->PrintPerfLog();
+                LOG(INFO) << "[Worker Perf Signal] dump complete";
+            }
+            if (perfRequests & ScopedPerfSignals::RESET) {
+                perfManager->ResetPerfLog();
+                LOG(INFO) << "[Worker Perf Signal] reset complete";
+            }
+#else
+            LOG(WARNING) << "[Worker Perf Signal] request ignored: perf collection disabled; rebuild with -p on";
+#endif
+            termSignalLock.lock();
         }
         if (perfManager != nullptr) {
             perfManager->Tick();

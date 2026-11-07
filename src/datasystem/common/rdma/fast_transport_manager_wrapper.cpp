@@ -22,6 +22,7 @@
 
 #include "datasystem/common/inject/inject_point.h"
 #include "datasystem/common/flags/common_flags.h"
+#include "datasystem/common/perf/perf_manager.h"
 #include "datasystem/common/rpc/brpc_status_util.h"
 #include "datasystem/common/util/rpc_util.h"
 #ifdef USE_NPU
@@ -307,20 +308,25 @@ Status FillRemoteH2DHostInfoFromShm(const std::string &commId, const std::shared
     RETURN_OK_IF_TRUE(commId.empty() || !IsRemoteH2DEnabled());
     RETURN_RUNTIME_ERROR_IF_NULL(shmUnit);
 
+    PerfPoint totalPoint(PerfKey::WORKER_RH2D_HOST_INFO_TOTAL);
+    PerfPoint stagePoint(PerfKey::WORKER_RH2D_HOST_INFO_DEVICE);
     int32_t devId = -1;
     RETURN_IF_NOT_OK(RemoteH2DManager::Instance().GetDevIdForComm(commId, devId, clientDeviceInfo,
                                                                   avoidClientDeviceForSameNode));
     RETURN_IF_NOT_OK(RemoteH2DManager::Instance().SetDeviceIdx(devId));
 
+    stagePoint.RecordAndReset(PerfKey::WORKER_RH2D_HOST_INFO_ROOT);
     auto *rootInfo = hostInfo.mutable_root_info();
     if (rootInfo->internal().empty()) {
         RETURN_IF_NOT_OK(RemoteH2DManager::Instance().P2PGetRootInfo(commId, rootInfo, clientDeviceInfo,
                                                                      avoidClientDeviceForSameNode));
     }
 
+    stagePoint.RecordAndReset(PerfKey::WORKER_RH2D_HOST_INFO_COMM);
     std::shared_ptr<RemoteH2DContext> p2pComm;
     RETURN_IF_NOT_OK(RemoteH2DManager::Instance().P2PCommInitRootInfo(commId, *rootInfo, P2P_SENDER, p2pComm, devId));
 
+    stagePoint.RecordAndReset(PerfKey::WORKER_RH2D_HOST_INFO_DATA);
     const uint64_t localObjectAddress = reinterpret_cast<uint64_t>(shmUnit->GetPointer());
     uint64_t localSegAddress = 0;
     uint64_t localSegSize = 0;
@@ -343,6 +349,7 @@ Status FillRemoteH2DHostInfoFromShm(const std::string &commId, const std::shared
             dataSize += size;
         }
     }
+    stagePoint.RecordAndReset(PerfKey::WORKER_RH2D_HOST_INFO_SEGMENT);
     RETURN_IF_NOT_OK(RemoteH2DManager::Instance().FillSegmentInfo(
         localSegSize, segDataOffset, dataOffset, dataSize, localSegAddress, *hostInfo.mutable_remote_host_segment(),
         devId));

@@ -474,6 +474,119 @@ FabricMem 是 RH2D over HIXL HCCS 的一种可选内存模式。开启后，Work
 7. FabricMem 模式默认关闭 AICPU 展开，并显式设置 `fabric_memory.enable_aicpu_unfold=false` 与 `fabric_memory.task_stream_num=8`，使用 Host 展开路径。若需要测试 AICPU 展开，可设置 `DS_RH2D_HCCS_ENABLE_AICPU_UNFOLD=1`，此时会下发 `fabric_memory.enable_aicpu_unfold=true` 与 `fabric_memory.task_stream_num=1`。
 8. 如果日志中出现 `HIXL plugin malloc_memory(MEM_HOST) failed`，优先检查 Host 物理内存、大页能力、NUMA 配置、容器特权配置以及当前机器是否支持 HIXL FabricMem。FabricMem arena 的具体申请策略由 HIXL/ADXL 内部实现决定。
 
+### FabricMem Put/Get 分阶段性能采集
+
+Client 和所有参与请求的 Worker 都需使用 `-p on` 构建的版本，例如：
+
+```bash
+bash build.sh -b cmake -X npu -p on -t build -j 32
+```
+
+`enable_perf_trace_log=true` 不代替编译开关 `-p on`。以下 PerfPoint 是进程级累计统计，
+不携带逐请求 Trace ID。耗时字段单位为纳秒，除以 `1e6` 得到毫秒。失败或提前返回也会通过
+PerfPoint 析构记录已进入阶段的耗时，因此分析前应确认访问日志中的请求状态。
+
+| 位置 | 打点 | 统计范围 |
+| --- | --- | --- |
+| Client 总入口 | `HETERO_CLIENT_MSET_D2H` / `HETERO_CLIENT_MGET_H2D` | 同步 Put/Get API 总耗时 |
+| Client 配置 | `CLIENT_HETERO_TRANSPORT_CONFIG` | 初始化或检查进程级异构 transport 配置 |
+| Client Put 准备 | `CLIENT_D2H_PREPARE_INPUT` / `CLIENT_D2H_FILTER_SOURCES` | payload 大小计算、已有对象过滤 |
+| Client Put 分配 | `CLIENT_D2H_MULTI_CREATE` | MultiCreate 调用，包含请求准备、RPC 和响应处理 |
+| Client Put RPC | `CLIENT_MULTI_CREATE_IPC` | 远端 ClientWorker API 的 MultiCreate RPC 窗口 |
+| Client Put 传输 | `CLIENT_RH2D_WRITE_BUILD_TRANSFER_DESCS` / `CLIENT_RH2D_WRITE_COMM_INIT` / `CLIENT_RH2D_WRITE_IMPORT_HOST_SEG` / `CLIENT_RH2D_WRITE_TRANSFER_BATCH` | descriptor 构造、建链、segment 导入和传输 |
+| Client Put 发布 | `CLIENT_MULTI_PUBLISH_OBJECT` / `RPC_CLIENT_MULTI_PUBLISH_OBJECT` | 发布阶段总耗时及发布 RPC |
+| Client Get | `CLIENT_MGET_H2D_GET` / `CLIENT_MGET_H2D_COPY` | 获取对象信息和后续数据拷贝阶段 |
+| Client Get 分组 | `CLIENT_H2D_GROUP_SOURCES` / `CLIENT_RH2D_GROUPS_TOTAL` | 按来源分组、所有远端 group 的执行总窗口 |
+| Client Get 调度 | `CLIENT_RH2D_GROUPS_SUBMIT` / `CLIENT_RH2D_GROUPS_WAIT` / `CLIENT_RH2D_GROUP_QUEUE_WAIT` | 提交循环、提交完成后等待、每个任务从提交前至开始运行的时间 |
+| Client 连接等待 | `RH2D_MANAGER_COMM_LOCK_WAIT_READ/WRITE` / `RH2D_MANAGER_COMM_WAIT_READY_READ/WRITE` | communicator mutex 等待、连接 ready 等待；两者分开统计 |
+| HIXL 串行锁 | `HCCS_TRANSPORT_TRANSFER_LOCK_WAIT` | 非并行路径的 transfer mutex 等待 |
+| FabricMem 子批准备 | `HCCS_FABRIC_PREPARE_READ/WRITE` | descriptor 转换、切分及提交前准备 |
+| FabricMem 子批调度 | `HCCS_FABRIC_SUBMIT_READ/WRITE` / `HCCS_FABRIC_WAIT_READ/WRITE` | 子批提交循环、提交完成后的等待窗口 |
+| FabricMem 子批排队 | `HCCS_FABRIC_QUEUE_WAIT_READ/WRITE` | 每个子任务从提交前到开始执行，含提交开销及线程调度 |
+| FabricMem 设备绑定 | `HCCS_FABRIC_BIND_DEVICE_READ/WRITE` | 子任务调用设备绑定的耗时 |
+| HIXL 数据传输 | `HCCS_HIXL_TRANSFER_SYNC_READ/WRITE` | 每次插件同步传输调用，包含插件 descriptor 转换及 vendor 调用 |
+| Worker 创建 | `WORKER_MULTI_CREATE_TOTAL` / `WORKER_MULTI_CREATE_AGGREGATE_ALLOC` / `WORKER_MULTI_CREATE_GET_SHM_UNITS` / `WORKER_MULTI_CREATE_ADD_SHM_UNITS` | 创建总耗时、聚合分配阶段、对象分配及子响应、引用注册 |
+| Worker host_info | `WORKER_RH2D_HOST_INFO_TOTAL` | 每次从 ShmUnit 构造 host_info 的总耗时，Create 和 Get 共用 |
+| Worker host_info 子阶段 | `WORKER_RH2D_HOST_INFO_DEVICE` / `ROOT` / `COMM` / `DATA` / `SEGMENT` | 选卡和设置设备、root info、通信上下文、blob 元数据、segment 信息；均带 `WORKER_RH2D_HOST_INFO_` 前缀 |
+| Worker Get | `WORKER_GET_OBJECT` / `WORKER_GET_IMPL_EXECUTE` / `WORKER_REMOTE_GET_PREPARE_RH2D_HOST_INFO` | Get 入口、执行、远端 Get 的 host_info 准备 |
+| Worker 发布 | `WORKER_MULTI_PUBLISH_TOTAL` / `WORKER_MULTI_PUBLISH_NTX_BATCH_LOCK` / `WORKER_MULTI_PUBLISH_NTX_SEND_TO_MASTER` | Publish 总耗时、批量锁等待、元数据发布阶段 |
+
+`HCCS_FABRIC_*` 子批打点位于并行度配置大于 1 的 FabricMem 分支；若最终仅有一个 chunk，
+会记录 PREPARE 和 BIND_DEVICE，不会记录 SUBMIT、QUEUE_WAIT、WAIT。并行度为 1 时，
+使用已有 `HCCS_HIXL_TRANSFER_SYNC_READ/WRITE` 和 transfer 锁等待打点。
+
+#### 在 benchmark 进程内主动采集
+
+```python
+import json
+from yr.datasystem import PerfClient
+
+# 与 HeteroClient 在同一个进程内创建；host/port 使用实际 Worker 配置。
+perf = PerfClient(host, port)
+perf.init()
+
+# 完成初始化和 warmup，并确认没有在途请求后再 reset。
+perf.reset_perf_log("client")
+perf.reset_perf_log("worker")
+
+# 在这里执行待测的 Put 或 Get，并等待全部调用完成。
+
+with open("fabricmem_perf.json", "w") as output:
+    json.dump({
+        "client": perf.get_perf_log("client"),
+        "worker": perf.get_perf_log("worker"),
+    }, output, indent=2)
+```
+
+不能在独立 Python 进程里查询原 benchmark 的 `"client"` 统计：该接口读取的是调用进程自身。
+跨 Worker Get 要分别连接并采集所有参与 Worker；reset Worker 统计是进程级操作，不要在其他测试
+仍运行时执行。多 Client 场景应由一个控制方协调 Worker reset，每个 Client 独立采集自己的统计。
+短测试建议主动采集，不依赖约 60 秒周期的 `[Perf Log]` 日志。现有
+`tests/benchmark/hetero_h2d_d2h_benchmark.py` 已提供 warmup 后 reset、cleanup 前采集的实现。
+
+#### 通过信号输出或重置 Worker perf
+
+运行 `DataWorker::InitAndRun` 主循环的 Worker 支持：
+
+```bash
+kill -USR1 <worker_pid>  # 输出当前累计 perf，不清零
+kill -USR2 <worker_pid>  # 清零当前进程 perf
+```
+
+**发送前先确认目标进程的 INFO 日志出现 `[Worker Perf Signal] ready`。**
+旧版本、尚未进入主循环的进程或只调用嵌入式 `Init` 的进程没有安装这些处理器，
+对它们发送 SIGUSR1/SIGUSR2 可能触发操作系统默认的进程终止行为。
+请使用实际 `datasystem_worker` PID，不要对 dscli、容器 PID 1 或整个进程组发送。
+
+- 信号处理器只设置 lock-free 原子请求位，不打印、不分配内存、不获取互斥锁。
+  主循环通常在下一次约 1 秒的轮询内执行操作；主循环阻塞时会延迟。
+- SIGUSR1 输出 `[Worker Perf Signal] dump begin`、`[Perf Log]` 和 `dump complete`，
+  内容进入普通 INFO 日志。日志异步落盘可能晚于处理时刻，空统计也会输出完成标记。
+- SIGUSR2 执行 reset 后输出 `[Worker Perf Signal] reset complete`。
+  停止请求并等待在途操作结束后发 reset，看到完成标记再开始正式测量。
+  Reset 与并发打点不是跨全部计数器的原子快照，不能保证把在途请求严格划入同一个测量窗口。
+- 标准信号和请求位会合并重复请求，不保证每次 `kill` 都产生独立记录。
+  若同一次轮询同时收到 dump/reset，先 dump 再 reset；不要依赖信号发送顺序。
+  若退出信号同时到达，优先正常关闭，不保证再处理 perf 请求。
+- 未使用 `-p on` 编译时，处理器仍接收信号并输出 `request ignored` 提示，不产生有效 perf 数据。
+- 只控制目标 Worker 的进程级统计，不重置 metrics/access log，不影响 Client perf。
+  主循环结束时恢复此前的 SIGUSR1/SIGUSR2 处理器；服务退出后不要继续发送 perf 信号。
+
+#### 耗时归因边界
+
+- 先分别测 Put、Get，再比较各阶段 `count`、`avg_time`、`total_time`；host_info 是按对象记录，
+  TransferSync 是按 chunk 记录，API 是按请求记录，不能直接比较不同分母的平均值。
+- 父子阶段包含关系不可重复相加；例如 MultiCreate 已包含 Worker 执行时间，
+  Worker 执行时间不是额外的端到端开销。
+- 多个 group/chunk 并行执行，子任务累计耗时可以超过请求墙钟时间。QUEUE_WAIT 与 SUBMIT/WAIT
+  存在重叠，不能叠加成总耗时；WAIT 仅覆盖提交循环完成后等待 futures 的剩余时间。
+- `HCCS_HIXL_TRANSFER_BYTES_*` 和 `HCCS_HIXL_TRANSFER_DESC_COUNT_*` 是已有的字节数/数量观测，
+  虽然复用 PerfInfo 字段，但不是纳秒。不要对它们做耗时单位换算。
+- FabricMem READ/WRITE 由 Client 发起。Worker 的 Create/Get/Publish 打点反映控制面，
+  不代表 Worker CPU 上存在一个与每次 HIXL DMA 对应的传输函数。
+- 本组统计不提供 P95/P99 或跨进程逐请求时间线；尾延迟仍需结合 access log 和 Trace ID 分析。
+  `-p on` 会增加计时和原子计数开销，性能结论应再用关闭打点的构建复测。
+
 ### HIXL HCCS设备内存预注册
 
 RH2D over HIXL HCCS buffer-pool 和 RoCE direct 模式支持在 Client 侧预注册后续 MGetH2D 会写入的 device 目标内存，减少热路径中反复执行 HIXL `RegisterMem(MEM_DEVICE)` 的开销。Python 使用 `HeteroClient.pre_register_device_memory(dev_ptrs, sizes)`，C++ 使用 `HeteroClient::PreRegisterDeviceMemory(devPtrs, sizes)`。

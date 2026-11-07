@@ -55,6 +55,23 @@
 
 ## Evidence Priorities
 
+FabricMem HIXL Put/Get stage accounting uses the existing `PerfPoint`/`PerfClient` surface
+with `-p on` builds on both client and worker. Client group and FabricMem chunk submit,
+queue delay, remaining wait, device binding, and communicator-lock wait are separated.
+Worker shared `FillRemoteH2DHostInfoFromShm` stages cover device/root/communication/data/segment
+preparation; existing Create/Get/Publish points cover the surrounding control plane.
+See `docs/source_zh_cn/best_practices/best_practices_for_rh2d.md` for the stage map and
+same-process collection example. These are process aggregates, not per-request traces;
+parallel child totals and queue/submit/wait windows overlap and must not be summed.
+The Worker `InitAndRun` event loop owns `ScopedPerfSignals`: SIGUSR1 requests a perf dump,
+SIGUSR2 requests reset. Lock-free atomic bits defer work to the main loop (normally within
+one second); duplicates coalesce and simultaneous bits dump before reset. Embedded `Init`
+does not install handlers. Operators must wait for `[Worker Perf Signal] ready` before
+sending signals, and stop/drain traffic before resetting process-wide counters.
+Without `ENABLE_PERF`, requests are consumed with an explicit ignored warning.
+Regression: `python3 tests/scripts/test_worker_perf_signals.py` covers real POSIX signals,
+concurrent consumption, duplicate ownership, and restoration without NPU dependencies.
+
 - Access or performance logs:
   - best for request-path latency and operation-specific slowdown.
 - Resource monitor files:
