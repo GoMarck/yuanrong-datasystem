@@ -15,6 +15,7 @@
  */
 
 #include "datasystem/client/object_cache/routed_mode.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 
 #include "datasystem/client/object_cache/object_client_impl.h"
 #include "datasystem/client/object_cache/worker_failover.h"
@@ -444,10 +445,12 @@ Status RoutedMode::ProcessTransportPut(
     const bool traceEnabled = IsClientLatencyTraceActive();
     AddLatencyTickIfEnabled(traceEnabled, LatencyTickKey::CLIENT_MEMORY_COPY_START);
     auto *dst = static_cast<uint8_t *>(buffer->MutableData());
+    kvtest_profile::Span benchmarkCopy(kvtest_profile::Stage::DS_COPY, size);
     Status copyRc = size == 0 || setMemoryCopyThreadPool_ == nullptr || size <= setMemcpyParallelThreshold_
                         ? HugeMemoryCopy(dst, buffer->GetSize(), data, size)
                         : ::datasystem::MemoryCopy(dst, buffer->GetSize(), data, size, setMemoryCopyThreadPool_,
                                                    setMemcpyParallelThreshold_);
+    benchmarkCopy.Finish(copyRc.IsOk());
     AddLatencyTickIfEnabled(traceEnabled, LatencyTickKey::CLIENT_MEMORY_COPY_END);
     if (copyRc.IsError()) {
         LOG_IF_ERROR(transportLayer_->Release(*buffer, requestContext),

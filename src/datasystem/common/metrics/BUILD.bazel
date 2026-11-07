@@ -3,6 +3,11 @@ load("//bazel:build_defs.bzl", "ds_cc_library")
 
 package(default_visibility = ["//visibility:public"])
 
+ds_cc_library(
+    name = "benchmark_profile",
+    hdrs = ["benchmark_profile.h"],
+)
+
 # Keep separate: hard_disk_exporter (used by common_log) depends on this target
 ds_cc_library(
     name = "metrics_exporter_base",

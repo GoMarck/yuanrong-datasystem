@@ -684,3 +684,13 @@ Each collect additionally archives reproduction configuration: Client copies onl
 Collection CLIs no longer expose compression or extraction switches. Ordinary Kubernetes collection retains uncompressed tar transfer and local extraction; ordinary SSH Client collection retains gzip/SCP and local extraction; ordinary localhost Client collection copies files. Filename/keyword/uncompressed-only filtering retains gzip transfer and local extraction. Matching compressed source logs remain included unless `--uncompressed-only` is set. Internal archive helpers and their tests retain support for explicit archive options. Validate CLI rejection and archive behavior with `tests/kvtest/tests/python/test_collect_compression.py` plus the existing collect/deploy suites. No service hot path, concurrency policy, or persisted service format is changed. Rollback restores the CLI argument definitions and documentation; callers using removed flags must omit them.
 
 Host selection is opt-in through `--host-filter` JSON (`include`/`exclude` arrays) only, with exclusion priority; selection precedes prefixes and batching. Kubernetes Client selection reads live HostIP once per namespace; excluded targets receive no remote collection calls. Invalid selectors fail closed. Targets with unavailable host IP are skipped with a diagnostic warning; no stale Kubernetes host IP fallback is used. Empty selection fails and API query errors still abort collection. Defaults remain unchanged. See `config/collect_hosts.json.example` under kvtest and regression suite `test_collect_targets.py` (synthetic 500-target coverage and mocked Worker/Client ordering).
+
+
+## KVTest RPC/data-plane stage profiling
+
+The optional benchmark observer and pinned Mooncake patch are documented in
+`tests/kvtest/docs/rpc-data-plane-profile.md`. Standalone CMake target `kvtest_stage_profile_tests`
+and CTest `^stage_profile_` cover the disabled path and sharded concurrent aggregates;
+`tests/kvtest/tests/python/test_stage_profile.py` covers cumulative snapshot aggregation, weighted sums,
+warmup subtraction, deduplication and safe patch application. These do not establish SDK/Worker/Master
+build closure, hardware transfer correctness or instrumentation overhead on deployment targets.

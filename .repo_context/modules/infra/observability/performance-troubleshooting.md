@@ -16,7 +16,7 @@
   - `tests/perf`
   - `tests/st`
 - Last verified against source:
-  - `2026-09-14`
+  - `2026-11-05`
 - Related design docs:
   - `.repo_context/modules/infra/observability/diagnosis-and-operations.md`
   - `.repo_context/modules/infra/logging/design.md`
@@ -69,6 +69,9 @@
 
 ## URMA Request Wait Slowdown
 
+- In polling mode, `UrmaManager::PollJfcWait()` calls `nanosleep(1us)` after an empty completion poll. The requested
+  sleep is not its actual duration: inspect `urma_nanosleep_latency` alongside `urma_wait_latency` and
+  `urma_write_latency` in SDK/Worker `kv_metrics.log`. Sleep and wait timers overlap; do not add them together.
 - Send-lane admission diagnostics:
   - `[URMA_SEND_LANE_PHASE] phase=acquirePeerSlot` isolates per-peer admission. `waitedForCapacity=1` with
     `peerInflightAtEntry` at `peerInflightLimit` means the request queued behind that peer's occupied lanes;
@@ -113,10 +116,14 @@
 - Verified request-path timing surface today:
   - client `set/get` style operations are primarily timed through `AccessRecorder` and related request-path logs, for example `src/datasystem/client/kv_cache/kv_client.cpp` and `src/datasystem/common/log/access_recorder.cpp`.
 - Verified resource signal surface today:
-  - `src/datasystem/common/metrics/res_metric_collector.cpp` collects periodic resource-style strings and flushes them through `HardDiskExporter`, not through typed request histograms.
+  - `kv_resource.log` records resource snapshots; `kv_metrics.log` also exposes typed phase histograms, request
+    counters, and transport byte counters. Relevant phase families include `urma_write_latency`,
+    `urma_wait_latency`, `urma_nanosleep_latency`, and `brpc_rpc_e2e_latency`.
 - Verified observability gap today:
   - the repository does not expose a built-in `/metrics` style scrape endpoint under `src/datasystem`;
-  - the common metrics subsystem does not currently publish request-level `set/get` latency buckets, percentile series, or byte counters in a typed metrics protocol.
+  - phase histograms do not replace the complete per-call `KVClient::Set/Get` access-log distribution.
+    `brpc_rpc_network_residual_latency` subtracts server processing from the client send/receive interval;
+    this residual is not a measurement of hardware network latency alone.
 - Practical implication for investigations:
   - when a user asks whether `set/get` `p95` or `p99` suddenly regressed, the first answer must come from access-log samples or perf tests, not from a live percentile metric stream;
   - correlating slow requests with thread-pool, disk, or backend pressure still depends on aligning access logs with monitor files and ordinary logs.
@@ -126,13 +133,22 @@
 - Per-operation latency histograms:
   - add typed latency buckets for `KV set/get`, `Object put/get`, and major batch variants instead of relying only on per-request access records.
 - Request volume and byte counters:
-  - add counters for request count, failure count, read bytes, and write bytes on the same operation families.
+  - reuse the typed request/error and transport-byte counters in `common/metrics/kv_metrics.*`; check operation
+    scope and lifetime before adding missing counters for another API family.
 - Exportable metrics endpoint:
   - provide one repository-owned scrape surface so dashboards and alerting do not depend only on local files.
 - Contracted dashboards and tests:
   - treat metric names, labels, and dashboard queries as compatibility-sensitive artifacts and validate them in tests, not only in ad hoc manual checks.
 
 ## Common Pitfalls
+
+- KVTest cross-backend phase profiling is opt-in through `KVTEST_STAGE_PROFILE=1`, with implementation in
+  `common/metrics/benchmark_profile.h` and runbook `tests/kvtest/docs/rpc-data-plane-profile.md`.
+  BRPC phases reuse existing client/returned-server spans; UB/SHM/copy phases use scoped monotonic timers.
+  The pinned Mooncake patch uses the same aggregator. Exported sums are nanoseconds; the parser renders us.
+  RPC, server execution, and transfer spans nest. Get UB write can occur inside the RPC; do not add those totals.
+  Fixed histograms diagnose stage distributions, not request-correlated API tail causation. No full UB/RDMA
+  runtime or target-hardware instrumentation overhead is established by the standalone profiler tests.
 
 - Treating exporter lag as request-path regression.
 - Ignoring monitor interval and buffer delay when comparing timestamps.

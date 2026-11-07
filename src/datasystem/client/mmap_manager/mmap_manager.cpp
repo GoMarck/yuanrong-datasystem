@@ -18,6 +18,7 @@
  * Description: Client mmap management.
  */
 #include "datasystem/client/mmap_manager/mmap_manager.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 
 #include <unistd.h>
 
@@ -71,6 +72,7 @@ void MmapManager::CloseAllFds(const std::vector<int> &clientFds)
 Status MmapManager::ReceiveAndMmapClientFds(const std::string &tenantId, const std::vector<int> &toRecvFds,
                                             const std::vector<uint64_t> &mmapSizes)
 {
+    kvtest_profile::Span benchmarkSpan(kvtest_profile::Stage::DS_SHM_FETCH_MAP);
     if (enableEmbeddedClient_) {
         for (size_t i = 0; i < toRecvFds.size(); i++) {
             static const int unusedClientFd = 0;  // for embeddedclient, no need mmap client fd.
@@ -117,6 +119,7 @@ Status MmapManager::LookupUnitsAndMmapFd(const std::string &tenantId, const std:
 
 Status MmapManager::LookupUnitsAndMmapFds(const std::string &tenantId, std::vector<std::shared_ptr<ShmUnitInfo>> &units)
 {
+    kvtest_profile::Span benchmarkSpan(kvtest_profile::Stage::DS_SHM_LOOKUP);
     std::vector<int> toRecvFds;
     std::vector<int> toRecvFdInUnitIdx;
     std::vector<uint64_t> mmapSizes;

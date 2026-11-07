@@ -1,6 +1,7 @@
 add_library(metrics_exporter_base STATIC metrics_exporter.cpp)
 
 set(METRICS_SRCS
+        benchmark_profile.h
         json_lines_exporter.cpp
         kv_metrics.cpp
         metrics.cpp

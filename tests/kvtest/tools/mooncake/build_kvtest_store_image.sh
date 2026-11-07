@@ -14,6 +14,8 @@ jobs=${3:-8}
 use_ub=${MOONCAKE_USE_UB:-ON}
 use_tent=${MOONCAKE_USE_TENT:-OFF}
 event_completion=${MOONCAKE_USE_EVENT_DRIVEN_COMPLETION:-OFF}
+stage_profile=${MOONCAKE_STAGE_PROFILE:-OFF}
+[[ "$stage_profile" == ON || "$stage_profile" == OFF ]] || { echo 'MOONCAKE_STAGE_PROFILE must be ON or OFF' >&2; exit 2; }
 repair_only=${MOONCAKE_URMA_REPAIR_ONLY:-0}
 [[ "$use_ub" == ON || "$use_ub" == OFF ]] || { echo 'MOONCAKE_USE_UB must be ON or OFF' >&2; exit 2; }
 [[ "$use_tent" == ON || "$use_tent" == OFF ]] || { echo 'MOONCAKE_USE_TENT must be ON or OFF' >&2; exit 2; }
@@ -113,6 +115,7 @@ run_logged_command "$build_log" \
     --build-arg "MOONCAKE_USE_UB=$use_ub" \
     --build-arg "MOONCAKE_USE_TENT=$use_tent" \
     --build-arg "MOONCAKE_USE_EVENT_DRIVEN_COMPLETION=$event_completion" \
+    --build-arg "MOONCAKE_STAGE_PROFILE=$stage_profile" \
     --build-arg "MOONCAKE_SOURCE_PROFILE=${MOONCAKE_SOURCE_PROFILE:-legacy}" \
     --build-arg "MOONCAKE_CCACHE=${MOONCAKE_CCACHE:-auto}" \
     --build-arg "URMA_INCLUDE_DIR=${URMA_INCLUDE_DIR:-/usr/include/ub/umdk/urma}" \

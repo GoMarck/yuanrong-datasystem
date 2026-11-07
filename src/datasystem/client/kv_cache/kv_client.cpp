@@ -30,6 +30,7 @@
 #include "datasystem/common/device/nvidia/cuda_host_memory.h"
 #include "datasystem/common/log/access_recorder.h"
 #include "datasystem/common/log/trace.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include "datasystem/common/metrics/kv_metrics.h"
 #include "datasystem/common/perf/perf_manager.h"
 #include "datasystem/common/util/format.h"
@@ -215,6 +216,7 @@ Status KVClient::MSet(const std::vector<std::shared_ptr<Buffer>> &buffers)
 
 Status KVClient::Get(const std::string &key, Optional<Buffer> &buffer, int32_t subTimeoutMs)
 {
+    kvtest_profile::Span benchmarkSpan(kvtest_profile::Stage::DS_GET, 0);
     ScopedClientRequestContext requestContext;
     TraceGuard traceGuard = Trace::Instance().SetRequestTraceUUID();
     PerfPoint point(PerfKey::KV_CLIENT_GET_BUFFER);
@@ -251,6 +253,7 @@ Status KVClient::Get(const std::vector<std::string> &keys,
 
 Status KVClient::Set(const std::string &key, const StringView &val, const SetParam &setParam)
 {
+    kvtest_profile::Span benchmarkSpan(kvtest_profile::Stage::DS_SET, val.size());
     ScopedClientRequestContext requestContext;
     TraceGuard traceGuard = Trace::Instance().SetRequestTraceUUID();
     PerfPoint point(PerfKey::KV_CLIENT_SET_OBJECT);
@@ -359,6 +362,7 @@ Status KVClient::Get(const std::vector<std::string> &keys, std::vector<std::stri
 
 Status KVClient::Get(const std::string &key, Optional<ReadOnlyBuffer> &readOnlyBuffer, int32_t subTimeoutMs)
 {
+    kvtest_profile::Span benchmarkSpan(kvtest_profile::Stage::DS_GET, 0);
     ScopedClientRequestContext requestContext;
     TraceGuard traceGuard = Trace::Instance().SetRequestTraceUUID();
     PerfPoint point(PerfKey::KV_CLIENT_GET_BUFFER);

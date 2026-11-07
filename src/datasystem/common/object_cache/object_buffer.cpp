@@ -17,6 +17,7 @@
 /** Description: Implements ObjectBuffer — a lightweight transport-layer-owned object data carrier. */
 
 #include "datasystem/object/object_buffer.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 
 #include <cstdlib>
 #include <limits>
@@ -173,6 +174,7 @@ Status ObjectBuffer::MallocBufferHelper()
 
 Status ObjectBuffer::MemoryCopy(const void *data, uint64_t length)
 {
+    kvtest_profile::Span benchmarkCopy(kvtest_profile::Stage::DS_COPY, length);
     if (state_ == nullptr) {
         RETURN_STATUS(StatusCode::K_INVALID, "ObjectBuffer is not initialized.");
     }

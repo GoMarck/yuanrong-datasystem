@@ -17,6 +17,7 @@
 /** Description: Implements endpoint-scoped client-to-worker shared-memory sessions. */
 
 #include "datasystem/client/object_cache/transport/data_plane/shm_connection.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 
 #include "datasystem/client/object_cache/transport/data_plane/shm_receive_buffer_owner.h"
 #include "datasystem/client/object_cache/transport/data_plane/shm_send_buffer_owner.h"
@@ -549,6 +550,7 @@ Status ShmSession::OwnReadReference(const std::string &shmId, std::shared_ptr<co
 Status ShmSession::BuildResult(const GetRspPb::ObjectInfoPb &info, const DataGetRequest &input, DataGetResult &result,
                                std::shared_ptr<IReceiveBufferOwner> owner)
 {
+    kvtest_profile::Span benchmarkSpan(kvtest_profile::Stage::DS_SHM_READ_MAP, 0);
     RETURN_RUNTIME_ERROR_IF_NULL(owner);
     CHECK_FAIL_RETURN_STATUS(IsAlive(), K_RPC_UNAVAILABLE, "Shared-memory session is closed");
     CHECK_FAIL_RETURN_STATUS(input.context != nullptr, K_INVALID, "Transport read context is missing");
@@ -618,6 +620,7 @@ Status ShmSession::BuildQueryAndGetResult(const QueryAndGetShmInfoPb &info, cons
 Status ShmSession::MmapWriteRegion(const CreateRspPb &createRsp, const TransportRequestContext &context,
                                    uint64_t size, ObjectBufferInfo &info)
 {
+    kvtest_profile::Span benchmarkSpan(kvtest_profile::Stage::DS_SHM_WRITE_MAP, size);
     CHECK_FAIL_RETURN_STATUS(IsAlive(), K_RPC_UNAVAILABLE, "Shared-memory session is closed");
     CHECK_FAIL_RETURN_STATUS(createRsp.store_fd() > 0, K_RUNTIME_ERROR,
                              "WorkerOCService Create did not return shared memory");

@@ -20,6 +20,7 @@
 #include "datasystem/client/object_cache/client_worker_api/client_worker_base_api.h"
 #include "datasystem/common/util/validator.h"
 
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include "datasystem/common/metrics/kv_metrics.h"
 #include "datasystem/common/rpc/api_deadline.h"
 
@@ -102,6 +103,7 @@ Status PrepareUbHandle(uint64_t totalSize, std::shared_ptr<UrmaManager::BufferHa
 
 Status CopyToUbPoolBuffer(const std::shared_ptr<ObjectBufferInfo> &bufferInfo, const void *data, uint64_t length)
 {
+    kvtest_profile::Span benchmarkCopy(kvtest_profile::Stage::DS_COPY, length);
     uint8_t *dstData = bufferInfo->pointer + bufferInfo->metadataSize;
     const auto *srcData = static_cast<const uint8_t *>(data);
     if (srcData == dstData) {

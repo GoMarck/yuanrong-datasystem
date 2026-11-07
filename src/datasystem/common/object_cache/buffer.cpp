@@ -19,6 +19,7 @@
  */
 
 #include "datasystem/object/buffer.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 
 #include <cstdlib>
 
@@ -269,8 +270,10 @@ Status Buffer::MemoryCopyWithTransport(const void *data, uint64_t length, uint8_
         RETURN_IF_NOT_OK(MallocBufferHelper());
     }
     uint8_t *dstData = bufferInfo_->pointer + bufferInfo_->metadataSize;
+    kvtest_profile::Span benchmarkCopy(kvtest_profile::Stage::DS_COPY, length);
     Status status = ::datasystem::MemoryCopy(dstData, dataSize, static_cast<const uint8_t *>(data), length,
                                              clientImpl->memoryCopyThreadPool_, clientImpl->memcpyParallelThreshold_);
+    benchmarkCopy.Finish(status.IsOk());
     CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(status.IsOk(), K_RUNTIME_ERROR,
                                          FormatString("Copy data to buffer failed, err: %s", status.ToString()));
     return Status::OK();

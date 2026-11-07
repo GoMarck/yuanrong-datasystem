@@ -19,6 +19,10 @@ jobs=${4:-8}
 use_ub=${MOONCAKE_USE_UB:-ON}
 use_tent=${MOONCAKE_USE_TENT:-OFF}
 event_completion=${MOONCAKE_USE_EVENT_DRIVEN_COMPLETION:-OFF}
+stage_profile=${MOONCAKE_STAGE_PROFILE:-OFF}
+[[ "$stage_profile" == ON || "$stage_profile" == OFF ]] || {
+    echo 'MOONCAKE_STAGE_PROFILE must be ON or OFF' >&2; exit 2;
+}
 [[ "$use_ub" == ON || "$use_ub" == OFF ]] || {
     echo 'MOONCAKE_USE_UB must be ON or OFF' >&2; exit 2;
 }
@@ -58,8 +62,14 @@ actual=$(git -C "$src" rev-parse HEAD)
 [[ "$actual" == "$expected" ]] || {
     echo "Expected source commit $expected; found $actual. No checkout/reset performed." >&2; exit 2;
 }
-if [[ -n "$(git -C "$src" status --porcelain --untracked-files=no)" ]]; then
+if [[ "$stage_profile" == ON ]]; then
+    [[ "${MOONCAKE_SOURCE_PROFILE:-legacy}" == official-v0.3.13.post1 ]] || {
+        echo 'Stage profiling supports official-v0.3.13.post1 only' >&2; exit 2;
+    }
+    python3 "$base/stage_profile.py" "$src"
+elif [[ -n "$(git -C "$src" status --porcelain --untracked-files=no)" ]]; then
     echo 'Tracked source changes found; use a clean dedicated checkout for reproducibility.' >&2
+    echo 'For the reviewed stage profiler patch, set MOONCAKE_STAGE_PROFILE=ON.' >&2
     exit 2
 fi
 submodule_status=$(git -C "$src" submodule status --recursive)

@@ -1,0 +1,30 @@
+{
+  "revision": "719735896c86b56fabec6cf3e825fb2ea640597a",
+  "patch_sha256": "3153ba851fc306b10edf2b2672a6fc4d00653991f53ef42ac5b74381c01262fe",
+  "files": {
+    "mooncake-store/src/client_service.cpp": {
+      "base": "2d2e6864efaf9674157f427b24c82f69c4b1b4d1cafa70bbfd4dc1147f24f9a5",
+      "profile": "44f9bac0891e16744379bad8013dbc4d3e8336f6b828ebae01e3cbca867c168f"
+    },
+    "mooncake-store/src/master_client.cpp": {
+      "base": "174b74fb2209591449a0d1d82a61a77c6ec91de9d4cb5f3c352ff6cd98e67384",
+      "profile": "9025f586d865c64f2b26c07d9935953f6bfe40b08659a6dae6e44cf32f69ea6a"
+    },
+    "mooncake-store/src/real_client.cpp": {
+      "base": "70586a93081af55e9965d137148071c1592a1a90d9a916ee925dfaefddc3fb02",
+      "profile": "921f8b5a18b1e2de8f9614f6b47e7432a8be5ca07fee6faaf3adb896d4222838"
+    },
+    "mooncake-store/src/rpc_service.cpp": {
+      "base": "2d52dd0fd49f1b6f1555161f03ddadae04c9a7af911ffd225cfa7c626073f509",
+      "profile": "ab16a6475813039b938d68912310cc254e05e68609c5e53432865c6a2e04bfbc"
+    },
+    "mooncake-store/src/transfer_task.cpp": {
+      "base": "f101d25b44a15152fa8bd1caff5a167228d72b394d9d0d31da85332f2172d7f0",
+      "profile": "91a84aaa2642b15025ce5a5d24184125b01b9148ca15641d75ea4bba126c6166"
+    },
+    "mooncake-store/include/benchmark_profile.h": {
+      "base": null,
+      "profile": "0a50e4625dc50c412ab6afd298eeb0b0678e27f099defecbabade879e2d3f7a2"
+    }
+  }
+}

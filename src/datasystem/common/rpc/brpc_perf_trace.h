@@ -35,6 +35,7 @@
 #include "datasystem/common/log/log.h"
 #include "datasystem/common/log/trace.h"
 #include "datasystem/common/metrics/kv_metrics.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include "datasystem/common/util/format.h"
 
 namespace datasystem {
@@ -358,6 +359,32 @@ inline void RecordBrpcRpcTrace(const BrpcPerfTrace &trace)
     const uint64_t serverExecNs = TraceDelta(trace.ServerExecEndTs(), trace.ServerExecStartTs());
     const uint64_t serverRspQueueNs = TraceDelta(trace.ServerSendTs(), trace.ServerExecEndTs());
     const uint64_t serverProcessingNs = TraceDelta(trace.ServerSendTs(), trace.ServerRecvTs());
+    if (kvtest_profile::Enabled()) {
+        using Stage = kvtest_profile::Stage;
+        const std::string &method = trace.MethodName();
+        const auto record = [&](const char *suffix, Stage rpc, Stage server, Stage overhead) {
+            const size_t length = std::strlen(suffix);
+            if (method.size() < length || method.compare(method.size() - length, length, suffix) != 0) return;
+            kvtest_profile::RecordDuration(rpc, e2eNs, !trace.Failed());
+            if (HasCompleteServerTrace(trace)) {
+                kvtest_profile::RecordDuration(server, serverExecNs, !trace.Failed());
+                if (e2eNs >= serverExecNs) {
+                    kvtest_profile::RecordDuration(overhead, e2eNs - serverExecNs, !trace.Failed());
+                }
+            }
+        };
+        record(".WorkerOCService.Create", Stage::DS_RPC_CREATE, Stage::DS_SERVER_CREATE, Stage::DS_RPC_OVERHEAD_CREATE);
+        record(".WorkerOCService.Publish", Stage::DS_RPC_PUBLISH, Stage::DS_SERVER_PUBLISH, Stage::DS_RPC_OVERHEAD_PUBLISH);
+        record(".WorkerOCService.QueryAndGet", Stage::DS_RPC_QUERY, Stage::DS_SERVER_QUERY, Stage::DS_RPC_OVERHEAD_QUERY);
+        record(".WorkerOCService.Get", Stage::DS_RPC_GET, Stage::DS_SERVER_GET, Stage::DS_RPC_OVERHEAD_GET);
+        record(".WorkerWorkerOCService.GetObjectRemote", Stage::DS_RPC_GET, Stage::DS_SERVER_GET, Stage::DS_RPC_OVERHEAD_GET);
+        record(".WorkerOCService.DecreaseReference", Stage::DS_RPC_RELEASE, Stage::DS_SERVER_RELEASE,
+               Stage::DS_RPC_OVERHEAD_RELEASE);
+        record(".MasterOCService.CreateMeta", Stage::DS_RPC_CREATE_META, Stage::DS_SERVER_CREATE_META,
+               Stage::DS_RPC_OVERHEAD_CREATE_META);
+        record(".MasterOCService.QueryMeta", Stage::DS_RPC_QUERY_META, Stage::DS_SERVER_QUERY_META,
+               Stage::DS_RPC_OVERHEAD_QUERY_META);
+    }
     uint64_t networkResidualNs = 0;
     if (remoteProcessingNs > 0 && serverProcessingNs > 0) {
         networkResidualNs = remoteProcessingNs > serverProcessingNs ? remoteProcessingNs - serverProcessingNs : 0;

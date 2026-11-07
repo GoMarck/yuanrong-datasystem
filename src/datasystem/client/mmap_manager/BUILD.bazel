@@ -62,6 +62,7 @@ ds_cc_library(
         ":mmap_table",
         "//src/datasystem/client/worker_api:client_worker_common_api",
         "//src/datasystem/common/ak_sk:ak_sk_manager",
+        "//src/datasystem/common/metrics:benchmark_profile",
         "//src/datasystem/common/log:common_log",
         "//src/datasystem/common/shared_memory:common_shm_unit_info",
         "//src/datasystem/common/util:common_util",

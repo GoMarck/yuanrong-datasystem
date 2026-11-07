@@ -84,6 +84,13 @@ endif()
 target_link_libraries(kvtest_tests PRIVATE pthread ${CMAKE_DL_LIBS})
 
 enable_testing()
+add_executable(kvtest_stage_profile_tests test_benchmark_profile.cpp)
+target_include_directories(kvtest_stage_profile_tests PRIVATE ${KVTEST_ROOT}/../../src ${KVTEST_ROOT}/src)
+target_link_libraries(kvtest_stage_profile_tests PRIVATE pthread)
+foreach(mode enabled disabled)
+    add_test(NAME stage_profile_${mode} COMMAND kvtest_stage_profile_tests ${mode})
+    set_tests_properties(stage_profile_${mode} PROPERTIES TIMEOUT 8)
+endforeach()
 add_test(NAME native_kvtest COMMAND kvtest_tests)
 add_executable(kvtest_mooncake_pipeline_tests test_mooncake_pipeline.cpp
     ${KVTEST_ROOT}/src/common/config.cpp

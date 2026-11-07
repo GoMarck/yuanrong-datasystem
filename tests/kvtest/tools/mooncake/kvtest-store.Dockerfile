@@ -46,8 +46,10 @@ ARG MOONCAKE_SOURCE_PROFILE=legacy
 COPY prepare_source.sh source_profile.sh /opt/mooncake-bench/
 RUN bash prepare_source.sh /opt/Mooncake
 COPY configure_ub.sh build_store_ub.sh build_log.sh pip_env.sh store_build_compat.cmake /opt/mooncake-bench/
+COPY stage_profile.py stage_profile.patch stage_profile_manifest.json /opt/mooncake-bench/
 ARG MOONCAKE_CCACHE=auto
 ARG MOONCAKE_USE_EVENT_DRIVEN_COMPLETION=OFF
+ARG MOONCAKE_STAGE_PROFILE=OFF
 ARG MOONCAKE_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ARG MOONCAKE_PIP_TIMEOUT=600
 ARG MOONCAKE_PIP_RETRIES=5
@@ -62,6 +64,7 @@ RUN --mount=type=cache,id=mooncake-store-pip,target=/var/cache/mooncake-pip,shar
     CCACHE_DIR=/var/cache/mooncake-ccache CCACHE_MAXSIZE=5G \
     MOONCAKE_USE_UB="${MOONCAKE_USE_UB}" MOONCAKE_USE_TENT="${MOONCAKE_USE_TENT}" MOONCAKE_CCACHE="${MOONCAKE_CCACHE}" \
     MOONCAKE_USE_EVENT_DRIVEN_COMPLETION="${MOONCAKE_USE_EVENT_DRIVEN_COMPLETION}" \
+    MOONCAKE_STAGE_PROFILE="${MOONCAKE_STAGE_PROFILE}" \
     bash build_store_ub.sh /opt/Mooncake "${URMA_INCLUDE_DIR}" \
         "${URMA_LIBRARY}" "${BUILD_JOBS}" && \
     if command -v ccache >/dev/null 2>&1 && [ "${MOONCAKE_CCACHE}" != 0 ]; then \

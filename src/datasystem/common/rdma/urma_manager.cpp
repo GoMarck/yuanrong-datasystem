@@ -47,6 +47,7 @@
 #include "datasystem/common/log/log.h"
 #include "datasystem/common/log/trace.h"
 #include "datasystem/common/log/latency_phase.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include "datasystem/common/metrics/kv_metrics.h"
 #include "datasystem/common/perf/perf_manager.h"
 #include "datasystem/common/rdma/fast_transport_base.h"
@@ -619,6 +620,7 @@ Status UrmaManager::EnsureClientPipelineH2DEnv()
 
 Status UrmaManager::GetMemoryBufferHandle(std::shared_ptr<BufferHandle> &handle, uint64_t size)
 {
+    kvtest_profile::Span benchmarkSpan(kvtest_profile::Stage::DS_UB_ALLOC, size);
     if (size == 0) {
         return Status(K_INVALID, "UB Get buffer size is 0");
     }
@@ -1888,6 +1890,7 @@ Status UrmaManager::WaitForUrmaEvent(uint64_t requestId, int64_t timeoutMs,
 Status UrmaManager::WaitToFinish(uint64_t requestId, int64_t timeoutMs, UrmaWriteFailure *failure,
                                  UrmaSequentialWaitContext *waitContext)
 {
+    kvtest_profile::Span benchmarkSpan(kvtest_profile::Stage::DS_UB_WAIT, 0);
     PerfPoint point(PerfKey::URMA_WAIT_TO_FINISH);
     // This legacy injection models a wait call that fails before it obtains an event.
     // Keep it before GetEvent: moving it below changes the ST from a fallback error-path
@@ -2533,6 +2536,7 @@ Status UrmaManager::UrmaWriteImpl(const UrmaWriteArgs &args, std::vector<uint64_
                                   const std::shared_ptr<UrmaSendLaneLease> &externalLaneLease,
                                   UrmaWriteFailure *failure)
 {
+    kvtest_profile::Span benchmarkSpan(kvtest_profile::Stage::DS_UB_SUBMIT, args.size);
     if (args.size == 0) {
         return Status::OK();
     }
@@ -2810,6 +2814,7 @@ Status UrmaManager::UrmaWritePayloadImpl(const UrmaRemoteAddrPb &urmaInfo, const
                                          std::shared_ptr<EventWaiter> waiter, UrmaWriteFailure *failure,
                                          std::optional<UrmaLateCompletionContext> lateCompletionContext)
 {
+    kvtest_profile::Span benchmarkSpan(kvtest_profile::Stage::DS_UB_WRITE, readSize);
     eventKeys.clear();
     const auto startUs = static_cast<uint64_t>(GetSteadyClockTimeStampUs());
     PerfPoint point(PerfKey::URMA_WRITE_TOTAL);

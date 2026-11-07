@@ -626,6 +626,20 @@ Failure-sensitive steps:
   - missing files may be caused by `log_monitor=false` or bad directory permissions rather than collector-loop bugs;
   - a metrics exporter regression can surface first as logging-side access-output problems because the exporter is shared.
 
+## KVTest benchmark stage profiler
+
+- `src/datasystem/common/metrics/benchmark_profile.h` is a benchmark-only observer, independent of production
+  metric IDs. `KVTEST_STAGE_PROFILE=1` enables sharded relaxed-atomic duration sums and shared histogram buckets.
+  Disabled calls avoid clocks, exporter initialization, allocations and counter updates.
+- A process-lifetime recorder owns counters; a ten-second reporter writes cumulative JSON lines, with an exit
+  callback stopping the thread and writing a final snapshot. Runtime SDK objects should quiesce before exit;
+  late static-destructor activity remains memory-safe but is outside that final snapshot.
+- The `KVTEST_STAGE_PROFILE_OUTPUT` prefix produces a PID-suffixed `.log` file; omission selects stderr.
+  There is no file rotation or production exporter integration. Periodic multi-atomic snapshots may be slightly
+  inconsistent while requests run. This is diagnostic output, not a durable request ledger.
+- `tests/kvtest/summarize_stage_profile.py` deduplicates snapshots and aggregates sums/counts and buckets;
+  it keeps missing phases unavailable and does not add nested spans. See the KVTest RPC/data-plane profile runbook.
+
 ## Open Questions
 
 - whether there are additional major registration sites outside `worker_oc_server.cpp` that deserve dedicated context notes;

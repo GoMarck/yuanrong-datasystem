@@ -42,6 +42,7 @@ from importlib.metadata import version
 import json
 from pathlib import Path
 import platform
+import os
 import sys
 # Upstream declares NumPy only as a build dependency, but _fast_copy imports it.
 import mooncake._fast_copy
@@ -55,6 +56,7 @@ metadata = {
     "distribution": "mooncake-transfer-engine",
     "version": version("mooncake-transfer-engine"),
     "source_revision": sys.argv[2],
+    "stage_profile": os.environ.get("MOONCAKE_STAGE_PROFILE", "OFF") == "ON",
     "use_ub": sys.argv[3] == "ub",
     "python": platform.python_version(),
     "machine": platform.machine(),
