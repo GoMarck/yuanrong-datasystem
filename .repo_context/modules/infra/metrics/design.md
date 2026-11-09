@@ -670,3 +670,26 @@ Failure-sensitive steps:
 - URMA exports pending-event poll sleeps, nonempty completion-notification batches, wait/result scopes and
   existing event observation/wake timing. Batch, event and API counts differ; event timing can overlap or
   reuse a previous chunk wake value. None measures isolated NIC latency.
+
+
+## KVTest stage profiling
+
+The optional benchmark profiler is implemented in `src/datasystem/common/metrics/benchmark_profile.h`.
+`KVTEST_STAGE_PROFILE=1` enables aggregate counters; the third-level function checkpoints follow that switch unless
+`KVTEST_DETAIL_PROFILE=0`. `KVTEST_DETAIL_SAMPLE_EVERY` defaults to 64; `.total.calls` and `.count` are full event
+counts, while detailed durations are sampled. Existing first/second-level and `ds.rpc_stage.*` timestamps stay full.
+
+`DetailFrame` keeps checkpoint state in the call frame, including coroutine frames; it does not keep a current-request
+pointer in OS-thread-local storage. One selected frame uses consecutive timestamps for its checkpoints. Fixed-size
+counters are sharded; optional checkpoint samples use a bounded nonblocking submission buffer and periodic output.
+No business locks, retries, wire formats, reference ownership or persistence semantics are intentionally changed.
+Data-plane lease diagnostics release the existing entry lock before exporting its sampled hold duration.
+
+Samples identify a function scope, not an SDK-to-worker distributed request. Common helpers are marked shared;
+TBB lookup duration includes internal synchronization. Do not infer lock waiting or CPU execution time from wall time.
+Sampled sums cannot be divided by full API counts. Get requested transport must be checked against actual worker
+encoding and SDK result materialization. Process resource snapshots do not establish cgroup throttling or CPU saturation.
+
+See `tests/kvtest/docs/rpc-data-plane-profile.md` for collection, `tests/kvtest/detail_profile_catalog.json` for coverage,
+and `tests/kvtest/summarize_stage_profile.py` for phase, same-scope checkpoint and process-resource summaries.
+The Mooncake patch manifest binds the shared profiler header and Store/TE instrumentation to fixed base source content.

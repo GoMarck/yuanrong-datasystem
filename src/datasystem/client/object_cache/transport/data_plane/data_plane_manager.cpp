@@ -17,6 +17,7 @@
 /** Description: Implements endpoint-scoped data-plane transporter management. */
 
 #include "datasystem/client/object_cache/transport/data_plane/data_plane_manager.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 
 #include <algorithm>
 #include <chrono>
@@ -263,7 +264,12 @@ DataPlaneManager::DataPlaneManager(std::shared_ptr<Signature> signature, uint64_
     ubHealthCallbackState_ = std::make_shared<UbHealthCallbackState>(this);
 }
 
-DataPlaneManager::DataPlaneLease::~DataPlaneLease() = default;
+DataPlaneManager::DataPlaneLease::~DataPlaneLease()
+{
+    entryLock_.reset();
+    kvtest_profile::DetailFrame::RecordElapsed(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_LEASE_HELD,
+                                              detailLeaseAcquiredAt_);
+}
 
 const std::shared_ptr<IDataTransporter> &DataPlaneManager::DataPlaneLease::GetTransporter() const
 {
@@ -327,6 +333,9 @@ Status DataPlaneManager::GetOrCreate(const HostPort &workerAddr, TransportHint h
                                      std::shared_ptr<IDataTransporter> &out,
                                      TransportPhaseLatencyRecorder *recorder)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_GET_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_GET_ENTRY);
     out.reset();
     std::shared_ptr<WorkerTransportEntry> entry;
     const auto lookupBegin = recorder == nullptr ? TransportPhaseLatencyRecorder::TimePoint{}
@@ -336,6 +345,7 @@ Status DataPlaneManager::GetOrCreate(const HostPort &workerAddr, TransportHint h
         recorder->RecordPhase("connection_entry_lookup", lookupBegin, TransportLatencyThreshold::PROCESS);
     }
     RETURN_IF_NOT_OK(status);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_GET_TRANSPORTER);
     const TransportBuildContext context{ workerAddr, hint, KindForHint(hint), recorder };
     return GetOrBuildTransporter(context, entry, out);
 }
@@ -373,6 +383,9 @@ Status DataPlaneManager::AcquireDataPlaneLease(const HostPort &workerAddr, Trans
                                                TransportPhaseLatencyRecorder *recorder,
                                                bool respectUbReadRecovery)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_LEASE_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_LEASE_ENTRY);
     lease.reset();
     const AccessTransportKind expectedKind = KindForHint(hint);
     std::shared_ptr<WorkerTransportEntry> entry;
@@ -383,18 +396,23 @@ Status DataPlaneManager::AcquireDataPlaneLease(const HostPort &workerAddr, Trans
         recorder->RecordPhase("connection_entry_lookup", lookupBegin, TransportLatencyThreshold::PROCESS);
     }
     RETURN_IF_NOT_OK(status);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_LEASE_TRANSPORTER);
     std::shared_ptr<IDataTransporter> transporter;
     const TransportBuildContext context{ workerAddr, hint, expectedKind, recorder, respectUbReadRecovery };
     RETURN_IF_NOT_OK(GetOrBuildTransporter(context, entry, transporter));
 
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_LEASE_ALLOCATE);
     auto acquired = std::unique_ptr<DataPlaneLease>(new DataPlaneLease());
     acquired->entry_ = entry;
     const auto leaseBegin = recorder == nullptr ? TransportPhaseLatencyRecorder::TimePoint{}
                                                 : recorder->StartPhase();
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_LEASE_LOCK_ACQUIRE_WITH_GUARD_ALLOCATION);
     acquired->entryLock_ = std::make_unique<bthread::RWLockRdGuard>(entry->mutex);
+    acquired->detailLeaseAcquiredAt_ = kvtest_profile::DetailFrame::CaptureTime(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_LEASE_HELD);
     if (recorder != nullptr) {
         recorder->RecordPhase("connection_lease_lock_wait", leaseBegin, TransportLatencyThreshold::PROCESS);
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_LEASE_VALIDATE);
     CHECK_FAIL_RETURN_STATUS(!shutdown_.load(std::memory_order_acquire), K_SHUTTING_DOWN,
                              "DataPlaneManager is shutting down");
     CHECK_FAIL_RETURN_STATUS(!(respectUbReadRecovery && expectedKind == AccessTransportKind::UB
@@ -408,6 +426,7 @@ Status DataPlaneManager::AcquireDataPlaneLease(const HostPort &workerAddr, Trans
                              "RPC client is unavailable while acquiring lease");
     acquired->transporter_ = std::move(transporter);
     acquired->rpcClient_ = entry->rpcClient;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_LEASE_RESULT);
     lease = std::move(acquired);
     return Status::OK();
 }
@@ -851,6 +870,9 @@ Status DataPlaneManager::GetOrCreateEntry(const std::string &workerKey,
                                           std::shared_ptr<WorkerTransportEntry> &entry,
                                           bool requireSnapshotAdmission)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_ENTRY_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_ENTRY_ADMISSION);
     CHECK_FAIL_RETURN_STATUS(!shutdown_.load(std::memory_order_acquire), K_SHUTTING_DOWN,
                              "DataPlaneManager is shutting down");
     auto admission = std::atomic_load(&endpointAdmissionSnapshot_);
@@ -864,11 +886,15 @@ Status DataPlaneManager::GetOrCreateEntry(const std::string &workerKey,
             }
         }
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_ENTRY_LOOKUP);
     EntryMap::const_accessor constAccessor;
     if (entries_.find(constAccessor, workerKey)) {
         entry = constAccessor->second;
+        kvtest_profile::DetailCount(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_ENTRY_HIT_COUNT);
         return Status::OK();
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_ENTRY_INSERT_ALLOCATE);
+    kvtest_profile::DetailCount(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_ENTRY_MISS_COUNT);
     EntryMap::accessor accessor;
     (void)entries_.insert(accessor, workerKey);
     if (accessor->second == nullptr) {
@@ -910,15 +936,20 @@ Status DataPlaneManager::GetOrBuildTransporter(const TransportBuildContext &cont
                                                const std::shared_ptr<WorkerTransportEntry> &entry,
                                                std::shared_ptr<IDataTransporter> &out)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_BUILD_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_BUILD_PREPARE);
     auto *recorder = context.recorder;
     bool cachedFallbackAlongsideShm = false;
     {
         const auto lockBegin = recorder == nullptr ? TransportPhaseLatencyRecorder::TimePoint{}
                                                    : recorder->StartPhase();
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_BUILD_READ_LOCK_ACQUIRE);
         bthread::RWLockRdGuard lock(entry->mutex);
         if (recorder != nullptr) {
             recorder->RecordPhase("connection_read_lock_wait", lockBegin, TransportLatencyThreshold::PROCESS);
         }
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_BUILD_VALIDATE);
         CHECK_FAIL_RETURN_STATUS(!shutdown_.load(std::memory_order_acquire), K_SHUTTING_DOWN,
                                  "DataPlaneManager is shutting down");
         CHECK_FAIL_RETURN_STATUS(!(context.respectUbReadRecovery
@@ -930,6 +961,7 @@ Status DataPlaneManager::GetOrBuildTransporter(const TransportBuildContext &cont
                                    && entry->ubRebuildSlotOwner.load(std::memory_order_acquire) != 0),
                                  K_TRY_AGAIN, "UB data plane rebuild is already in flight");
         if (entry->HasAliveTransporter(context.expectedKind)) {
+            kvtest_profile::DetailCount(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_BUILD_CACHE_HIT_COUNT);
             out = entry->GetTransporter(context.expectedKind);
             MarkDataPlaneUse(entry, out->Kind());
             return Status::OK();
@@ -938,10 +970,12 @@ Status DataPlaneManager::GetOrBuildTransporter(const TransportBuildContext &cont
     {
         const auto lockBegin = recorder == nullptr ? TransportPhaseLatencyRecorder::TimePoint{}
                                                    : recorder->StartPhase();
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_BUILD_WRITE_LOCK_ACQUIRE);
         bthread::RWLockWrGuard entryLock(entry->mutex);
         if (recorder != nullptr) {
             recorder->RecordPhase("connection_write_lock_wait", lockBegin, TransportLatencyThreshold::PROCESS);
         }
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_BUILD_VALIDATE);
         CHECK_FAIL_RETURN_STATUS(!shutdown_.load(std::memory_order_acquire), K_SHUTTING_DOWN,
                                  "DataPlaneManager is shutting down");
         CHECK_FAIL_RETURN_STATUS(!(context.respectUbReadRecovery
@@ -953,12 +987,15 @@ Status DataPlaneManager::GetOrBuildTransporter(const TransportBuildContext &cont
                                    && entry->ubRebuildSlotOwner.load(std::memory_order_acquire) != 0),
                                  K_TRY_AGAIN, "UB data plane rebuild is already in flight");
         if (entry->HasAliveTransporter(context.expectedKind)) {
+            kvtest_profile::DetailCount(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_BUILD_CACHE_HIT_COUNT);
             out = entry->GetTransporter(context.expectedKind);
             MarkDataPlaneUse(entry, out->Kind());
             return Status::OK();
         }
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_BUILD_RPC_CLIENT);
         Status status = EnsureRpcClientLocked(context.workerAddr, entry, context.recorder);
         RETURN_IF_NOT_OK(status);
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_BUILD_TRANSPORTER);
         status = EnsureTransporterLocked(context, entry, cachedFallbackAlongsideShm);
         RETURN_IF_NOT_OK(status);
         if (shutdown_.load(std::memory_order_acquire)) {
@@ -968,6 +1005,7 @@ Status DataPlaneManager::GetOrBuildTransporter(const TransportBuildContext &cont
         out = entry->GetTransporter(context.expectedKind);
         MarkDataPlaneUse(entry, out->Kind());
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_CONNECTION_BUILD_LOG_READY);
     LogTransporterReady(context.workerAddr, out->Kind(), cachedFallbackAlongsideShm);
     return Status::OK();
 }
@@ -1261,6 +1299,9 @@ bool DataPlaneManager::IsUbRebuildCoolingDown(const HostPort &workerAddr) const
 DataPlaneManager::UbReadAdmission DataPlaneManager::AdmitUbRead(const HostPort &workerAddr, uint64_t &slotOwner,
                                                                 bool *degradedByCooldown)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_GET_UB_ADMISSION_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_GET_UB_ADMISSION_PREPARE);
     slotOwner = 0;
     if (degradedByCooldown != nullptr) {
         *degradedByCooldown = false;
@@ -1275,10 +1316,12 @@ DataPlaneManager::UbReadAdmission DataPlaneManager::AdmitUbRead(const HostPort &
     {
         // Read accessor first: the steady state must not take a write lock on the hash bucket.
         EntryMap::const_accessor constAccessor;
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_UB_ADMISSION_ENTRY_LOOKUP);
         if (entries_.find(constAccessor, workerAddr.ToString())) {
             entry = constAccessor->second;
         }
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_UB_ADMISSION_MISS_HANDLING);
     if (entry == nullptr) {
         // No entry yet: create it, because the entry is also the storage for the rebuild slot. Concurrent
         // creators get the same entry object, so the slot below still elects exactly one rebuilder.
@@ -1293,7 +1336,9 @@ DataPlaneManager::UbReadAdmission DataPlaneManager::AdmitUbRead(const HostPort &
         return UbReadAdmission::PROCEED;
     }
     {
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_UB_ADMISSION_LOCK_ACQUIRE);
         bthread::RWLockRdGuard lock(entry->mutex);
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_UB_ADMISSION_VALIDATE);
         if (entry->UbRebuildCoolingDown(SteadyNowMs())) {
             if (degradedByCooldown != nullptr) {
                 *degradedByCooldown = true;

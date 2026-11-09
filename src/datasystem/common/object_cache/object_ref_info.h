@@ -18,6 +18,7 @@
 #define DATASYSTEM_COMMON_OBJECT_CACHE_OBJECTREFINFO_H
 
 #include <atomic>
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -622,10 +623,16 @@ private:
 template <typename T>
 bool ObjectRefInfo<T>::AddRef(const T &objectKey, uint32_t ref)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SHARED_REFERENCE_OBJECT_KEYS_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SHARED_REFERENCE_OBJECT_KEYS_LOCK_ACQUIRE);
     std::shared_lock<SharedMutex> lock(objectKeyMapMutex_);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_REFERENCE_OBJECT_KEYS_PREPARE);
     typename TbbObjKeyTable::accessor objAccessor;
     VLOG(1) << "add object key " << objectKey << " ref:" << ref;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_REFERENCE_OBJECT_KEYS_EMPLACE);
     bool res = objectKeys_.emplace(objAccessor, objectKey, ref);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_REFERENCE_OBJECT_KEYS_UPDATE);
     if (res) {
         return true;
     }

@@ -366,6 +366,69 @@ inline void RecordBrpcRpcTrace(const BrpcPerfTrace &trace)
             const size_t length = std::strlen(suffix);
             if (method.size() < length || method.compare(method.size() - length, length, suffix) != 0) return;
             kvtest_profile::RecordDuration(rpc, e2eNs, !trace.Failed());
+            switch (rpc) {
+                case Stage::DS_RPC_CREATE:
+                    kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_CREATE_CLIENT_PREPARE, clientReqFrameworkNs, !trace.Failed());
+                    kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_CREATE_CLIENT_RESULT, clientRspFrameworkNs, !trace.Failed());
+                    if (HasCompleteServerTrace(trace)) {
+                        kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_CREATE_SERVER_REQUEST_QUEUE, serverReqQueueNs, !trace.Failed());
+                        kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_CREATE_SERVER_RESPONSE_QUEUE, serverRspQueueNs, !trace.Failed());
+                        if (remoteProcessingNs >= serverProcessingNs) {
+                            kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_CREATE_COMMUNICATION_RESIDUAL,
+                                remoteProcessingNs - serverProcessingNs, !trace.Failed());
+                        }
+                    }
+                    break;
+                case Stage::DS_RPC_PUBLISH:
+                    kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_PUBLISH_CLIENT_PREPARE, clientReqFrameworkNs, !trace.Failed());
+                    kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_PUBLISH_CLIENT_RESULT, clientRspFrameworkNs, !trace.Failed());
+                    if (HasCompleteServerTrace(trace)) {
+                        kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_PUBLISH_SERVER_REQUEST_QUEUE, serverReqQueueNs, !trace.Failed());
+                        kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_PUBLISH_SERVER_RESPONSE_QUEUE, serverRspQueueNs, !trace.Failed());
+                        if (remoteProcessingNs >= serverProcessingNs) {
+                            kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_PUBLISH_COMMUNICATION_RESIDUAL,
+                                remoteProcessingNs - serverProcessingNs, !trace.Failed());
+                        }
+                    }
+                    break;
+                case Stage::DS_RPC_QUERY:
+                    kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_QUERY_CLIENT_PREPARE, clientReqFrameworkNs, !trace.Failed());
+                    kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_QUERY_CLIENT_RESULT, clientRspFrameworkNs, !trace.Failed());
+                    if (HasCompleteServerTrace(trace)) {
+                        kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_QUERY_SERVER_REQUEST_QUEUE, serverReqQueueNs, !trace.Failed());
+                        kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_QUERY_SERVER_RESPONSE_QUEUE, serverRspQueueNs, !trace.Failed());
+                        if (remoteProcessingNs >= serverProcessingNs) {
+                            kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_QUERY_COMMUNICATION_RESIDUAL,
+                                remoteProcessingNs - serverProcessingNs, !trace.Failed());
+                        }
+                    }
+                    break;
+                case Stage::DS_RPC_RELEASE:
+                    kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_RELEASE_CLIENT_PREPARE, clientReqFrameworkNs, !trace.Failed());
+                    kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_RELEASE_CLIENT_RESULT, clientRspFrameworkNs, !trace.Failed());
+                    if (HasCompleteServerTrace(trace)) {
+                        kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_RELEASE_SERVER_REQUEST_QUEUE, serverReqQueueNs, !trace.Failed());
+                        kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_RELEASE_SERVER_RESPONSE_QUEUE, serverRspQueueNs, !trace.Failed());
+                        if (remoteProcessingNs >= serverProcessingNs) {
+                            kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_RELEASE_COMMUNICATION_RESIDUAL,
+                                remoteProcessingNs - serverProcessingNs, !trace.Failed());
+                        }
+                    }
+                    break;
+                case Stage::DS_RPC_CREATE_META:
+                    kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_CREATE_META_CLIENT_PREPARE, clientReqFrameworkNs, !trace.Failed());
+                    kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_CREATE_META_CLIENT_RESULT, clientRspFrameworkNs, !trace.Failed());
+                    if (HasCompleteServerTrace(trace)) {
+                        kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_CREATE_META_SERVER_REQUEST_QUEUE, serverReqQueueNs, !trace.Failed());
+                        kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_CREATE_META_SERVER_RESPONSE_QUEUE, serverRspQueueNs, !trace.Failed());
+                        if (remoteProcessingNs >= serverProcessingNs) {
+                            kvtest_profile::RecordDuration(kvtest_profile::Stage::D_DS_RPC_STAGE_CREATE_META_COMMUNICATION_RESIDUAL,
+                                remoteProcessingNs - serverProcessingNs, !trace.Failed());
+                        }
+                    }
+                    break;
+                default: break;
+            }
             if (HasCompleteServerTrace(trace)) {
                 kvtest_profile::RecordDuration(server, serverExecNs, !trace.Failed());
                 if (e2eNs >= serverExecNs) {

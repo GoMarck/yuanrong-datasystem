@@ -73,7 +73,7 @@ bash tests/kvtest/tools/mooncake/build_kvtest_store_image.sh \
 }
 ```
 
-目录必须预先存在且可写。每进程创建 `<prefix>.<pid>.log`，内容是带 `[KVTEST_STAGE_PROFILE]` 前缀的 JSON 行；
+目录必须预先存在且可写。每个 recorder 创建 `<prefix>.<pid>.<monotonic-ns>.log`，避免同进程不同动态库覆盖文件；收集该前缀的所有日志。内容是带 `[KVTEST_STAGE_PROFILE]` 前缀的 JSON 行；
 没有设置输出前缀时写 stderr。不要让不同进程/容器共享同一个实际文件路径。文件无滚动，限于受控时长基准使用。
 原有 `*.log` 采集包含这些文件。文件打开失败会在 stderr 诊断，解析器无记录时会报错，不会填零。
 
@@ -222,3 +222,55 @@ python3 -m unittest discover -s tests/kvtest/tests/python -p test_stage_profile.
 
 验证聚合器关闭路径、并发计数/直方图、重复 Finish、累计快照去重、加权均值、warmup 差分与 Mooncake 补丁保护。
 完整 SDK/Worker/Master 的编译、成功请求计数匹配、UB/SHM/RDMA 路径及观测开销，需要部署环境验证。
+
+
+## 第三层打点：一次采集 Set/Get 内部处理
+
+两边重新使用本轮源码构建。元戎需要 SDK 和 Worker 同时更新（master 在 Worker 中）；Mooncake 需要 SDK、Master 和链接的 TE 同时更新，不能只替换 Store 而继续使用旧 TE。分支名保持原名。固定官方源码使用更新后的 `stage_profile.patch` / manifest；已包含补丁的 fork 分支按该分支正常构建，不再叠加旧补丁。
+
+四类进程都在**启动前**设置下面的环境变量，日志目录预先创建：
+
+```bash
+export KVTEST_STAGE_PROFILE=1
+export KVTEST_DETAIL_PROFILE=1
+export KVTEST_DETAIL_SAMPLE_EVERY=64
+export KVTEST_DETAIL_SAMPLES=1
+export KVTEST_STAGE_PROFILE_OUTPUT=<existing-log-dir>/kvtest-stage-profile
+```
+
+`KVTEST_DETAIL_PROFILE=0` 单独关闭第三层；原有第一、二层保留。未设置时跟随 `KVTEST_STAGE_PROFILE=1` 开启。默认每类函数在每个线程的每64次进入中选择一次；分块内采样位置由固定散列确定，避免固定第64次总是落到交替的同一路径。不是按整条分布式请求统一采样。`KVTEST_DETAIL_SAMPLE_EVERY=1` 是全量诊断，会增加耗时，不能用来声明无打点性能。非法间隔回退64，允许范围1–1000000。
+
+新增覆盖清单在 `tests/kvtest/detail_profile_catalog.json`，记录函数和阶段名。重点是：
+
+| 流程 | 新增观察内容 |
+|---|---|
+| Set SDK | API上下文、trace、实现调用、指标/access、退出清理；路由健康排除、选worker、身份锁和guard；Create连接及分配ID；UB响应信息、接收池/owner/Buffer构造；SHM映射、FD查询、引用及owner；Publish和反馈清理 |
+| Set Worker / Master | Create对象查询、已有对象锁与检查、分配预留、ShmUnit/内存分配、响应、引用；Publish到master的请求构造、owner解析、API对象构造/Init和路由调用；本地master API的签名；master路由、heavyOp锁/插入、分片锁、metadata表插入、状态校验、元数据填充/复制/序列化/存储、订阅及过期处理 |
+| Get SDK | API外层及退出清理；SHM连接/会话；UB恢复检查、连接、缓冲申请/校验/临时表插入；连接entry查询、读锁、状态检查、lease分配、lease锁获取和跨RPC持有；请求构造、签名、响应健康信息和结果接管 |
+| Get Worker | 对象表查询、对象读锁、状态检查、返回参数构造；UB读锁、地址准备、带宽统计、数据回写及清理；SHM引用和响应编码；响应健康信息、Write、SendPayload、完成响应 |
+| 引用释放 | Set与SHM Get分别记录owner释放、入队、队列等待、任务执行和RPC；worker记录client查询、shm查询、引用更新、owner删除和清理。额外记录查找未命中次数 |
+| Mooncake | PutStart/PutEnd/GetReplicaList内部阶段、对象/快照/分片锁、tenant/metadata/processing/replication查表、内存副本分配和metadata插入、lease；client内存池；RPC池获取及协程派发/响应等待；TE的segment名称/ID缓存和FIFO/SIEVE endpoint锁与查表 |
+| RPC已有时间戳 | `ds.rpc_stage.<create/publish/query/release/create_meta>.*`：client准备、client结果处理、服务端请求队列、服务端响应阶段、通信剩余耗时。保留原RPC耗时定义，不将通信剩余耗时称为纯网络耗时 |
+
+第一、二层及 `ds.rpc_stage.*` 保持全量。第三层的 `.total.calls` / `.count` 是全量事件计数，均值为0，没有耗时含义；第三层其他计时为采样。`sample_every` 在新汇总结果中标明间隔。**不能继续把采样阶段的 sum_ns 直接除以全量API次数**。先比较采样均值；同函数内阶段按该函数采样次数归一化，或使用下述同一次调用的样本汇总。共同函数标为 `shared`，不能直接按Set或Get摊销。
+
+Set SDK按最终Buffer的SHM/UB/TCP类别分组；Get Query按重试后最终请求的传输类别分组（`shm_request/ub_request/tcp_request`），实际是否命中并传输还要核对Worker的EncodeShm/EncodeUb及SDK结果阶段。不能把“请求UB”自动认定成“实际完成UB传输”。
+
+普通锁阶段以取得锁为边界。`lease.lock_acquire_with_guard_allocation` 同时包含锁guard的分配，不能叫纯锁等待；TBB查找/插入包括容器查询与内部同步，也不能把整个耗时叫锁等待。lease held记录跨RPC保护时间。Mooncake分片锁的held记录实际持有范围，期间的子阶段包含在其中，不能再次相加。
+
+可选的 `[KVTEST_DETAIL_SAMPLE]` 是**同一个函数调用**内连续checkpoint，不是跨SDK/Worker关联的请求trace；不会使用thread_local保存当前请求。每个frame最多32段，最多缓存256个样本，每10秒随快照导出。缓存满或try-lock失败只丢样本并记录 `dropped_lifetime`，不丢累计阶段统计；frame溢出也显式标记。样本选择可能不代表尾延迟，不据此推断API P99。
+
+`[KVTEST_PROFILE_RESOURCE]` 周期记录进程累计user/system CPU、上下文切换和缺页。汇总按进程去重，`average_cpu_cores` 表示观察区间内平均使用多少个CPU核，不是CPU配额利用率；没有cgroup限流和整机调度数据时，不能据此认定CPU资源不足。
+
+测试结束应正常退出SDK并保留服务端最后一个周期快照；同时打包所有前缀日志、原access/性能结果、运行参数、源码版本以及PollJFC开关值。服务端不正常退出时缺少final尾部，汇总会提示。
+
+```bash
+python3 tests/kvtest/summarize_stage_profile.py <collected-log-directory> \
+  --start-seq 1 --require-details \
+  --json stages.json --csv stages.csv \
+  --details-json checkpoints.json --samples-jsonl samples.jsonl
+```
+
+`stages.json` 包含计时、全量事件次数及进程资源；`checkpoints.json` 在每个函数内按耗时从高到低排列，给出每次采样调用的平均耗时、出现次数和占该函数比例。分支没执行的阶段按该函数全部采样次数摊销；重复经过同一阶段的次数单列。丢样本会提示，不能把样本文件的计数当作全部请求数。`start-seq` 对样本按导出批次筛选，不承诺与累计计数的起止时刻完全重合。
+
+打点会增加时钟、原子统计、栈空间和周期输出开销。若需要将结果作为最终性能结论，应在同一批测试任务中保留关闭打点的基线；单独一份开启打点的数据用于定位，不足以证明无打点时的精确可优化收益。

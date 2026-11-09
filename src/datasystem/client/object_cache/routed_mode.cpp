@@ -426,6 +426,9 @@ Status RoutedMode::ProcessTransportPut(
     const SetRouteContext &routeContext, SetFailureStage &failureStage,
     client::TransportSetResult &transportResult, int32_t requestTimeoutMs, bool isSeal)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_CONTEXT);
     kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_SET_CREATE);
     RETURN_RUNTIME_ERROR_IF_NULL(transportLayer_);
     const int32_t subTimeoutMs = requestTimeoutMs > 0 ? requestTimeoutMs : requestTimeoutMs_;
@@ -440,10 +443,19 @@ Status RoutedMode::ProcessTransportPut(
     createParam.subTimeoutMs = subTimeoutMs;
     failureStage = SetFailureStage::CREATE;
     std::shared_ptr<ObjectBuffer> buffer;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_CREATE);
     RETURN_IF_NOT_OK(transportLayer_->Create(routeContext.worker, objectKey, size, std::move(createParam), buffer));
 
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_COPY);
     benchmarkPhase.Finish(true);
     failureStage = SetFailureStage::TRANSFER;
+    if (kvtest_profile::DetailSampleEvery() != 0) {
+        const auto &detailInfo = ObjectBufferInternal::GetInfo(*buffer);
+        detailFrame.SetGroup(detailInfo.ubUrmaDataInfo != nullptr
+            ? kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_UB_BUFFER_TOTAL
+            : (detailInfo.mmapEntry != nullptr ? kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_SHM_BUFFER_TOTAL
+                                               : kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_TCP_BUFFER_TOTAL));
+    }
     const bool traceEnabled = IsClientLatencyTraceActive();
     AddLatencyTickIfEnabled(traceEnabled, LatencyTickKey::CLIENT_MEMORY_COPY_START);
     auto *dst = static_cast<uint8_t *>(buffer->MutableData());
@@ -459,6 +471,7 @@ Status RoutedMode::ProcessTransportPut(
                      "Release routed Set allocation after MemoryCopy failure failed");
         return copyRc;
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_PUBLISH_PREPARE);
     setParam.requestContext = requestContext;
     setParam.nestedKeys = nestedObjectKeys;
     setParam.ttlSecond = ttlSecond;
@@ -467,11 +480,20 @@ Status RoutedMode::ProcessTransportPut(
     setParam.subTimeoutMs = subTimeoutMs;
     failureStage = SetFailureStage::PUBLISH;
     benchmarkPhase.Next(kvtest_profile::Stage::DS_SET_PUBLISH);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_PUBLISH);
     Status setRc = transportLayer_->Set(*buffer, setParam, transportResult);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_FEEDBACK_AND_CLEANUP);
     benchmarkPhase.Next(kvtest_profile::Stage::DS_SET_CLEANUP);
     if (setRc.GetCode() == K_URMA_NEED_CONNECT) {
         // TransportLayer returns this only after same-worker UB reconnect failed, before Publish was sent.
         failureStage = SetFailureStage::TRANSFER;
+    if (kvtest_profile::DetailSampleEvery() != 0) {
+        const auto &detailInfo = ObjectBufferInternal::GetInfo(*buffer);
+        detailFrame.SetGroup(detailInfo.ubUrmaDataInfo != nullptr
+            ? kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_UB_BUFFER_TOTAL
+            : (detailInfo.mmapEntry != nullptr ? kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_SHM_BUFFER_TOTAL
+                                               : kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_TCP_BUFFER_TOTAL));
+    }
     }
     if (setRc.IsOk()) {
         ObserveReadLoadFeedback(routeContext, transportResult.rsp);

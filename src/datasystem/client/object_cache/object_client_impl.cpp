@@ -2522,7 +2522,11 @@ Status ObjectClientImpl::SelectSetRoute(const std::string &objectKey,
 Status ObjectClientImpl::SelectSetRouteWithoutHints(
     const std::string &objectKey, const std::vector<HostPort> &excludedWorkers, SetRouteContext &routeContext)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_ROUTE_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_ROUTE_EXCLUSIONS);
     const auto effectiveExclusions = MergeWriteTargetExclusions(excludedWorkers);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_ROUTE_SELECT);
     auto routing = std::atomic_load(&routing_);
     SetRouteContext selected;
     if (enableLocalCache_) {
@@ -2546,8 +2550,10 @@ Status ObjectClientImpl::SelectSetRouteWithoutHints(
     }
     RETURN_RUNTIME_ERROR_IF_NULL(routing);
     HostPort worker;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_ROUTE_CHOOSE_WORKER);
     RETURN_IF_NOT_OK(routing->SelectWorker(objectKey, dataPlacementPolicy_, client::WorkerAccessAction::SET,
                                            worker, effectiveExclusions));
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_ROUTE_CONTEXT);
     return BuildSetRouteContext(worker, routeContext);
 }
 
@@ -2571,20 +2577,27 @@ std::vector<HostPort> ObjectClientImpl::MergeWriteTargetExclusions(
 
 Status ObjectClientImpl::BuildSetRouteContext(const HostPort &worker, SetRouteContext &routeContext)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_ROUTE_CONTEXT_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_ROUTE_CONTEXT_BUILD);
     SetRouteContext selected;
     selected.worker = worker;
     std::shared_ptr<client::ListenWorker> listenWorker;
     {
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_ROUTE_CONTEXT_LOCK_ACQUIRE);
         std::lock_guard<std::mutex> lock(switchNodeMutex_);
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_ROUTE_CONTEXT_IDENTITY);
         const auto node = currentNode_.load();
         CHECK_FAIL_RETURN_STATUS(node < workerApi_.size() && workerApi_[node] != nullptr, K_NOT_READY,
                                  "No client identity is available for routed Set");
         listenWorker = node < listenWorker_.size() ? listenWorker_[node] : nullptr;
         selected.clientApi = workerApi_[node];
         selected.clientApi->IncreaseInvokeCount();
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_ROUTE_CONTEXT_GUARD_ALLOCATE);
         selected.invokeGuard =
             std::make_unique<Raii>([api = selected.clientApi]() { api->DecreaseInvokeCount(); });
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_ROUTE_CONTEXT_CONNECTION_CHECK);
     if (enableLocalCache_) {
         RETURN_IF_NOT_OK(CheckConnection(listenWorker, selected.clientApi));
     }

@@ -231,6 +231,9 @@ void WorkerOcServicePublishImpl::ConstructUpdateMetaRequest(const ObjectKV &obje
 Status WorkerOcServicePublishImpl::CreateMetadataToMaster(const ObjectKV &objectKV, const PublishParams &params,
                                                           uint64_t &version)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_WORKER_CREATE_META_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_WORKER_CREATE_META_PREPARE);
     auto config = GetServerLatencyTraceConfig();
     const bool traceEnabled = ShouldCollectLatencyTrace(config);
     INJECT_POINT("worker.before_CreateMetadataToMaster");
@@ -240,6 +243,7 @@ Status WorkerOcServicePublishImpl::CreateMetadataToMaster(const ObjectKV &object
     const auto &objectKey = objectKV.GetObjKey();
 
     master::CreateMetaReqPb metaReq;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_WORKER_CREATE_META_REQUEST);
     ConstructCreateMetaRequest(objectKV, params, metaReq);
     master::CreateMetaRspPb metaResp;
     PerfPoint point(PerfKey::WORKER_CREATE_META);
@@ -248,6 +252,7 @@ Status WorkerOcServicePublishImpl::CreateMetadataToMaster(const ObjectKV &object
     Timer rpcTimer;
     const bool retryRequestFailure = params.lifeState != ObjectLifeState::OBJECT_SEALED;
     bool rpcDispatched = false;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_WORKER_CREATE_META_ROUTE_AND_CALL);
     Status rc = RetryMetadataRequestWithRouteRefresh(
         workerMasterApi, retryRequestFailure,
         [this, &objectKey](std::shared_ptr<WorkerMasterOCApi> &api) {
@@ -265,6 +270,7 @@ Status WorkerOcServicePublishImpl::CreateMetadataToMaster(const ObjectKV &object
             return RedirectRetryWhenMetaMoving(metaReq, metaResp, api, func);
         },
         [this](int64_t sleepTimeMs) { SleepForMetaMovingRetry(sleepTimeMs); });
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_WORKER_CREATE_META_RESULT);
     const auto rpcUs = static_cast<uint64_t>(rpcTimer.ElapsedMicroSecond());
     Trace::Instance().AddCommPhaseIfEnabled(LatencySummaryPhase::WORKER_RPC_CREATE_META, traceEnabled);
     FinalizeMasterRpcLatency(LatencyTickKey::WORKER_CREATE_META_RPC_END, config, traceEnabled,
@@ -438,6 +444,9 @@ Status WorkerOcServicePublishImpl::CheckMasterRpcBudget(const std::string &objec
 
 Status WorkerOcServicePublishImpl::RequestingToMaster(ObjectKV &objectKV, const PublishParams &params)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_WORKER_MASTER_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_WORKER_MASTER_PREPARE);
     const auto &objectKey = objectKV.GetObjKey();
     SafeObjType &safeObj = objectKV.GetObjEntry();
 

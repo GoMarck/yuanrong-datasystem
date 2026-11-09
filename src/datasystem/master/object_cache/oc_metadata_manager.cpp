@@ -15,6 +15,7 @@
  * Description: Module responsible for managing the object cache metadata on the master.
  */
 #include "datasystem/master/object_cache/oc_metadata_manager.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 
 #include <algorithm>
 #include <chrono>
@@ -556,10 +557,14 @@ Status OCMetadataManager::CreateMetaFirstTime(const ObjectMetaPb &newMeta, const
                                               const std::set<ImmutableString> &nestedObjectKeys,
                                               TbbMetaTable::accessor &accessor, ObjectMeta &outMetaCache)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_FIRST_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_FIRST_EXPIRY);
     (void)nestedObjectKeys;
     // Strip any stale expiry task before the first create commits; on a race with an in-flight
     // async ttl delete the freshly inserted entry is erased and the create is rejected.
     RETURN_IF_NOT_OK(StripExpiryTaskAfterChecks(newMeta.object_key(), accessor, true));
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_FIRST_PERSIST);
     RETURN_IF_NOT_OK(PersistCreatedMeta(newMeta, address, version, accessor, outMetaCache));
     return Status::OK();
 }
@@ -567,14 +572,21 @@ Status OCMetadataManager::CreateMetaFirstTime(const ObjectMetaPb &newMeta, const
 Status OCMetadataManager::PersistCreatedMeta(const ObjectMetaPb &newMeta, const std::string &address, int64_t version,
                                              TbbMetaTable::accessor &accessor, ObjectMeta &metaCache)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_PERSIST_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_PERSIST_PREPARE);
     const std::string &objectKey = newMeta.object_key();
     ObjectMetaStore::WriteType type = WriteMode2MetaType(newMeta.config().write_mode());
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_PERSIST_FILL_METADATA);
     SetMetaInfo(newMeta, address, version, metaCache);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_PERSIST_COPY_METADATA);
     accessor->second = metaCache;
     // multi create meta save meta to rocksdb and etcd when commit meta.
     std::string serializedStr;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_PERSIST_SERIALIZE);
     auto status = objectStore_->CreateSerializedStringForMeta(objectKey, accessor->second.meta, serializedStr);
     // Create meta info in rocksDB.
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_PERSIST_STORE);
     if (status.IsOk()) {
         status = objectStore_->CreateOrUpdateMeta(objectKey, serializedStr, type);
         if (status.IsError()) {
@@ -587,6 +599,7 @@ Status OCMetadataManager::PersistCreatedMeta(const ObjectMetaPb &newMeta, const 
         (void)metaShards_[shardIdx].table.erase(accessor);
         return status;
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_PERSIST_ACCESSOR_RELEASE);
     accessor.release();
     return Status::OK();
 }
@@ -749,16 +762,23 @@ Status OCMetadataManager::CreateMetaForBinaryFormat(const ObjectMetaPb &newMeta,
                                                     const std::set<ImmutableString> &nestedObjectKeys, int64_t &version,
                                                     bool &firstOne)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_BINARY_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_BINARY_PREPARE);
     const std::string &objectKey = newMeta.object_key();
     size_t shardIdx = GetShardIndex(objectKey);
     ObjectMeta metaCache;
     {
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_BINARY_SHARD_LOCK_ACQUIRE);
         bthread::RWLockRdGuard lck(metaShards_[shardIdx].mutex);
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_BINARY_TABLE_INSERT);
         TbbMetaTable::accessor accessor;
         firstOne = metaShards_[shardIdx].table.insert(accessor, objectKey);
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_BINARY_EXISTENCE_CHECK);
         RETURN_IF_NOT_OK(CheckExistenceOpt(accessor->second, objectKey, newMeta.existence(), firstOne));
         version = static_cast<int64_t>(GetSystemClockTimeStampUs());
 
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_BINARY_EXISTING_OBJECT);
         if (!firstOne) {
             auto &prevMeta = accessor->second;
             CHECK_FAIL_RETURN_STATUS(
@@ -793,13 +813,17 @@ Status OCMetadataManager::CreateMetaForBinaryFormat(const ObjectMetaPb &newMeta,
             RETURN_IF_NOT_OK(expiredObjectManager_->InsertObject(objectKey, version, newMeta.ttl_second()));
             return s;
         }
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_BINARY_NEW_OBJECT);
         RETURN_IF_NOT_OK(CreateMetaFirstTime(newMeta, address, version, nestedObjectKeys, accessor, metaCache));
     }
     // Case 2 follow-up: subscribe notify + nested refs + expiry are outside shard lock.
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_BINARY_SUBSCRIPTION);
     UpdateSubscribeCache(objectKey, metaCache);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_BINARY_NESTED_REFERENCES);
     if ((ObjectLifeState(newMeta.life_state()) != ObjectLifeState::OBJECT_INVALID) && !nestedObjectKeys.empty()) {
         RETURN_IF_NOT_OK(HandleNestedRefsOnCreate(objectKey, address, nestedObjectKeys));
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_BINARY_EXPIRY);
     RETURN_IF_NOT_OK(expiredObjectManager_->InsertObject(objectKey, version, newMeta.ttl_second()));
     VLOG(1) << FormatString("[ObjectKey %s] CreateMeta finished: objectKey: %s, worker address: %s", objectKey,
                             objectKey, address);
@@ -1065,21 +1089,27 @@ void OCMetadataManager::RollBackMultiMetaWhenCreateFailed(const std::vector<std:
 
 Status OCMetadataManager::CreateMeta(const CreateMetaReqPb &request, CreateMetaRspPb &response)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_REQUEST_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_REQUEST_PREPARE);
     const std::set<ImmutableString> nestedObjectKeys = { request.nested_keys().begin(), request.nested_keys().end() };
     const std::string &objectKey = request.meta().object_key();
     const std::string address = request.address();
     bool redirect = request.redirect();
     CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(!objectKey.empty() && !request.address().empty(), K_INVALID,
                                          "CreateMeta: Cannot CreateMeta with empty objectKey or server address.");
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_REQUEST_ROUTE);
     RETURN_IF_NOT_OK(FillObjectRedirectResponse(response, objectKey, redirect));
     RETURN_OK_IF_TRUE(redirect);
     int64_t version = 0;
     bool firstOne = false;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_REQUEST_CREATE);
     auto status = CreateMeta(request.meta(), request.address(), nestedObjectKeys, version, firstOne);
     if (status.GetCode() == K_OC_KEY_ALREADY_EXIST && request.meta().existence() == ExistenceOptPb::NX) {
         return status;
     }
     RETURN_IF_NOT_OK(status);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_REQUEST_RESULT);
     response.set_version(version);
     return Status::OK();
 }
@@ -1088,6 +1118,9 @@ Status OCMetadataManager::CreateMeta(const ObjectMetaPb &newMeta, const std::str
                                      const std::set<ImmutableString> &nestedObjectKeys, int64_t &version,
                                      bool &firstOne)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_CREATE_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_CREATE_HEAVY_OPERATION);
     const std::string &objectKey = newMeta.object_key();
 
     INJECT_POINT("master.create_meta_failure");
@@ -1098,6 +1131,7 @@ Status OCMetadataManager::CreateMeta(const ObjectMetaPb &newMeta, const std::str
     }
     Raii raii([this, &objectKey]() { RemoveHeavyOp({ objectKey }); });
 
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_CREATE_DISPATCH_AND_CLEANUP);
     // Condition 1: Create meta for hash format.
     if (newMeta.config().data_format() == (uint64_t)DataFormat::HASH_MAP) {
         RETURN_IF_NOT_OK(expiredObjectManager_->RemoveObjectIfExist(objectKey));
@@ -4845,7 +4879,11 @@ void OCMetadataManager::TryGetObjectData(const std::string &objectKey, const Tbb
 
 bool OCMetadataManager::AddHeavyOp(const std::string &objectKey)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SHARED_MASTER_HEAVY_OP_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SHARED_MASTER_HEAVY_OP_LOCK_ACQUIRE);
     std::lock_guard<std::mutex> l(heavyOpMutex_);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_MASTER_HEAVY_OP_INSERT);
     auto result = heavyOps_.emplace(objectKey);
     return result.second;
 }

@@ -15,6 +15,7 @@
  * Description: Defines the worker client class to communicate with the meta master service.
  */
 #include "datasystem/common/perf/perf_manager.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include "datasystem/worker/object_cache/worker_master_oc_api.h"
 
 #include <algorithm>
@@ -221,6 +222,9 @@ Status WorkerRemoteMasterOCApi::RetryWithStubRebuild(int64_t timeoutMs,
 
 Status WorkerRemoteMasterOCApi::CreateMeta(master::CreateMetaReqPb &request, master::CreateMetaRspPb &response)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_API_REMOTE_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_API_REMOTE_PREPARE);
     METRIC_TIMER(metrics::KvMetricId::WORKER_RPC_CREATE_META_LATENCY);
     RpcOptions opts;
     // seal operation can't been retry.
@@ -1199,6 +1203,9 @@ Status WorkerLocalMasterOCApi::Init()
 
 Status WorkerLocalMasterOCApi::CreateMeta(master::CreateMetaReqPb &request, master::CreateMetaRspPb &response)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_API_LOCAL_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_API_LOCAL_PREPARE);
     METRIC_TIMER(metrics::KvMetricId::WORKER_RPC_CREATE_META_LATENCY);
     // Although this is not an RPC call, the timeout field in the CreateMetaReqPb itself has associated actions on the
     // server side.
@@ -1206,7 +1213,9 @@ Status WorkerLocalMasterOCApi::CreateMeta(master::CreateMetaReqPb &request, mast
     CHECK_FAIL_RETURN_STATUS(remainingTime_ > 0, K_RPC_DEADLINE_EXCEEDED,
                              FormatString("Request timeout (%ld ms).", -remainingTime_));
     request.set_timeout(remainingTime_);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_API_LOCAL_SIGN);
     RETURN_IF_NOT_OK(akSkManager_->GenerateSignature(request));
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_API_LOCAL_CALL_WITH_RETRY);
     int64_t timeoutMs = GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTime();
     return RetryOnErrorRepent(
         timeoutMs, [this, &request, &response](int32_t) { return masterOC_->CreateMeta(request, response); },

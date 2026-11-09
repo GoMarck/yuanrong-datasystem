@@ -217,24 +217,33 @@ Status KVClient::MSet(const std::vector<std::shared_ptr<Buffer>> &buffers)
 Status KVClient::Get(const std::string &key, Optional<Buffer> &buffer, int32_t subTimeoutMs)
 {
     kvtest_profile::Span benchmarkSpan(kvtest_profile::Stage::DS_GET, 0);
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_GET_API_GET_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_GET_API_GET_CONTEXT);
     kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_GET_CONTEXT);
     ScopedClientRequestContext requestContext;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_API_GET_TRACE_CONTEXT);
     TraceGuard traceGuard = Trace::Instance().SetRequestTraceUUID();
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_API_GET_PERF_AND_ACCESS_PREPARE);
     PerfPoint point(PerfKey::KV_CLIENT_GET_BUFFER);
     std::vector<Optional<Buffer>> buffers;
     auto access = AccessRecorder::Object(AccessRecorderKey::DS_KV_CLIENT_GET);
     benchmarkPhase.Next(kvtest_profile::Stage::DS_GET_IMPL);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_API_GET_IMPLEMENTATION);
     Status rc = impl_->Get({ key }, subTimeoutMs, buffers);
     benchmarkPhase.Next(kvtest_profile::Stage::DS_GET_ACCESS);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_API_GET_METRICS);
     METRIC_INC(metrics::KvMetricId::CLIENT_GET_REQUEST_TOTAL);
     METRIC_ERROR_IF(rc.IsError(), metrics::KvMetricId::CLIENT_GET_ERROR_TOTAL);
     size_t dataSize = rc.IsOk() ? buffers[0]->GetSize() : 0;
     Status accessRc = (rc.GetCode() == K_NOT_FOUND) ? Status::OK() : rc;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_API_GET_ACCESS_RECORD);
     access.ObjectKeyRef(key).TimeoutMs(subTimeoutMs).TrackedTransportType()
         .DataSize(dataSize).Result(accessRc).Record();
     benchmarkPhase.Next(kvtest_profile::Stage::DS_GET_RETURN);
     RETURN_IF_NOT_OK(rc);
     buffer = std::move(buffers[0]);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_API_GET_CLEANUP);
     return rc;
 }
 
@@ -258,19 +267,28 @@ Status KVClient::Get(const std::vector<std::string> &keys,
 Status KVClient::Set(const std::string &key, const StringView &val, const SetParam &setParam)
 {
     kvtest_profile::Span benchmarkSpan(kvtest_profile::Stage::DS_SET, val.size());
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_API_SET_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_API_SET_CONTEXT);
     kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_SET_CONTEXT);
     ScopedClientRequestContext requestContext;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_API_SET_TRACE_CONTEXT);
     TraceGuard traceGuard = Trace::Instance().SetRequestTraceUUID();
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_API_SET_PERF_AND_ACCESS_PREPARE);
     PerfPoint point(PerfKey::KV_CLIENT_SET_OBJECT);
     auto access = AccessRecorder::Object(AccessRecorderKey::DS_KV_CLIENT_SET);
     benchmarkPhase.Next(kvtest_profile::Stage::DS_SET_IMPL);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_API_SET_IMPLEMENTATION);
     Status rc = impl_->Set(key, val, setParam);
     benchmarkPhase.Next(kvtest_profile::Stage::DS_SET_ACCESS);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_API_SET_METRICS);
     METRIC_INC(metrics::KvMetricId::CLIENT_PUT_REQUEST_TOTAL);
     METRIC_ERROR_IF(rc.IsError(), metrics::KvMetricId::CLIENT_PUT_ERROR_TOTAL);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_API_SET_ACCESS_RECORD);
     access.ObjectKeyRef(key).WriteMode(static_cast<int>(setParam.writeMode)).TtlSecond(setParam.ttlSecond)
         .Existence(static_cast<int>(setParam.existence)).CacheType(static_cast<int>(setParam.cacheType))
         .TrackedTransportType().DataSize(val.size()).Result(rc).Record();
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_API_SET_CLEANUP);
     return rc;
 }
 
@@ -370,13 +388,19 @@ Status KVClient::Get(const std::vector<std::string> &keys, std::vector<std::stri
 Status KVClient::Get(const std::string &key, Optional<ReadOnlyBuffer> &readOnlyBuffer, int32_t subTimeoutMs)
 {
     kvtest_profile::Span benchmarkSpan(kvtest_profile::Stage::DS_GET, 0);
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_GET_API_GET_READONLY_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_GET_API_GET_READONLY_CONTEXT);
     kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_GET_CONTEXT);
     ScopedClientRequestContext requestContext;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_API_GET_READONLY_TRACE_CONTEXT);
     TraceGuard traceGuard = Trace::Instance().SetRequestTraceUUID();
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_API_GET_READONLY_PERF_AND_ACCESS_PREPARE);
     PerfPoint point(PerfKey::KV_CLIENT_GET_BUFFER);
     std::vector<Optional<Buffer>> buffers;
     auto access = AccessRecorder::Object(AccessRecorderKey::DS_KV_CLIENT_GET);
     benchmarkPhase.Next(kvtest_profile::Stage::DS_GET_IMPL);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_API_GET_READONLY_IMPLEMENTATION);
     Status rc = impl_->Get({ key }, subTimeoutMs, buffers);
     benchmarkPhase.Next(kvtest_profile::Stage::DS_GET_RETURN);
     size_t dataSize = rc.IsOk() ? buffers[0]->GetSize() : 0;
@@ -385,11 +409,14 @@ Status KVClient::Get(const std::string &key, Optional<ReadOnlyBuffer> &readOnlyB
         readOnlyBuffer = Optional<ReadOnlyBuffer>(ReadOnlyBuffer(bufferSharedPtr));
     }
     benchmarkPhase.Next(kvtest_profile::Stage::DS_GET_ACCESS);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_API_GET_READONLY_METRICS);
     METRIC_INC(metrics::KvMetricId::CLIENT_GET_REQUEST_TOTAL);
     METRIC_ERROR_IF(rc.IsError(), metrics::KvMetricId::CLIENT_GET_ERROR_TOTAL);
     Status accessRc = (rc.GetCode() == K_NOT_FOUND) ? Status::OK() : rc;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_API_GET_READONLY_ACCESS_RECORD);
     access.ObjectKeyRef(key).TimeoutMs(subTimeoutMs).TrackedTransportType()
         .DataSize(dataSize).Result(accessRc).Record();
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_API_GET_READONLY_CLEANUP);
     return rc;
 }
 

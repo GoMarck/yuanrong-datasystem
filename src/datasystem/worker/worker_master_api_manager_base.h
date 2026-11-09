@@ -18,6 +18,7 @@
 #define DATASYSTEM_WORKER_WORKER_MASTER_API_MANAGER_BASE_H
 
 #include <memory>
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include <string_view>
 #include <utility>
 
@@ -70,8 +71,12 @@ public:
     // CreateMeta entry only; existing keys keep GetWorkerMasterApi.
     Status GetWorkerMasterApiForCreate(std::string_view key, std::shared_ptr<ApiType> &api)
     {
+        kvtest_profile::DetailFrame detailFrame(
+            kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_API_OWNER_TOTAL,
+            kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_API_OWNER_RESOLVE);
         HostPort owner;
         RETURN_IF_NOT_OK(routeResolver_.ResolveNewMetaOwner(key, owner));
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_API_OWNER_API);
         return GetWorkerMasterApi(owner, api);
     }
 
@@ -90,13 +95,19 @@ public:
      */
     virtual Status GetWorkerMasterApi(const HostPort &masterAddress, std::shared_ptr<ApiType> &api)
     {
+        kvtest_profile::DetailFrame detailFrame(
+            kvtest_profile::Stage::D_DS_DETAIL_SHARED_MASTER_API_BUILD_TOTAL,
+            kvtest_profile::Stage::D_DS_DETAIL_SHARED_MASTER_API_BUILD_VALIDATE);
         CHECK_FAIL_RETURN_STATUS(!masterAddress.Empty(), K_RUNTIME_ERROR,
                                  "masterAddr is empty, get WorkerMasterApi failed");
         // Create Master API object for first time if not exists
         Timer timer;
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_MASTER_API_BUILD_ALLOCATE);
         auto workerMasterApi = CreateWorkerMasterApi(masterAddress);
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_MASTER_API_BUILD_INITIALIZE);
         RETURN_IF_NOT_OK_PRINT_ERROR_MSG(workerMasterApi->Init(),
                                          "Master addr " + masterAddress.ToString() + " workerMasterApi init failed");
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_MASTER_API_BUILD_RESULT);
         api = std::move(workerMasterApi);
         GetWorkerTimeCost().Append("Worker master api init", timer.ElapsedMilliSecond());
         return Status::OK();

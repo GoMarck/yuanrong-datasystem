@@ -16,6 +16,7 @@
 
 /** Description: Owns the ShmSession-backed receive buffer released to the data worker. */
 #include "datasystem/client/object_cache/transport/data_plane/shm_receive_buffer_owner.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 
 #include "datasystem/client/object_cache/transport/data_plane/shm_connection.h"
 #include "datasystem/common/rpc/api_deadline.h"
@@ -52,6 +53,9 @@ void ShmReceiveBufferOwner::BindMmapEntry(std::shared_ptr<IMmapTableEntry> mmapE
 
 void ShmReceiveBufferOwner::Release()
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_RELEASE_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_RELEASE_VALIDATE);
     if (released_.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
@@ -61,17 +65,25 @@ void ShmReceiveBufferOwner::Release()
         // Avoid one queued task and warning per stale Buffer.
         return;
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_RELEASE_POOL);
     auto releasePool = releasePool_.lock();
     if (releasePool == nullptr) {
         session->Close(false);
         return;
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_RELEASE_ENQUEUE_AND_CLEANUP);
     try {
-        releasePool->Execute([session = std::move(session), context = context_, shmId = shmId_]() {
+        const auto detailQueuedAt = kvtest_profile::DetailFrame::CaptureTime(kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_RELEASE_QUEUE_WAIT);
+        releasePool->Execute([session = std::move(session), context = context_, shmId = shmId_, detailQueuedAt]() {
+            kvtest_profile::DetailFrame::RecordElapsed(kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_RELEASE_QUEUE_WAIT, detailQueuedAt);
+            kvtest_profile::DetailFrame detailFrame(
+                kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_RELEASE_TASK_TOTAL,
+                kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_RELEASE_TASK_PREPARE);
             if (!session->IsAlive()) {
                 return;
             }
             ApiDeadlineGuard deadlineGuard(SHM_REFERENCE_RELEASE_TIMEOUT_MS);
+            detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_RELEASE_TASK_RPC);
             Status rc = session->DecreaseReference(context->requestContext, shmId);
             if (rc.IsError()) {
                 LOG(WARNING) << "WorkerOCService DecreaseReference failed for routed SHM buffer: " << rc.ToString();

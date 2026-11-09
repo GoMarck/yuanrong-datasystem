@@ -532,6 +532,9 @@ void ShmSession::ReleaseUnreadReferences(const QueryAndGetRspPb &response, int b
 Status ShmSession::OwnReadReference(const std::string &shmId, std::shared_ptr<const TransportReadContext> context,
                                     std::shared_ptr<IReceiveBufferOwner> &owner)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_OWNER_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_OWNER_CONSTRUCT);
     if (shmId.empty() || context == nullptr) {
         Close(false);
         RETURN_STATUS(K_RUNTIME_ERROR, "SHM read reference identity or context is missing");
@@ -550,6 +553,9 @@ Status ShmSession::OwnReadReference(const std::string &shmId, std::shared_ptr<co
 Status ShmSession::BuildResult(const GetRspPb::ObjectInfoPb &info, const DataGetRequest &input, DataGetResult &result,
                                std::shared_ptr<IReceiveBufferOwner> owner)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_MAP_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_MAP_VALIDATE);
     kvtest_profile::Span benchmarkSpan(kvtest_profile::Stage::DS_SHM_READ_MAP, 0);
     RETURN_RUNTIME_ERROR_IF_NULL(owner);
     CHECK_FAIL_RETURN_STATUS(IsAlive(), K_RPC_UNAVAILABLE, "Shared-memory session is closed");
@@ -620,6 +626,9 @@ Status ShmSession::BuildQueryAndGetResult(const QueryAndGetShmInfoPb &info, cons
 Status ShmSession::MmapWriteRegion(const CreateRspPb &createRsp, const TransportRequestContext &context,
                                    uint64_t size, ObjectBufferInfo &info)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_SHM_MAP_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_SHM_MAP_VALIDATE);
     kvtest_profile::Span benchmarkSpan(kvtest_profile::Stage::DS_SHM_WRITE_MAP, size);
     CHECK_FAIL_RETURN_STATUS(IsAlive(), K_RPC_UNAVAILABLE, "Shared-memory session is closed");
     CHECK_FAIL_RETURN_STATUS(createRsp.store_fd() > 0, K_RUNTIME_ERROR,
@@ -644,19 +653,24 @@ Status ShmSession::MmapWriteRegion(const CreateRspPb &createRsp, const Transport
     CHECK_FAIL_RETURN_STATUS(!createRsp.shm_id().empty(), K_RUNTIME_ERROR,
                              "WorkerOCService Create returned an empty shm ID");
 
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_SHM_MAP_UNIT_ALLOCATE_FILL);
     auto unit = std::make_shared<ShmUnitInfo>();
     unit->fd = static_cast<int>(createRsp.store_fd());
     unit->mmapSize = mmapSize;
     unit->offset = static_cast<ptrdiff_t>(createRsp.offset());
     unit->size = size;
     unit->id = ShmKey::Intern(createRsp.shm_id());
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_SHM_MAP_LOOKUP_MMAP);
     RETURN_IF_NOT_OK(mmapManager_->LookupUnitsAndMmapFd(context.tenantId, unit));
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_SHM_MAP_FD_LOOKUP);
     auto mmapEntry = mmapManager_->GetMmapEntryByFd(unit->fd);
     CHECK_FAIL_RETURN_STATUS(mmapEntry != nullptr && unit->pointer != nullptr, K_RUNTIME_ERROR,
                              "Shared-memory mmap entry is unavailable");
     CHECK_FAIL_RETURN_STATUS(mmapEntry->GetMmapSize() == mmapSize, K_RUNTIME_ERROR,
                              "WorkerOCService Create mmap size does not match the cached fd");
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_SHM_MAP_REFERENCE);
     RETURN_IF_NOT_OK(RegisterReference(unit->id));
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_SHM_MAP_INFO_FILL);
     info.pointer = static_cast<uint8_t *>(unit->pointer) + offset;
     info.metadataSize = metadataSize;
     info.dataSize = size;
@@ -669,6 +683,7 @@ Status ShmSession::MmapWriteRegion(const CreateRspPb &createRsp, const Transport
         // completes (defense against unmap-before-worker-ack). CheckAlive gates Publish on both RPC
         // client liveness and SHM session/fd data-plane liveness (preserves the original
         // session->IsAlive() gate that covers alive_ + fdChannel_).
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_SHM_MAP_OWNER_ALLOCATE);
         auto sessionPtr = shared_from_this();
         info.receiveBufferOwner = std::make_shared<ShmSendBufferOwner>(
             rpcClient_, unit->id, context, releasePool_, mmapEntry,

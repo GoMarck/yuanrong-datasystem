@@ -309,6 +309,9 @@ Status WorkerRpcClient::InvokeBatchGetObject(BatchGetObjectRemoteReqPb &request,
 Status WorkerRpcClient::InvokeQueryAndGet(QueryAndGetReqPb &request, QueryAndGetRspPb &response,
                                           std::vector<RpcMessage> &payloads, bool *rpcDispatched)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_GET_RPC_WRAPPER_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_GET_RPC_WRAPPER_VALIDATE);
     kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_QUERY_RPC_PREPARE);
     if (rpcDispatched != nullptr) {
         *rpcDispatched = false;
@@ -330,9 +333,11 @@ Status WorkerRpcClient::InvokeQueryAndGet(QueryAndGetReqPb &request, QueryAndGet
     }
 
     benchmarkPhase.Next(kvtest_profile::Stage::DS_QUERY_RPC_SIGN);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_RPC_WRAPPER_SIGN);
     RETURN_IF_NOT_OK(signature_->GenerateSignature(request));
     benchmarkPhase.Next(kvtest_profile::Stage::DS_QUERY_RPC_PREPARE);
 
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_RPC_WRAPPER_OPTIONS);
     RpcOptions options;
     options.SetTimeout(rpcTimeout);
     INJECT_POINT("client.transport.query_and_get", []() { return Status::OK(); });
@@ -341,8 +346,10 @@ Status WorkerRpcClient::InvokeQueryAndGet(QueryAndGetReqPb &request, QueryAndGet
     }
     INJECT_POINT("client.transport.query_and_get.after_dispatch");
     benchmarkPhase.Next(kvtest_profile::Stage::DS_QUERY_RPC_CALL);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_RPC_WRAPPER_CALL);
     Status rc = DoInvokeQueryAndGet(options, request, response, payloads);
     benchmarkPhase.Next(kvtest_profile::Stage::DS_QUERY_RPC_RESULT);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_RPC_WRAPPER_HEALTH_AND_RESULT);
     if (response.has_ub_health_summary()) {
         ObserveUbHealthSummary(response.ub_health_summary());
     }

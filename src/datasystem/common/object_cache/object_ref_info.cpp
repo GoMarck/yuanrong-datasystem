@@ -18,6 +18,7 @@
  * Description: Defines object reference info class ObjectMemoryRefTable class and ObjectGlobalRefTable.
  */
 #include "datasystem/common/object_cache/object_ref_info.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 
 #include <algorithm>
 #include <chrono>
@@ -140,27 +141,37 @@ void SharedMemoryRefTable::InitShmRefForClient(const ClientKey &clientId, bool s
 void SharedMemoryRefTable::AddShmUnit(const ClientKey &clientId, std::shared_ptr<ShmUnit> &shmUnit,
                                       int64_t requestTimeoutMs, bool reclaimable)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SHARED_REFERENCE_ADD_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SHARED_REFERENCE_ADD_PREPARE);
     const auto &shmId = shmUnit->GetId();
     TbbMemoryClientRefTable::const_accessor clientAccessor;
     TbbMemoryObjectRefTable::accessor objectAccessor;
 
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_REFERENCE_ADD_CLIENT_LOOKUP);
     ClientTableGetOrInsert(clientId, clientAccessor);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_REFERENCE_ADD_OBJECT_REF);
     if (clientAccessor->second->AddRef(shmId)) {
         shmUnit->IncrementRefCount();
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_REFERENCE_ADD_SHM_LOOKUP_INSERT);
     if (!shmRefTable_.find(objectAccessor, shmId)) {
         shmRefTable_.emplace(objectAccessor, shmId, std::make_pair(shmUnit, std::unordered_set<ClientKey>()));
     }
 
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_REFERENCE_ADD_OWNER_INSERT);
     objectAccessor->second.second.emplace(clientId);
 
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_REFERENCE_ADD_PAGE_METRICS);
     if (shmUnit->GetRefCount() == 1) {
         datasystem::memory::Allocator::Instance()->ChangeNoRefPageCount(-1);
         datasystem::memory::Allocator::Instance()->ChangeRefPageCount(1);
         metrics::GetGauge(static_cast<uint16_t>(metrics::KvMetricId::WORKER_SHM_REF_TABLE_BYTES))
             .Inc(static_cast<int64_t>(shmUnit->size));
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_REFERENCE_ADD_EXPIRY);
     RecordMaybeExpiredShm(clientId, shmId, requestTimeoutMs, reclaimable);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_REFERENCE_ADD_METRICS_CLEANUP);
     METRIC_INC(metrics::KvMetricId::WORKER_SHM_REF_ADD_TOTAL);
     metrics::GetGauge(static_cast<uint16_t>(metrics::KvMetricId::WORKER_SHM_REF_TABLE_SIZE))
         .Set(static_cast<int64_t>(shmRefTable_.size()));
@@ -214,6 +225,9 @@ void SharedMemoryRefTable::AddShmUnits(TbbMemoryClientRefTable::const_accessor &
 Status SharedMemoryRefTable::RemoveShmUnit(const ClientKey &clientId, const ShmKey &shmId,
                                            std::shared_ptr<ShmUnit> *removedShmUnit)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_RELEASE_WORKER_REFERENCE_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_RELEASE_WORKER_REFERENCE_PREPARE);
     TbbMemoryClientRefTable::accessor clientAccessor;
     TbbMemoryObjectRefTable::accessor shmAccessor;
 
@@ -221,16 +235,21 @@ Status SharedMemoryRefTable::RemoveShmUnit(const ClientKey &clientId, const ShmK
     INJECT_POINT("RemoveShmUnit.BeforeLookup");
 #endif
     // first lock clientAccessor, then lock shmAccessor.
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_RELEASE_WORKER_REFERENCE_CLIENT_LOOKUP);
     auto found = clientRefTable_.find(clientAccessor, clientId);
     if (!found) {
+        kvtest_profile::DetailCount(kvtest_profile::Stage::D_DS_DETAIL_RELEASE_WORKER_REFERENCE_CLIENT_MISS_COUNT);
         LOG(WARNING) << FormatString("The clientId not exists in clientRefTable_, clientId: %s, shmId: %s", clientId,
                                      shmId);
         return Status::OK();
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_RELEASE_WORKER_REFERENCE_SHM_LOOKUP);
     if (!shmRefTable_.find(shmAccessor, shmId)) {
+        kvtest_profile::DetailCount(kvtest_profile::Stage::D_DS_DETAIL_RELEASE_WORKER_REFERENCE_SHM_MISS_COUNT);
         VLOG(1) << FormatString("The shmId not exists in shmRefTable_, clientId: %s, shmId: %s", clientId, shmId);
         return Status::OK();
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_RELEASE_WORKER_REFERENCE_UPDATE);
     auto shmUnit = shmAccessor->second.first;
     if (removedShmUnit != nullptr) {
         // Retain ownership before table removal so delayed release can outlive the last client reference.
@@ -240,7 +259,9 @@ Status SharedMemoryRefTable::RemoveShmUnit(const ClientKey &clientId, const ShmK
     INJECT_POINT("RemoveShmUnit");
 #endif
     RemoveShmUnitDetail(clientId, false, shmAccessor, clientAccessor);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_RELEASE_WORKER_REFERENCE_EXPIRY);
     ClearMaybeExpiredShmIds(clientId, { shmId });
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_RELEASE_WORKER_REFERENCE_METRICS_CLEANUP);
     METRIC_INC(metrics::KvMetricId::WORKER_SHM_REF_REMOVE_TOTAL);
     metrics::GetGauge(static_cast<uint16_t>(metrics::KvMetricId::WORKER_SHM_REF_TABLE_SIZE))
         .Set(static_cast<int64_t>(shmRefTable_.size()));
@@ -252,6 +273,9 @@ void SharedMemoryRefTable::RemoveShmUnitDetail(const ClientKey &clientId, bool f
                                                TbbMemoryObjectRefTable::accessor &shmAccessor,
                                                TbbMemoryClientRefTable::accessor &clientAccessor)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_RELEASE_WORKER_UPDATE_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_RELEASE_WORKER_UPDATE_OBJECT_REF);
     const auto &shmUnit = shmAccessor->second.first;
     const auto shmId = shmUnit->GetId();
     // Step 1: Update Client Table.
@@ -266,6 +290,7 @@ void SharedMemoryRefTable::RemoveShmUnitDetail(const ClientKey &clientId, bool f
     }
 
     // Step 2: Update Object Table.
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_RELEASE_WORKER_UPDATE_PAGE_METRICS);
     if (shmUnit->GetRefCount() == 0) {
         datasystem::memory::Allocator::Instance()->ChangeNoRefPageCount(1);
         datasystem::memory::Allocator::Instance()->ChangeRefPageCount(-1);
@@ -277,6 +302,7 @@ void SharedMemoryRefTable::RemoveShmUnitDetail(const ClientKey &clientId, bool f
     if (!forceRemoveClient && refCount > 0) {
         return;
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_RELEASE_WORKER_UPDATE_OWNER_ERASE);
     auto &clientIds = shmAccessor->second.second;
     (void)clientIds.erase(clientId);
     if (clientIds.empty()) {

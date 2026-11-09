@@ -15,6 +15,7 @@
  * Description: Defines the worker service Get process.
  */
 #include "datasystem/common/util/uuid_generator.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include "datasystem/worker/object_cache/service/worker_oc_service_get_impl.h"
 
 #include <algorithm>
@@ -941,6 +942,9 @@ Status WorkerOcServiceGetImpl::PreProcessGetObject(const ReadKey &readKey, GetOb
 Status WorkerOcServiceGetImpl::RLockGetObjectFromMem(const ReadKey &readKey, GetObjInfo &info,
                                                      std::set<ReadKey> &remoteObjectKeys, bool &objIsValidInMem)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_GET_WORKER_OBJECT_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_GET_WORKER_OBJECT_LOOKUP);
     std::shared_ptr<SafeObjType> entry;
     // Fetch the object and lock it.
     // If the object is not found, add it to the GetRemote list and return.
@@ -952,12 +956,14 @@ Status WorkerOcServiceGetImpl::RLockGetObjectFromMem(const ReadKey &readKey, Get
     }
     // If entry RLock is not found, it means the object is deleting locally.
     // Try to get object from remote.
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_WORKER_OBJECT_READ_LOCK_ACQUIRE);
     rc = entry->RLock(true);
     RETURN_IF_NOT_OK_EXCEPT(rc, K_NOT_FOUND);
     if (rc.GetCode() == K_NOT_FOUND) {
         (void)remoteObjectKeys.emplace(readKey);
         return Status::OK();
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_WORKER_OBJECT_VALIDATE);
     Raii unlock([&entry]() { entry->RUnlock(); });
     if ((*entry).Get() == nullptr) {
         (void)remoteObjectKeys.emplace(readKey);
@@ -973,6 +979,7 @@ Status WorkerOcServiceGetImpl::RLockGetObjectFromMem(const ReadKey &readKey, Get
                 objIsValidInMem = false;
                 RETURN_STATUS(K_NOT_FOUND, FormatString("[ObjectKey %s] not exist in memory.", readKey));
             }
+            detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_WORKER_OBJECT_PARAMS_ALLOCATE);
             info.params = GetObjEntryParams::Create(readKey.objectKey, *entry);
             return Status::OK();
         }

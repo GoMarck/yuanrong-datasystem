@@ -144,7 +144,12 @@ Status WorkerQueryAndGetImpl::DeliverResponse(
     const std::shared_ptr<ServerUnaryWriterReader<QueryAndGetRspPb, QueryAndGetReqPb>> &serverApi,
     RequestState &state) const
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_GET_WORKER_DELIVERY_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_GET_WORKER_DELIVERY_PREPARE);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_WORKER_DELIVERY_EXECUTE);
     kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_W_QUERY_DELIVERY);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_WORKER_DELIVERY_HEALTH_SUMMARY);
     auto provider = std::atomic_load(&ubHealthSummaryProvider_);
     if (provider != nullptr) {
         auto summary = (*provider)();
@@ -152,13 +157,17 @@ Status WorkerQueryAndGetImpl::DeliverResponse(
             state.response.mutable_ub_health_summary()->CopyFrom(*summary);
         }
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_WORKER_DELIVERY_RESPONSE_WRITE);
     Status deliveryRc = serverApi->Write(state.response);
     if (deliveryRc.IsOk()) {
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_WORKER_DELIVERY_PAYLOAD);
         deliveryRc = serverApi->SendPayload(state.payloads);
     }
     if (deliveryRc.IsOk()) {
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_WORKER_DELIVERY_COMPLETE);
         serverApi->SetRequestComplete();
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_WORKER_DELIVERY_CLEANUP);
     state.stats.deliveryUs = RecordPhase(state);
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(deliveryRc, "Deliver QueryAndGet response failed");
     return Status::OK();
@@ -423,6 +432,9 @@ Status WorkerQueryAndGetImpl::EncodeUb(const QueryAndGetUbDataReqPb &request, si
                                        const GetObjEntryParams &params, QueryAndGetResultPb &result,
                                        bool &encoded) const
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_GET_UB_WORKER_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_GET_UB_WORKER_VALIDATE);
     kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_W_QUERY_UB_LATCH);
     encoded = false;
     if (params.dataSize > request.buffer_size()) {
@@ -432,13 +444,16 @@ Status WorkerQueryAndGetImpl::EncodeUb(const QueryAndGetUbDataReqPb &request, si
         RETURN_IF_NOT_OK(ubAdmission_->CheckWriteTarget(localAddress_, UbOperationKind::CLIENT_GET_WRITEBACK));
     }
     const auto &remote = request.buffer_infos(static_cast<int>(index));
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_UB_WORKER_GUARD_CONSTRUCT);
     ShmGuard shmGuard(params.shmUnit, params.dataSize, params.metaSize);
     if (WorkerOcServiceCrudCommonApi::ShmEnable()) {
         const auto latchStartUs = GetSteadyTimeUs();
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_UB_WORKER_READ_LATCH_ACQUIRE);
         auto latchRc = shmGuard.TryRLatch();
         LogQueryAndGetObjectPhase("shmReadLatch", index, params.dataSize, GetSteadyTimeUs() - latchStartUs, latchRc);
         RETURN_IF_NOT_OK(latchRc);
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_UB_WORKER_SEGMENT_PREPARE);
     benchmarkPhase.Next(kvtest_profile::Stage::DS_W_QUERY_UB_PREPARE);
     const uint64_t base = reinterpret_cast<uint64_t>(params.shmUnit->GetPointer());
     uint64_t segmentAddress = 0;
@@ -452,13 +467,16 @@ Status WorkerQueryAndGetImpl::EncodeUb(const QueryAndGetUbDataReqPb &request, si
         ubAdmission_ == nullptr
             ? std::nullopt
             : ubAdmission_->BuildLateCompletionContext(UbOperationKind::CLIENT_GET_WRITEBACK);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_UB_WORKER_BANDWIDTH_BEGIN);
     auto &readBwTracker = scheduling::WorkerReadBandwidthTracker::Instance();
     auto readBwToken = readBwTracker.BeginRead();
     const auto writeStartUs = GetSteadyTimeUs();
     benchmarkPhase.Next(kvtest_profile::Stage::DS_W_QUERY_UB_WRITE);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_UB_WORKER_WRITE);
     Status rc = UrmaWritePayload(remote, segmentAddress, segmentSize, base, 0, params.dataSize, params.metaSize,
                                  srcChipId, dstChipId, true, eventKeys, nullptr, &failure,
                                  std::move(lateCompletionContext));
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_UB_WORKER_RESULT_AND_CLEANUP);
     benchmarkPhase.Next(kvtest_profile::Stage::DS_W_QUERY_UB_RESULT);
     LogQueryAndGetObjectPhase("urmaWritePayloadTotal", index, params.dataSize, GetSteadyTimeUs() - writeStartUs, rc);
     readBwTracker.CompleteRead(readBwToken, params.dataSize, rc.IsOk());
@@ -487,14 +505,20 @@ void WorkerQueryAndGetImpl::EncodeShm(const QueryAndGetShmDataReqPb &request, si
                                       const GetObjEntryParams &params, QueryAndGetDataResultPb &result,
                                       RequestState &state, uint64_t &shmBytes) const
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_WORKER_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_WORKER_PREPARE);
     kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_W_QUERY_ENCODE_SHM);
     const auto clientId = ClientKey::Intern(request.client_id());
     const auto addReferenceStartUs = GetSteadyTimeUs();
     auto shmUnit = params.shmUnit;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_WORKER_REFERENCE);
     memoryRefTable_->AddShmUnit(clientId, shmUnit,
                                 GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTime());
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_WORKER_LOG);
     LogQueryAndGetObjectPhase("addShmReference", index, params.dataSize, GetSteadyTimeUs() - addReferenceStartUs,
                               Status::OK());
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_WORKER_ENCODE);
     state.addedShmRefs.emplace_back(params.shmUnit->GetId());
     auto *info = result.mutable_shm_info();
     info->set_store_fd(params.shmUnit->GetFd());

@@ -106,6 +106,7 @@ public:
         std::shared_ptr<WorkerTransportEntry> entry_;
         std::shared_ptr<IDataTransporter> transporter_;
         std::shared_ptr<WorkerRpcClient> rpcClient_;
+        uint64_t detailLeaseAcquiredAt_{0};
         std::unique_ptr<bthread::RWLockRdGuard> entryLock_;
     };
 

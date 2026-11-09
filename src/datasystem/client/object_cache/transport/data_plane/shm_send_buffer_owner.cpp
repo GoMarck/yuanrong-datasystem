@@ -18,6 +18,7 @@
  * Releases the worker reference through the bound WorkerRpcClient (routed worker).
  * Used by both SHM (ShmTransporter via ShmSession::MmapWriteRegion) and UB (UbTransporter::Create). */
 #include "datasystem/client/object_cache/transport/data_plane/shm_send_buffer_owner.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 
 #include <chrono>
 #include <thread>
@@ -55,6 +56,9 @@ ShmSendBufferOwner::~ShmSendBufferOwner()
 
 void ShmSendBufferOwner::Release()
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_RELEASE_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_RELEASE_VALIDATE);
     if (released_.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
@@ -71,6 +75,7 @@ void ShmSendBufferOwner::Release()
         finishHolding();
         return;
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_RELEASE_POOL);
     auto releasePool = releasePool_.lock();
     if (releasePool == nullptr) {
         finishHolding();
@@ -78,6 +83,7 @@ void ShmSendBufferOwner::Release()
     }
     bool taskEnqueued = false;
     bool countUbReleasing = false;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_RELEASE_ENQUEUE_AND_CLEANUP);
     try {
         // Every queued UB DecreaseReference is releasing, including delayed release. Local-handle
         // return eligibility is independent of the asynchronous RPC task's lifecycle.
@@ -92,11 +98,16 @@ void ShmSendBufferOwner::Release()
         }
         // The ObjectBuffer owner stays alive through Set, so an ambiguous write is marked before Release snapshots it.
         // Capture by value because the asynchronous task can outlive this owner.
+        const auto detailQueuedAt = kvtest_profile::DetailFrame::CaptureTime(kvtest_profile::Stage::D_DS_DETAIL_SET_RELEASE_QUEUE_WAIT);
         releasePool->ExecuteWithEnqueueStatus(
             taskEnqueued, [rpcClient = std::move(rpcClient), context = context_, shmId = shmId_,
                            handle = releaseUbHandle ? std::shared_ptr<void>{} : lifecycleHandle_,
                            delayRelease = delayRelease_.load(std::memory_order_acquire), holdingMetricCounted,
-                           countUbReleasing]() {
+                           countUbReleasing, detailQueuedAt]() {
+                kvtest_profile::DetailFrame::RecordElapsed(kvtest_profile::Stage::D_DS_DETAIL_SET_RELEASE_QUEUE_WAIT, detailQueuedAt);
+                kvtest_profile::DetailFrame detailFrame(
+                    kvtest_profile::Stage::D_DS_DETAIL_SET_RELEASE_TASK_TOTAL,
+                    kvtest_profile::Stage::D_DS_DETAIL_SET_RELEASE_TASK_PREPARE);
                 auto finish = [holdingMetricCounted, countUbReleasing]() {
                     if (holdingMetricCounted) {
                         metrics::AddClientUbHoldingCount(-1);
@@ -119,6 +130,7 @@ void ShmSendBufferOwner::Release()
                         std::this_thread::sleep_for(std::chrono::milliseconds(backoffMs[attempt]));
                     }
                     ApiDeadlineGuard deadlineGuard(WRITE_REFERENCE_RELEASE_TIMEOUT_MS);
+                    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_RELEASE_TASK_RPC);
                     rc = rpcClient->InvokeDecreaseReference(context, shmId, delayRelease);
                     if (rc.IsOk()) {
                         finish();

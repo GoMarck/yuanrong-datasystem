@@ -17,6 +17,7 @@
 /** Description: Implements the client transport facade. */
 
 #include "datasystem/client/object_cache/transport/transport_layer.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 
 #include <algorithm>
 #include <chrono>
@@ -844,19 +845,26 @@ bool TransportLayer::IsSameHostWorker(const HostPort &workerAddr) const
 Status TransportLayer::Create(const HostPort &workerAddr, const std::string &objectKey, uint64_t dataSize,
                               TransportCreateParam param, std::shared_ptr<ObjectBuffer> &buffer)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_CREATE_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_CREATE_VALIDATE);
     RETURN_IF_NOT_OK(CheckLocalNodeAdmission());
     RETURN_IF_NOT_OK(ValidateCreateRequest(objectKey, dataSize, param));
     INJECT_POINT("TransportLayer.Create.beforeTransport");
     RETURN_RUNTIME_ERROR_IF_NULL(manager_);
     RETURN_RUNTIME_ERROR_IF_NULL(advisor_);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_CREATE_TRANSPORT_HINT);
     const auto hint = advisor_->GetTransportHint(workerAddr);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_CREATE_ALLOCATION_ID);
     param.allocationId.clear();
     param.allocationIds.clear();
     if (hint != TransportHint::TCP_ONLY) {
         RETURN_IF_NOT_OK(GenerateAllocationId(param));
     }
     std::unordered_set<ShmKey> ambiguousShmIds;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_CREATE_ATTEMPT);
     Status rc = TryCreate(workerAddr, objectKey, dataSize, param, hint, buffer, ambiguousShmIds);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_CREATE_RETRY_AND_CLEANUP);
     Status ambiguousRc = IsAmbiguousCreateFailure(rc) ? rc : Status::OK();
     if (rc.GetCode() == K_RPC_UNAVAILABLE) {
         const Status firstRc = rc;
@@ -902,12 +910,19 @@ Status TransportLayer::TryCreate(const HostPort &workerAddr, const std::string &
                                  std::shared_ptr<ObjectBuffer> &buffer,
                                  std::unordered_set<ShmKey> &ambiguousShmIds)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_CREATE_ATTEMPT_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_CREATE_ATTEMPT_EXECUTE);
     LocalUbSenderOperation operation;
     RETURN_IF_NOT_OK(CheckLocalUbSenderAdmission(hint));
     std::shared_ptr<IDataTransporter> transporter;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_CREATE_ATTEMPT_CONNECTION);
     RETURN_IF_NOT_OK(manager_->GetOrCreate(workerAddr, hint, transporter));
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_CREATE_ATTEMPT_ADMISSION);
     RETURN_IF_NOT_OK(AcquireLocalUbSenderAdmission(hint, operation));
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_CREATE_ATTEMPT_TRANSPORT);
     Status rc = transporter->Create(workerAddr, objectKey, dataSize, param, buffer);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_CREATE_ATTEMPT_RESULT);
     if (IsAmbiguousCreateFailure(rc)) {
         try {
             RecordAllocationIds(param, ambiguousShmIds);

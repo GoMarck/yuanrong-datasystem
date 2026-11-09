@@ -229,10 +229,15 @@ Status WorkerOcServiceCreateImpl::CreateImpl(const std::string &tenantId, const 
                                              int64_t requestTimeoutMs, const std::string &allocationId,
                                              CreateRspPb &resp, CacheType cacheType)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_WORKER_CREATE_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_WORKER_CREATE_NAMESPACE);
     kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_W_CREATE_LOOKUP);
     auto objectKey = TenantAuthManager::ConstructNamespaceUriWithTenantId(tenantId, rawObjectKey);
     std::shared_ptr<SafeObjType> entry;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_WORKER_CREATE_OBJECT_LOOKUP);
     bool isExist = objectTable_->Get(objectKey, entry).IsOk();
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_WORKER_CREATE_EXISTING_OBJECT_LOCK_AND_CHECK);
     if (isExist && entry != nullptr) {
         int64_t remUs = GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTimeUs();
         if (entry->RLock(false, remUs).IsOk()) {
@@ -241,6 +246,7 @@ Status WorkerOcServiceCreateImpl::CreateImpl(const std::string &tenantId, const 
         }
     }
     benchmarkPhase.Next(kvtest_profile::Stage::DS_W_CREATE_RESERVE);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_WORKER_CREATE_RESERVE);
     ShmKey shmId;
     bool reserved = false;
     RETURN_IF_NOT_OK(ResolveCreateShmId(allocationId, shmId, reserved));
@@ -251,23 +257,29 @@ Status WorkerOcServiceCreateImpl::CreateImpl(const std::string &tenantId, const 
     });
 
     benchmarkPhase.Next(kvtest_profile::Stage::DS_W_CREATE_ALLOC);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_WORKER_CREATE_SHM_UNIT_ALLOCATE);
     auto shmUnit = std::make_shared<ShmUnit>();
     auto metadataSize = GetMetadataSize();
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_WORKER_CREATE_MEMORY_ALLOCATE);
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
         AllocateMemoryForObject(objectKey, dataSize, metadataSize, true, evictionManager_, *shmUnit, cacheType),
         "worker allocate memory failed");
 
     benchmarkPhase.Next(kvtest_profile::Stage::DS_W_CREATE_RESPONSE);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_WORKER_CREATE_RESPONSE);
     shmUnit->id = shmId;
     RETURN_IF_NOT_OK(FillCreateResponse(clientId, shmUnit, metadataSize, resp));
     benchmarkPhase.Next(kvtest_profile::Stage::DS_W_CREATE_REF);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_WORKER_CREATE_CLIENT_LOOKUP);
     bool reclaimable = !ClientShmEnabled(clientId);
     INJECT_POINT_NO_RETURN("worker.Create.reclaimable", [&reclaimable](bool value) { reclaimable = value; });
 #ifdef WITH_TESTS
     INJECT_POINT("worker.Create.BeforeAddShmUnit");
 #endif
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_WORKER_CREATE_REFERENCE);
     memoryRefTable_->AddShmUnit(clientId, shmUnit, requestTimeoutMs, reclaimable);
 
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_WORKER_CREATE_CLEANUP);
     INJECT_POINT("worker.Create.AllocateMemory");
     return Status::OK();
 }

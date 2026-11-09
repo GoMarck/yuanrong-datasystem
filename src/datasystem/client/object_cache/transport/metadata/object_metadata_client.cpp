@@ -133,24 +133,31 @@ Status ObjectMetadataClient::PrepareShmInlineRequest(const HostPort &address,
                                                      InlineRequestContext &context,
                                                      TransportPhaseLatencyRecorder *recorder) const
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_PREPARE_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_PREPARE_VALIDATE);
     RETURN_RUNTIME_ERROR_IF_NULL(manager_);
     if (readContext == nullptr) {
         context.DisableInlineData();
         return Status::OK();
     }
     std::shared_ptr<IDataTransporter> transporter;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_PREPARE_CONNECTION);
     Status rc = manager_->GetOrCreate(address, TransportHint::SHM_CANDIDATE, transporter, recorder);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_PREPARE_CAST);
     auto shmTransporter = std::dynamic_pointer_cast<ShmTransporter>(transporter);
     if (rc.IsError() || shmTransporter == nullptr) {
         context.DisableInlineData();
         return Status::OK();
     }
     std::shared_ptr<ShmSession> session;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_PREPARE_SESSION);
     rc = shmTransporter->TryAcquireSession(readContext->requestContext, session, recorder);
     if (rc.IsError()) {
         context.DisableInlineData();
         return Status::OK();
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_PREPARE_RESULT);
     context.mode = InlineTransportMode::SHM;
     context.shmTransporter = std::move(shmTransporter);
     context.shmSession = std::move(session);
@@ -175,6 +182,9 @@ Status ObjectMetadataClient::PrepareUbInlineRequest(const HostPort &address, con
                                                     InlineRequestContext &context,
                                                     TransportPhaseLatencyRecorder *recorder) const
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_GET_UB_PREPARE_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_GET_UB_PREPARE_VALIDATE);
     kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_GET_UB_PREPARE);
     if (ubBufferSize_ == 0 || ubBufferProvider_ == nullptr || ubBufferSize_ > ubBufferProvider_->MaxGetSize()
         || items.size() > ubBufferProvider_->MaxGetSize() / ubBufferSize_) {
@@ -195,6 +205,7 @@ Status ObjectMetadataClient::PrepareUbInlineRequest(const HostPort &address, con
     // share the single one made inside AdmitUbRead().
     uint64_t slotOwner = 0;
     bool degradedByCooldown = false;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_UB_PREPARE_ADMISSION);
     if (manager_->AdmitUbRead(address, slotOwner, &degradedByCooldown) == DataPlaneManager::UbReadAdmission::DEGRADE) {
         VLOG(1) << "[TransportGet][Metadata] Disable UB inline data because "
                 << (degradedByCooldown ? "the data plane is cooling down" : "a UB rebuild is already in flight") << ": "
@@ -203,6 +214,7 @@ Status ObjectMetadataClient::PrepareUbInlineRequest(const HostPort &address, con
         return Status::OK();
     }
     // Establish UB first so a connection miss does not consume receive-buffer capacity.
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_UB_PREPARE_CONNECTION);
     std::shared_ptr<IDataTransporter> transporter;
     Status connectionRc;
     {
@@ -228,10 +240,12 @@ Status ObjectMetadataClient::PrepareUbInlineRequest(const HostPort &address, con
         return Status::OK();
     }
 
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_UB_PREPARE_BUFFERS);
     if (AllocateUbInlineBuffers(items, context).IsError()) {
         context.mode = InlineTransportMode::TCP;
         return Status::OK();
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_UB_PREPARE_RESULT);
     context.mode = InlineTransportMode::UB;
     return Status::OK();
 }
@@ -239,10 +253,16 @@ Status ObjectMetadataClient::PrepareUbInlineRequest(const HostPort &address, con
 Status ObjectMetadataClient::AllocateUbInlineBuffers(const ObjectMetadataBatch &items,
                                                      InlineRequestContext &context) const
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_GET_UB_BUFFERS_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_GET_UB_BUFFERS_RESERVE);
     context.ubBuffers.reserve(items.size());
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_UB_BUFFERS_ITEMS);
     for (auto *item : items) {
         UbReceiveBuffer buffer;
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_UB_BUFFERS_ALLOCATE);
         Status allocRc = ubBufferProvider_->Allocate(ubBufferSize_, buffer);
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_UB_BUFFERS_VALIDATE);
         if (allocRc.IsError() || buffer.data == nullptr || buffer.owner == nullptr || buffer.size < ubBufferSize_
             || buffer.transportInstanceId.empty()) {
             VLOG(1) << "[TransportGet][Metadata] Disable UB inline data because receive-buffer preparation failed: "
@@ -257,6 +277,7 @@ Status ObjectMetadataClient::AllocateUbInlineBuffers(const ObjectMetadataBatch &
             context.DisableInlineData();
             RETURN_STATUS(K_RUNTIME_ERROR, "UB receive buffers use different transport instances");
         }
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_UB_BUFFERS_EMPLACE);
         context.ubBuffers.emplace(item, std::move(buffer));
     }
     return Status::OK();
@@ -404,6 +425,9 @@ Status ObjectMetadataClient::PrepareQueryRetry(const HostPort &address, const Ob
                                                bool &ubReconnectAttempted,
                                                TransportPhaseLatencyRecorder *recorder)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_GET_RETRY_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_GET_RETRY_PREPARE);
     // Handle 1006 before buffer quarantine: the Worker precheck returns it before writing inline data.
     if (rc.GetCode() == K_URMA_NEED_CONNECT && rpcDispatched && context.mode == InlineTransportMode::UB
         && !ubReconnectAttempted) {
@@ -551,6 +575,9 @@ Status ObjectMetadataClient::BuildQueryRequest(const HostPort &address, const Ob
                                                InlineRequestContext &context, QueryAndGetReqPb &request,
                                                TransportPhaseLatencyRecorder *recorder) const
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_GET_REQUEST_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_GET_REQUEST_BUILD);
     for (const auto *item : items) {
         request.add_object_keys(item->objectKey);
     }
@@ -662,6 +689,9 @@ Status ObjectMetadataClient::BuildTcpInlineData(const QueryAndGetDataResultPb &d
                                                 std::vector<RpcMessage> &payloads,
                                                 DataGetResult &data) const
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_GET_TCP_RESULT_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_GET_TCP_RESULT_PROCESS);
     data.rpcPayloads.reserve(dataResult.payload_indexes_size());
     uint64_t payloadSize = 0;
     for (uint32_t payloadIndex : dataResult.payload_indexes()) {
@@ -684,6 +714,9 @@ Status ObjectMetadataClient::BuildShmInlineData(ObjectMetadataItem &item, const 
                                                 InlineRequestContext &context, DataGetResult &data,
                                                 std::shared_ptr<IReceiveBufferOwner> owner) const
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_RESULT_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_GET_SHM_RESULT_PROCESS);
     INJECT_POINT("client.transport.query_and_get.shm_materialization_failure");
     CHECK_FAIL_RETURN_STATUS(context.shmSession != nullptr && context.shmTransporter != nullptr
                                  && context.readContext != nullptr,
@@ -699,6 +732,9 @@ Status ObjectMetadataClient::BuildUbInlineData(ObjectMetadataItem &item,
                                                const master::ObjectLocationInfoPb &location,
                                                InlineRequestContext &context, DataGetResult &data) const
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_GET_UB_RESULT_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_GET_UB_RESULT_PROCESS);
     auto buffer = context.ubBuffers.find(&item);
     CHECK_FAIL_RETURN_STATUS(buffer != context.ubBuffers.end(), K_RUNTIME_ERROR,
                              "UB QueryAndGet result has no receive buffer");
@@ -720,6 +756,9 @@ Status ObjectMetadataClient::Query(const HostPort &address, const ObjectMetadata
                                    bool enableInlineData, std::shared_ptr<const TransportReadContext> readContext,
                                    bool traceEnabled)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_GET_QUERY_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_GET_QUERY_VALIDATE);
     kvtest_profile::Span benchmarkPhase(kvtest_profile::Stage::DS_QUERY_PREPARE);
     RETURN_IF_NOT_OK(ValidateAndResetItems(items));
     const auto method = enableInlineData ? "QueryAndGet" : "QueryMetadata";
@@ -727,6 +766,7 @@ Status ObjectMetadataClient::Query(const HostPort &address, const ObjectMetadata
     if (traceEnabled) {
         recorder.emplace(address);
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_QUERY_INITIALIZE);
     InlineRequestContext context;
     if (enableInlineData) {
         RETURN_IF_NOT_OK(WithRpcDiag(
@@ -735,11 +775,17 @@ Status ObjectMetadataClient::Query(const HostPort &address, const ObjectMetadata
     }
 
     benchmarkPhase.Finish(true);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_QUERY_RPC_WITH_RETRY);
     QueryAndGetRspPb response;
     std::vector<RpcMessage> payloads;
     RETURN_IF_NOT_OK(WithRpcDiag(
         QueryWithRetry(address, items, response, payloads, context, recorder ? &*recorder : nullptr), method, address));
     benchmarkPhase.Next(kvtest_profile::Stage::DS_QUERY_APPLY);
+    detailFrame.SetGroup(context.mode == InlineTransportMode::SHM
+        ? kvtest_profile::Stage::D_DS_DETAIL_GET_QUERY_SHM_REQUEST_TOTAL
+        : (context.mode == InlineTransportMode::UB ? kvtest_profile::Stage::D_DS_DETAIL_GET_QUERY_UB_REQUEST_TOTAL
+                                                   : kvtest_profile::Stage::D_DS_DETAIL_GET_QUERY_TCP_REQUEST_TOTAL));
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_GET_QUERY_APPLY_AND_CLEANUP);
     return WithRpcDiag(ApplyResults(address, items, response, payloads, context), method, address);
 }
 

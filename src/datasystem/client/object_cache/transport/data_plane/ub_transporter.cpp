@@ -17,6 +17,7 @@
 /** Description: Implements the UB object data transporter. */
 
 #include "datasystem/client/object_cache/transport/data_plane/ub_transporter.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -681,6 +682,9 @@ void UbTransporter::CloseDataPlane()
 Status UbTransporter::Create(const HostPort &workerAddr, const std::string &key, uint64_t size,
                              const TransportCreateParam &param, std::shared_ptr<ObjectBuffer> &buffer)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_UB_CREATE_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_UB_CREATE_PREPARE);
     (void)buffer;
     RETURN_RUNTIME_ERROR_IF_NULL(rpcClient_);
 
@@ -689,8 +693,10 @@ Status UbTransporter::Create(const HostPort &workerAddr, const std::string &key,
 
     CreateRspPb createRsp;
     uint32_t workerVersion = 0;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_UB_CREATE_RPC);
     RETURN_IF_NOT_OK(rpcClient_->InvokeCreate(param.subTimeoutMs, createReq, createRsp, workerVersion));
 
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_UB_CREATE_INFO_ALLOCATE);
     auto info = std::make_shared<ObjectBufferInfo>();
     info->objectKey = key;
     info->dataSize = size;
@@ -704,7 +710,9 @@ Status UbTransporter::Create(const HostPort &workerAddr, const std::string &key,
         info->ubUrmaDataInfo = urmaInfo;
 
         std::shared_ptr<UrmaManager::BufferHandle> handle;
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_UB_CREATE_BUFFER_ALLOCATE);
         RETURN_IF_NOT_OK(UrmaManager::Instance().GetMemoryBufferHandle(handle, size));
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_UB_CREATE_INFO_FILL);
         info->pointer = static_cast<uint8_t *>(handle->GetPointer());
         info->ubGetBufferHandle = std::static_pointer_cast<void>(handle);
         // The local UB pool contains payload bytes only. The worker-side metadata offset is already encoded in
@@ -715,6 +723,7 @@ Status UbTransporter::Create(const HostPort &workerAddr, const std::string &key,
 
         // Attach owner that releases via the routed worker's RPC client (not LOCAL_WORKER).
         try {
+            detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_UB_CREATE_OWNER_ALLOCATE);
             info->receiveBufferOwner = std::make_shared<ShmSendBufferOwner>(
                 rpcClient_, info->shmId, param.requestContext, releasePool_, info->ubGetBufferHandle, nullptr, true);
         } catch (const std::bad_alloc &e) {
@@ -723,6 +732,7 @@ Status UbTransporter::Create(const HostPort &workerAddr, const std::string &key,
             RETURN_STATUS(K_RUNTIME_ERROR, e.what());
         }
 
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_UB_CREATE_BUFFER_CONSTRUCT);
         return ObjectBufferInternal::Create(info, buffer);
 #else
         static_cast<void>(buffer);
@@ -953,6 +963,9 @@ Status UbTransporter::WritePayloads(const std::vector<ObjectBufferInfo *> &infos
 
 Status UbTransporter::Set(ObjectBuffer &buffer, const TransportSetParam &param, TransportSetResult *result)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_UB_PUBLISH_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_UB_PUBLISH_PREPARE);
     // Keep the per-transporter lifecycle lock while the operation is in flight so CloseDataPlane cannot tear down
     // the UB connection between the liveness check and the write/publish sequence.
     std::shared_lock<std::shared_mutex> lifecycleLock(lifecycleMutex_);
@@ -1005,6 +1018,9 @@ Status UbTransporter::PublishSetPayload(const ObjectBufferInfo &info, PublishReq
                                         uint32_t &workerVersion, TransportSetResult *result,
                                         const Status &writeRc)
 {
+    kvtest_profile::DetailFrame detailFrame(
+        kvtest_profile::Stage::D_DS_DETAIL_SET_UB_PUBLISH_RPC_TOTAL,
+        kvtest_profile::Stage::D_DS_DETAIL_SET_UB_PUBLISH_RPC_CALL);
     if (info.ubDataSentByMemoryCopy) {
         // URMA write succeeded: no TCP payload
         std::vector<MemView> payloads;
