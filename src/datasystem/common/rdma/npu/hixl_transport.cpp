@@ -172,6 +172,8 @@ DsHixlResult TransferWithMetrics(const DsHixlApi *api, DsHixlEngineHandle engine
         METRIC_ADD(bytes, transferred);
     }
     return result;
+}
+
 datasystem::PerfKey HixlTransferSyncPerfKey(datasystem::HixlTransferOp op)
 {
     return op == datasystem::HixlTransferOp::WRITE ? datasystem::PerfKey::HCCS_HIXL_TRANSFER_SYNC_WRITE
@@ -445,7 +447,7 @@ Status HixlTransport::InitializeSingleDevice(int32_t devId, const Options &optio
 
     const int deviceCommPort = isClient_ ? ResolveEndpointPort(endpoint) : ResolveWorkerDeviceCommPort();
     CHECK_FAIL_RETURN_STATUS(deviceCommPort > 0, StatusCode::K_RUNTIME_ERROR,
-                             "HIXL device comm port is not resolved for role=" + RoleName());
+                             std::string("HIXL device comm port is not resolved for role=") + RoleName());
     const std::string localCommRes = ResolveLocalCommRes(options.bufferPool);
     auto optionValues = BuildHixlOptions(options.bufferPool, hixlMemoryMode_, localCommRes, deviceCommPort);
     std::vector<DsHixlOption> pluginOptions;
@@ -818,11 +820,11 @@ Status HixlTransport::DisconnectAll()
         regions.push_back(region);
     }
     for (const auto &[devId, engine] : engines_) {
-        Status setDeviceStatus = acl::AclDeviceManager::Instance()->SetDeviceIdx(devId);
-        if (setDeviceStatus.IsError()) {
-            LOG(ERROR) << "Failed to set device before finalizing HIXL: " << setDeviceStatus.ToString();
-            continue;
-        }
+        // Finalize must run on the engine's own device so FabricMem channels and retained handles release there.
+        Status setDeviceStatus = BindDeviceForEngine(devId);
+        LOG_IF(ERROR, setDeviceStatus.IsError())
+            << "Failed to set device before finalizing HIXL engine on devId " << devId << ": "
+            << setDeviceStatus.ToString();
         DestroyEngine(engine);
     }
     for (const auto &region : regions) {
@@ -844,7 +846,7 @@ Status HixlTransport::DeregisterFabricMemory(const std::shared_ptr<FabricMemoryR
     Status firstError = Status::OK();
     for (auto iter = region->registrationHandles.begin(); iter != region->registrationHandles.end();) {
         auto &[devId, handle] = *iter;
-        Status setDeviceStatus = acl::AclDeviceManager::Instance()->SetDeviceIdx(devId);
+        Status setDeviceStatus = BindDeviceForEngine(devId);
         if (setDeviceStatus.IsError()) {
             LOG(ERROR) << "Failed to set device before deregistering FabricMem: " << setDeviceStatus.ToString();
             if (firstError.IsOk()) {
@@ -1261,7 +1263,6 @@ Status HixlTransport::ReleaseDeviceMemoryReferenceLocked(uintptr_t addr)
         --memory->references;
     }
     if (--reference->second.references == 0) { deviceMemoryReferences_.erase(reference); }
-              << ", totalRegistered=" << totalRegistered << ", ranges=" << FormatDeviceMemoryRanges(newRegistrations);
     return Status::OK();
 }
 

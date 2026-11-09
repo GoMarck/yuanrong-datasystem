@@ -277,7 +277,7 @@ Status WorkerOcServiceCreateImpl::CreateImpl(const std::string &tenantId, const 
         "worker allocate memory failed");
 
     shmUnit->id = shmId;
-    RETURN_IF_NOT_OK(FillCreateResponse(clientId, shmUnit, resp, commId, clientDeviceInfo));
+    RETURN_IF_NOT_OK(FillCreateResponse(clientId, shmUnit, metadataSize, resp, false, commId, clientDeviceInfo));
     bool reclaimable = !ClientShmEnabled(clientId);
     INJECT_POINT_NO_RETURN("worker.Create.reclaimable", [&reclaimable](bool value) { reclaimable = value; });
 #ifdef WITH_TESTS
@@ -350,6 +350,7 @@ Status WorkerOcServiceCreateImpl::FillMultiCreateShmUnits(
     std::vector<CreateRspPb> &subRsp, std::vector<Status> &results, MultiCreateRspPb &resp, const std::string &commId,
     const RemoteH2DClientDeviceInfoPb *clientDeviceInfo)
 {
+    const auto metadataSize = GetMetadataSize();
     for (int index = 0; index < req.object_key_size(); ++index) {
         const auto objectKey = TenantAuthManager::ConstructNamespaceUriWithTenantId(tenantId, req.object_key(index));
         if (IsMultiCreateObjectExisting(req, index, objectKey, resp)) {

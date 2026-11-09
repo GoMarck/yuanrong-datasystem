@@ -119,6 +119,8 @@ private:
     Status BindDeviceForEngine(int32_t devId) const;
     Status ResolveDeviceEndpoint(int32_t devId, std::string &endpoint) const;
     std::string ResolveLocalCommRes(const std::string &bufferPool) const;
+    Status ResolveTargetDeviceIds(const std::vector<int32_t> &deviceIds,
+                                  std::vector<int32_t> &targetDevIds) const;
     void DestroyEngine(DsHixlEngineHandle engine) const;
     Status CheckReadyLocked() const;
     Status ConnectImpl(const std::string &remoteIdentity, int32_t timeoutMs, bool retainForWrite);
