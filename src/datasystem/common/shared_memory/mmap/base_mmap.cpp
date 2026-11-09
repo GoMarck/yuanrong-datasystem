@@ -73,7 +73,7 @@ Status BaseMmap::SetupFileMapping(size_t size, int flags, bool isSeal)
 
 BaseMmap::~BaseMmap()
 {
-    if (pointer_ != nullptr) {
+    if (posixMapped_ && pointer_ != nullptr) {
         VLOG(1) << "munmap shared " << type_ << " link, fd:" << fd_ << ", mmapSize:" << mmapSize_;
         int ret = munmap(pointer_, mmapSize_);
         if (ret != 0) {
@@ -114,7 +114,10 @@ void *BaseMmap::Allocate(size_t size, size_t alignment, bool *zero, bool *commit
 
 void BaseMmap::Destroy()
 {
-    LOG_IF(ERROR, munmap(pointer_, mmapSize_) != 0) << "Unmap " << type_ << " failed: " << StrErr(errno);
+    if (posixMapped_) {
+        LOG_IF(ERROR, munmap(pointer_, mmapSize_) != 0) << "Unmap " << type_ << " failed: " << StrErr(errno);
+        pointer_ = nullptr;
+    }
 }
 
 bool BaseMmap::Decommit(void *addr, size_t offset, size_t length)

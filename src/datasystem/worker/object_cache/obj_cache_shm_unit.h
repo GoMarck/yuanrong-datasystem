@@ -22,6 +22,7 @@
 
 #include <sys/mman.h>
 #include <memory>
+#include <utility>
 
 #include "datasystem/common/object_cache/object_base.h"
 #include "datasystem/common/shared_memory/shm_unit.h"
@@ -132,6 +133,16 @@ public:
      */
     void SetMetadataSize(uint64_t size) override;
 
+    void SetBlobSizes(std::vector<uint64_t> blobSizes) override
+    {
+        blobSizes_ = std::move(blobSizes);
+    }
+
+    std::vector<uint64_t> GetBlobSizes() const override
+    {
+        return blobSizes_;
+    }
+
     /**
      * @brief Get the address.
      * @return The address.
@@ -173,6 +184,7 @@ private:
     ObjectLifeState lifeState_ = ObjectLifeState::OBJECT_INVALID;
     // This means the data is not local, and only metadata is here. So the shm unit shall be nullptr.
     std::shared_ptr<RemoteH2DHostInfoMap> remoteH2DHostInfoMap_{ nullptr };
+    std::vector<uint64_t> blobSizes_;
 };
 
 /**

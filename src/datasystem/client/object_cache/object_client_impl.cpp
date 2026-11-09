@@ -31,6 +31,8 @@
 #include <exception>
 #include <functional>
 #include <future>
+#include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <mutex>
@@ -108,6 +110,7 @@
 #include "datasystem/common/util/rpc_diagnostic.h"
 #include "datasystem/common/util/rpc_util.h"
 #include "datasystem/common/util/status_helper.h"
+#include "datasystem/common/util/thread_pool.h"
 #include "datasystem/common/util/thread_local.h"
 #include "datasystem/common/util/request_context.h"
 #include "datasystem/common/util/timer.h"
@@ -137,6 +140,9 @@ namespace {
 }  // namespace datasystem
 
 static constexpr size_t QUERY_SIZE_OBJECT_LIMIT = 10000;
+const std::string K_SEPARATOR = "$";
+constexpr int32_t MAX_HIXL_REMOTE_GROUP_PARALLELISM = 16;
+const std::string HIXL_REMOTE_GROUP_PARALLELISM_ENV = "DS_HIXL_REMOTE_GROUP_PARALLELISM";
 const std::string CLIENT_PARALLEL_THREAD_MIN_NUM_ENV = "CLIENT_PARALLEL_THREAD_MIN_NUM";
 const std::string CLIENT_PARALLEL_THREAD_MAX_NUM_ENV = "CLIENT_PARALLEL_THREAD_MAX_NUM";
 const std::string CLIENT_MEMORY_COPY_THREAD_NUM_ENV = "CLIENT_MEMORY_COPY_THREAD_NUM";
@@ -506,7 +512,7 @@ ObjectClientImpl::ObjectClientImpl(const ConnectOptions &connectOptions1, Device
     (void)authKeys_.SetClientPrivateKey(connectOptions.clientPrivateKey);
     LOG_IF_ERROR(authKeys_.SetServerKey(WORKER_SERVER_NAME, connectOptions.serverPublicKey),
                  "RpcAuthKeys SetServerKey failed");
-    enableRemoteH2D_ = connectOptions.enableRemoteH2D;
+    enableHeteroTransport_ = connectOptions.enableRemoteH2D;
     enableClientDirectPipelineH2D_ = connectOptions.enableClientDirectPipelineH2D;
     clientDirectPipelineH2DThreadNum_ = connectOptions.clientDirectPipelineH2DThreadNum;
     serviceDiscovery_ = connectOptions.serviceDiscovery;
@@ -1249,7 +1255,7 @@ Status ObjectClientImpl::Init(bool &needRollbackState, bool enableHeartbeat, con
         "h2d pipeline thread num %d.",
         requestTimeoutMs_, connectTimeoutMs_, fastTransportMemSize_, enableLocalCache_,
         enableCrossNodeConnection_, static_cast<int>(dataPlacementPolicy_), parallismNum_,
-        memcpyParallelThreshold_, setMemcpyParallelThreshold_, enableRemoteH2D_,
+        memcpyParallelThreshold_, setMemcpyParallelThreshold_, enableHeteroTransport_,
         enableClientDirectPipelineH2D_, clientDirectPipelineH2DThreadNum_);
     return rc;
 }
@@ -1551,7 +1557,7 @@ Status ObjectClientImpl::MGetH2D(const std::vector<std::string> &objectKeys,
         access.Result(rc).Record();
         return rc;
     }
-    auto cfgRc = UpdateClientRemoteH2DConfig(devBlobList[0].deviceIdx);
+    auto cfgRc = UpdateClientHeteroTransportConfig(devBlobList[0].deviceIdx);
     if (cfgRc.IsError()) {
         failedKeys.clear();
         access.Result(cfgRc).Record();
@@ -1688,6 +1694,89 @@ void BuildD2HObjectViews(const std::vector<DeviceBlobList> &devBlobList, const s
     }
     bufferList = std::move(filterBufferList);
 }
+
+bool IsHixlRemoteHostTransferEnabled()
+{
+    return IsRemoteH2DEnabled() && FLAGS_remote_h2d_link_type == "HCCS";
+}
+
+bool IsRemoteHostBuffer(Buffer *buffer)
+{
+    return buffer != nullptr && buffer->GetRemoteHostInfo() != nullptr;
+}
+
+bool NeedsExternalBlobMetadata(Buffer *buffer)
+{
+    return IsRemoteHostBuffer(buffer);
+}
+
+bool HasExternalBlobMetadataBuffer(const std::vector<std::shared_ptr<Buffer>> &bufferList)
+{
+    return std::any_of(bufferList.begin(), bufferList.end(), [](const std::shared_ptr<Buffer> &buffer) {
+        return NeedsExternalBlobMetadata(buffer.get());
+    });
+}
+
+Status CheckHixlPayloadOnlyFallback(const std::vector<DeviceBlobList> &devBlobList,
+                                    const std::vector<Buffer *> &bufferList)
+{
+    RETURN_OK_IF_TRUE(!IsHixlRemoteHostTransferEnabled());
+    for (size_t i = 0; i < bufferList.size(); i++) {
+        if (bufferList[i] == nullptr || NeedsExternalBlobMetadata(bufferList[i])) {
+            continue;
+        }
+        CHECK_FAIL_RETURN_STATUS(bufferList[i]->GetSize() >= 0, K_RUNTIME_ERROR,
+                                 FormatString("Invalid negative buffer size %ld.", bufferList[i]->GetSize()));
+        uint64_t payloadSize = 0;
+        for (const auto &blob : devBlobList[i].blobs) {
+            CHECK_FAIL_RETURN_STATUS(blob.size <= UINT64_MAX - payloadSize, K_INVALID,
+                                     "HIXL payload-only size overflow");
+            payloadSize += blob.size;
+        }
+        // Old composed-layout buffers include blob-count/offset metadata, while HIXL payload-only buffers do not.
+        CHECK_FAIL_RETURN_STATUS(
+            payloadSize != static_cast<uint64_t>(bufferList[i]->GetSize()), K_NOT_SUPPORTED,
+            "HIXL payload-only object requires remote host info; fallback to local/TCP copy is not supported.");
+    }
+    return Status::OK();
+}
+
+Status PreparePayloadOnlySizeList(std::vector<size_t> &sizeList, const std::vector<DeviceBlobList> &devBlobList,
+                                  BlobListInfo &blobInfo)
+{
+    constexpr auto kInt64Max = std::numeric_limits<int64_t>::max();
+    blobInfo.nonExistNums = devBlobList.size();
+    std::vector<int64_t> blobNumsList;
+    std::vector<int64_t> blobSizeList;
+    for (const auto &blobList : devBlobList) {
+        CHECK_FAIL_RETURN_STATUS(!blobList.blobs.empty(), K_INVALID, "DeviceBlobList blobs are empty");
+        uint64_t size = 0;
+        blobNumsList.emplace_back(blobList.blobs.size());
+        for (const auto &blob : blobList.blobs) {
+            CHECK_FAIL_RETURN_STATUS(blob.size <= UINT64_MAX - size, K_INVALID, "Fabric payload size overflow");
+            CHECK_FAIL_RETURN_STATUS(blob.size <= static_cast<uint64_t>(kInt64Max), K_INVALID,
+                                     "blob size exceeds int64_t limit");
+            size += blob.size;
+            const uint64_t newTotal = static_cast<uint64_t>(blobInfo.totalSize) + blob.size;
+            blobInfo.totalSize =
+                newTotal > static_cast<uint64_t>(kInt64Max) ? kInt64Max : static_cast<int64_t>(newTotal);
+            blobSizeList.emplace_back(static_cast<int64_t>(blob.size));
+        }
+        sizeList.emplace_back(size);
+    }
+    if (blobInfo.nonExistNums <= 0) {
+        return Status::OK();
+    }
+    uint64_t blobNumSum = std::accumulate(blobNumsList.begin(), blobNumsList.end(), 0L);
+    blobInfo.avgBlobNums = blobNumSum / blobInfo.nonExistNums;
+    blobInfo.minBlobNums = *std::min_element(blobNumsList.begin(), blobNumsList.end());
+    blobInfo.maxBlobNums = *std::max_element(blobNumsList.begin(), blobNumsList.end());
+    blobInfo.avgBlockSize = blobInfo.totalSize / blobSizeList.size();
+    blobInfo.minBlockSize = *std::min_element(blobSizeList.begin(), blobSizeList.end());
+    blobInfo.maxBlockSize = *std::max_element(blobSizeList.begin(), blobSizeList.end());
+    return Status::OK();
+}
+
 }  // namespace
 
 std::shared_future<AsyncResult> ObjectClientImpl::AsyncMGetH2D(const std::vector<std::string> &objectKeys,
@@ -1703,7 +1792,7 @@ std::shared_future<AsyncResult> ObjectClientImpl::AsyncMGetH2D(const std::vector
         return MakeFailedAsyncH2DFuture(*access, rc, devBlobList, objectKeys, {});
     }
 
-    auto cfgRc = UpdateClientRemoteH2DConfig(devBlobList[0].deviceIdx);
+    auto cfgRc = UpdateClientHeteroTransportConfig(devBlobList[0].deviceIdx);
     if (cfgRc.IsError()) {
         return MakeFailedAsyncH2DFuture(*access, cfgRc, devBlobList, objectKeys, {});
     }
@@ -1804,6 +1893,7 @@ Status ObjectClientImpl::PreRegisterDeviceMemory(const std::vector<void *> &data
     return Status(K_NOT_SUPPORTED, "RemoteH2D device memory pre-registration is only supported in NPU builds.");
 #else
     std::shared_lock<std::shared_timed_mutex> shutdownLock(shutdownMux_);
+    PerfPoint point(PerfKey::CLIENT_RH2D_PRE_REGISTER_DEVICE_MEMORY);
     RETURN_IF_NOT_OK(IsClientReady());
     CHECK_FAIL_RETURN_STATUS(!data.empty(), K_INVALID, "Device memory address list cannot be empty.");
     CHECK_FAIL_RETURN_STATUS(data.size() == dataSize.size(), K_INVALID,
@@ -1820,17 +1910,12 @@ Status ObjectClientImpl::PreRegisterDeviceMemory(const std::vector<void *> &data
     RETURN_IF_NOT_OK(acl::AclDeviceManager::Instance()->GetDeviceIdx(deviceId));
     CHECK_FAIL_RETURN_STATUS(deviceId >= 0, K_INVALID,
                              "Device id is not initialized. Set current device before pre-registering device memory.");
-    if (enableRemoteH2D_) {
-        RETURN_IF_NOT_OK(UpdateClientRemoteH2DConfig(deviceId));
-    }
     if (UseRoutedDeviceWrites()) {
         RETURN_RUNTIME_ERROR_IF_NULL(transportLayer_);
         RETURN_IF_NOT_OK(transportLayer_->RegisterD2RHDeviceMemory(deviceId, ipAddress_.Host(), data, dataSize));
-        RETURN_OK_IF_TRUE(!enableRemoteH2D_);
     }
-    if (!enableRemoteH2D_) {
-        RETURN_IF_NOT_OK(UpdateClientRemoteH2DConfig(deviceId));
-    }
+    RETURN_IF_NOT_OK(UpdateClientHeteroTransportConfig(deviceId));
+    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().PreRegisterDeviceMemory(data, dataSize));
     {
         std::lock_guard<std::mutex> lock(preRegisteredDeviceMemoryMutex_);
         preRegisteredDeviceMemoryAddrs_.reserve(preRegisteredDeviceMemoryAddrs_.size() + data.size());
@@ -1839,6 +1924,22 @@ Status ObjectClientImpl::PreRegisterDeviceMemory(const std::vector<void *> &data
     }
     return Status::OK();
 #endif
+}
+
+Status ObjectClientImpl::InitRemoteH2D()
+{
+#ifdef USE_NPU
+    RETURN_OK_IF_TRUE(!enableHeteroTransport_);
+    int32_t deviceId = -1;
+    auto rc = acl::AclDeviceManager::Instance()->GetDeviceIdx(deviceId);
+    if (rc.IsError()) {
+        LOG(WARNING) << "Defer client RemoteH2D initialization because the current thread has no ACL device: "
+                     << rc.ToString();
+        return Status::OK();
+    }
+    RETURN_IF_NOT_OK(UpdateClientHeteroTransportConfig(deviceId));
+#endif
+    return Status::OK();
 }
 
 Status ObjectClientImpl::CheckMGetH2DInput(const std::vector<std::string> &objectKeys,
@@ -1950,6 +2051,7 @@ static Status ImportSegAndReadHostMemory(const std::vector<H2DObjectView> &objec
     // 1. Initialize communicator connection.
     // Note that client uses worker side root info as the key.
     PerfPoint point(PerfKey::CLIENT_IMPORT_SEG_AND_READ);
+    PerfPoint readRemotePoint(PerfKey::CLIENT_RH2D_READ_REMOTE_HOST);
     std::shared_ptr<RemoteH2DContext> p2pComm;
     // Buffers are grouped by data source, so root info should be the same for these objects.
     std::vector<Buffer *> existBufferList;
@@ -1965,6 +2067,8 @@ static Status ImportSegAndReadHostMemory(const std::vector<H2DObjectView> &objec
     storage.dstBuffers.resize(totalDescriptorCount);
     storage.sizes.resize(totalDescriptorCount);
     RETURN_IF_NOT_OK(BuildRemoteH2DScatterEntries(objects, p2pComm, storage));
+    PerfPoint scatterPoint(PerfKey::CLIENT_RH2D_SCATTER_BATCH);
+    PerfPoint readTransferPoint(PerfKey::CLIENT_RH2D_READ_TRANSFER_BATCH);
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
         RemoteH2DManager::Instance().ScatterBatch(storage.entries.data(), storage.entries.size(), p2pComm),
         FormatString("[RH2D][ScatterBatch][Client] ScatterBatch failed, entries=%zu", storage.entries.size()));
@@ -1975,6 +2079,251 @@ static Status ImportSegAndReadHostMemory(const std::vector<H2DObjectView> &objec
     return Status::OK();
 }
 
+static size_t GetRemoteH2DGroupParallelismLimit()
+{
+    int32_t parallelism = datasystem::GetInt32FromEnv(HIXL_REMOTE_GROUP_PARALLELISM_ENV.c_str(), 4);
+    if (parallelism < 1) {
+        parallelism = 1;
+    }
+    return static_cast<size_t>(std::min(parallelism, MAX_HIXL_REMOTE_GROUP_PARALLELISM));
+}
+
+static size_t GetRemoteH2DGroupParallelism(size_t groupCount)
+{
+    return std::min(groupCount, GetRemoteH2DGroupParallelismLimit());
+}
+
+static ThreadPool &GetRemoteH2DGroupThreadPool()
+{
+    static ThreadPool pool(0, GetRemoteH2DGroupParallelismLimit(), "rh2d_groups");
+    return pool;
+}
+
+static Status ImportRemoteH2DGroups(const std::vector<RemoteH2DGroup> &remoteGroups)
+{
+    size_t parallelism = GetRemoteH2DGroupParallelism(remoteGroups.size());
+    if (parallelism <= 1) {
+        for (const auto &group : remoteGroups) {
+            RETURN_IF_NOT_OK(ImportSegAndReadHostMemory(group.objects));
+        }
+        return Status::OK();
+    }
+
+    LOG(INFO) << "[RH2D] Parallel remote H2D groups enabled, groups=" << remoteGroups.size()
+              << ", parallelism=" << parallelism;
+    Status firstError = Status::OK();
+    auto &pool = GetRemoteH2DGroupThreadPool();
+    std::vector<std::future<Status>> futures;
+    futures.reserve(remoteGroups.size());
+    for (size_t i = 0; i < remoteGroups.size(); ++i) {
+        futures.emplace_back(pool.Submit([&remoteGroups, i] {
+            return ImportSegAndReadHostMemory(remoteGroups[i].objects);
+        }));
+    }
+    for (auto &future : futures) {
+        Status status = future.get();
+        if (status.IsError() && firstError.IsOk()) {
+            firstError = status;
+        }
+    }
+    return firstError;
+}
+
+static bool CanWriteDeviceDataToRemoteHost(const std::vector<Buffer *> &bufferList)
+{
+    (void)bufferList;
+#ifdef USE_NPU
+    if (!IsRemoteH2DEnabled() || FLAGS_remote_h2d_link_type != "HCCS") {
+        return false;
+    }
+    for (auto *buffer : bufferList) {
+        if (buffer == nullptr || buffer->GetRemoteHostInfo() == nullptr) {
+            return false;
+        }
+    }
+    return !bufferList.empty();
+#else
+    return false;
+#endif
+}
+
+#ifdef USE_NPU
+static Status BuildRemoteHostBlobOffsets(const DeviceBlobList &devBlobList, Buffer *buffer,
+                                         std::vector<uint64_t> &offsets)
+{
+    RETURN_RUNTIME_ERROR_IF_NULL(buffer);
+    const auto bufferSize = buffer->GetSize();
+    CHECK_FAIL_RETURN_STATUS(bufferSize >= 0, K_RUNTIME_ERROR,
+                             FormatString("Invalid negative buffer size %ld.", bufferSize));
+    const auto bufferSizeU64 = static_cast<uint64_t>(bufferSize);
+
+    uint64_t offset = 0;
+    offsets.clear();
+    offsets.reserve(devBlobList.blobs.size() + 1);
+    offsets.emplace_back(offset);
+    for (size_t i = 0; i < devBlobList.blobs.size(); ++i) {
+        const auto &blob = devBlobList.blobs[i];
+        CHECK_FAIL_RETURN_STATUS(blob.size <= std::numeric_limits<uint64_t>::max() - offset, K_RUNTIME_ERROR,
+                                 FormatString("Payload-only blob offset overflows, index: %zu.", i));
+        offset += blob.size;
+        CHECK_FAIL_RETURN_STATUS(
+            offset <= bufferSizeU64, K_RUNTIME_ERROR,
+            FormatString("Payload-only blob end offset %zu exceeds buffer size %zu, blob index: %zu.", offset,
+                         bufferSizeU64, i));
+        offsets.emplace_back(offset);
+    }
+    return Status::OK();
+}
+
+struct HixlWriteBatch {
+    RemoteH2DRootInfoPb rootInfo;
+    std::vector<RemoteHostSegmentPb> segments;
+    std::vector<HixlTransferDesc> descs;
+};
+
+static Status GetOrCreateHixlWriteBatch(const RemoteH2DRootInfoPb &rootInfo,
+                                        std::unordered_map<std::string, size_t> &rootInfoToIndexMapping,
+                                        std::vector<HixlWriteBatch> &batches, HixlWriteBatch *&batch)
+{
+    const auto &rootInternal = rootInfo.internal();
+    CHECK_FAIL_RETURN_STATUS(!rootInternal.empty(), K_RUNTIME_ERROR, "RemoteH2D root info is empty.");
+    auto iter = rootInfoToIndexMapping.find(rootInternal);
+    if (iter == rootInfoToIndexMapping.end()) {
+        iter = rootInfoToIndexMapping.emplace(rootInternal, batches.size()).first;
+        HixlWriteBatch newBatch;
+        newBatch.rootInfo = rootInfo;
+        batches.emplace_back(std::move(newBatch));
+    }
+    batch = &batches[iter->second];
+    return Status::OK();
+}
+
+static Status AppendRemoteHostWriteDescs(const DeviceBlobList &devBlobList, Buffer *buffer,
+                                         const RemoteHostSegmentPb &seg, HixlWriteBatch &batch)
+{
+    constexpr uint64_t maxAddr = std::numeric_limits<uint64_t>::max();
+    CHECK_FAIL_RETURN_STATUS(seg.seg_data_offset() <= seg.seg_len(), K_RUNTIME_ERROR,
+                             FormatString("Remote segment data offset %zu exceeds segment length %zu.",
+                                          seg.seg_data_offset(), seg.seg_len()));
+    CHECK_FAIL_RETURN_STATUS(seg.seg_va() <= maxAddr - seg.seg_data_offset(), K_RUNTIME_ERROR,
+                             "Remote segment base address overflows.");
+    const uint64_t remoteDataBase = seg.seg_va() + seg.seg_data_offset();
+
+    std::vector<uint64_t> offsets;
+    RETURN_IF_NOT_OK(BuildRemoteHostBlobOffsets(devBlobList, buffer, offsets));
+    const auto &blobs = devBlobList.blobs;
+    for (size_t i = 0; i < blobs.size(); ++i) {
+        const uint64_t offset = offsets[i];
+        const uint64_t nextOffset = offsets[i + 1];
+        CHECK_FAIL_RETURN_STATUS(nextOffset <= seg.seg_len() - seg.seg_data_offset(), K_RUNTIME_ERROR,
+                                 FormatString("Blob end offset %zu exceeds remote segment payload size %zu.",
+                                              nextOffset, seg.seg_len() - seg.seg_data_offset()));
+        const uint64_t len = nextOffset - offset;
+        CHECK_FAIL_RETURN_STATUS(len == blobs[i].size, K_RUNTIME_ERROR,
+                                 "The data size of device and host is not equal.");
+        CHECK_FAIL_RETURN_STATUS(blobs[i].pointer != nullptr, K_INVALID, "Device blob pointer cannot be null.");
+        CHECK_FAIL_RETURN_STATUS(remoteDataBase <= maxAddr - offset, K_RUNTIME_ERROR, "Remote blob address overflows.");
+        batch.descs.push_back(HixlTransferDesc{ reinterpret_cast<uintptr_t>(blobs[i].pointer),
+                                                remoteDataBase + offset, len });
+    }
+    return Status::OK();
+}
+
+static Status BuildHixlWriteBatches(const std::vector<DeviceBlobList> &devBlobList,
+                                    const std::vector<Buffer *> &bufferList, std::vector<HixlWriteBatch> &batches)
+{
+    PerfPoint buildPoint(PerfKey::CLIENT_RH2D_WRITE_BUILD_TRANSFER_DESCS);
+    std::unordered_map<std::string, size_t> rootInfoToIndexMapping;
+    for (size_t i = 0; i < bufferList.size(); ++i) {
+        auto *buffer = bufferList[i];
+        RETURN_RUNTIME_ERROR_IF_NULL(buffer);
+        auto *remoteHostInfo = buffer->GetRemoteHostInfo();
+        RETURN_RUNTIME_ERROR_IF_NULL(remoteHostInfo);
+
+        HixlWriteBatch *batch = nullptr;
+        RETURN_IF_NOT_OK(
+            GetOrCreateHixlWriteBatch(remoteHostInfo->root_info(), rootInfoToIndexMapping, batches, batch));
+        const auto &seg = remoteHostInfo->remote_host_segment();
+        batch->segments.emplace_back(seg);
+        RETURN_IF_NOT_OK(AppendRemoteHostWriteDescs(devBlobList[i], buffer, seg, *batch));
+    }
+    return Status::OK();
+}
+
+static Status SubmitHixlWriteBatches(const std::vector<HixlWriteBatch> &batches)
+{
+    for (const auto &batch : batches) {
+        std::shared_ptr<RemoteH2DContext> p2pComm;
+        {
+            PerfPoint commInitPoint(PerfKey::CLIENT_RH2D_WRITE_COMM_INIT);
+            RETURN_IF_NOT_OK(RemoteH2DManager::Instance().P2PCommInitRootInfo(batch.rootInfo.internal(), batch.rootInfo,
+                                                                              P2P_RECEIVER, p2pComm));
+        }
+        for (const auto &seg : batch.segments) {
+            PerfPoint importPoint(PerfKey::CLIENT_RH2D_WRITE_IMPORT_HOST_SEG);
+            RETURN_IF_NOT_OK(RemoteH2DManager::Instance().ImportHostSegment(p2pComm->remoteEndpoint, seg));
+        }
+        PerfPoint transferPoint(PerfKey::CLIENT_RH2D_WRITE_TRANSFER_BATCH);
+        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().TransferBatch(HixlTransferOp::WRITE, batch.descs, p2pComm));
+    }
+    return Status::OK();
+}
+#endif
+
+static Status WriteDeviceDataToRemoteHost(const std::vector<DeviceBlobList> &devBlobList,
+                                          const std::vector<Buffer *> &bufferList)
+{
+    (void)devBlobList;
+    (void)bufferList;
+#ifdef USE_NPU
+    CHECK_FAIL_RETURN_STATUS(devBlobList.size() == bufferList.size(), K_INVALID,
+                             FormatString("The devBlobList size %zu is not equal to bufferList size %zu",
+                                          devBlobList.size(), bufferList.size()));
+    CHECK_FAIL_RETURN_STATUS(!devBlobList.empty(), K_INVALID, "The devBlobList is empty");
+
+    PerfPoint point(PerfKey::CLIENT_RH2D_SCATTER_BATCH);
+    PerfPoint writeRemotePoint(PerfKey::CLIENT_RH2D_WRITE_REMOTE_HOST);
+    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().SetDeviceIdx(devBlobList.front().deviceIdx));
+
+    std::vector<HixlWriteBatch> batches;
+    RETURN_IF_NOT_OK(BuildHixlWriteBatches(devBlobList, bufferList, batches));
+    RETURN_IF_NOT_OK(SubmitHixlWriteBatches(batches));
+#endif
+    return Status::OK();
+}
+
+static std::vector<Buffer *> BuildBufferRawPtrList(const std::vector<std::shared_ptr<Buffer>> &bufferList)
+{
+    std::vector<Buffer *> bufferRawPtrList;
+    bufferRawPtrList.reserve(bufferList.size());
+    for (auto &buffer : bufferList) {
+        bufferRawPtrList.emplace_back(buffer.get());
+    }
+    return bufferRawPtrList;
+}
+
+static Status MaterializeDeviceBlobRefs(const std::vector<const DeviceBlobList *> &deviceBlobRefs,
+                                        std::vector<DeviceBlobList> &deviceBlobList)
+{
+    deviceBlobList.clear();
+    deviceBlobList.reserve(deviceBlobRefs.size());
+    for (const auto *blobList : deviceBlobRefs) {
+        CHECK_FAIL_RETURN_STATUS(blobList != nullptr, K_RUNTIME_ERROR, "Filtered DeviceBlobList ref is null");
+        deviceBlobList.emplace_back(*blobList);
+    }
+    return Status::OK();
+}
+
+static Status ValidateHixlPayloadOnlyBuffers(const std::vector<Buffer *> &bufferList)
+{
+    for (size_t i = 0; i < bufferList.size(); i++) {
+        CHECK_FAIL_RETURN_STATUS(
+            IsRemoteHostBuffer(bufferList[i]), K_RUNTIME_ERROR,
+            FormatString("HIXL remote-host buffer expected, but worker did not return host_info, index=%zu", i));
+    }
+    return Status::OK();
+}
+
 Status ObjectClientImpl::HostDataCopy2Device(const std::vector<DeviceBlobList> &devBlobList,
                                              std::vector<Buffer *> &existBufferList)
 {
@@ -1982,6 +2331,7 @@ Status ObjectClientImpl::HostDataCopy2Device(const std::vector<DeviceBlobList> &
     RETURN_IF_NOT_OK(ValidateDeviceBlobDeviceIdxBatch(devBlobList));
     CHECK_FAIL_RETURN_STATUS(devBlobList.size() == existBufferList.size(), K_INVALID,
                              "The size of devBlobList and existBufferList does not match");
+    RETURN_IF_NOT_OK(CheckHixlPayloadOnlyFallback(devBlobList, existBufferList));
     PerfPoint stagePoint(PerfKey::CLIENT_H2D_GROUP_SOURCES);
     if (!IsRemoteH2DEnabled()) {
         // Pure same-node H2D. Build non-owning object views directly from the caller's input without copying
@@ -2012,9 +2362,7 @@ Status ObjectClientImpl::HostDataCopy2Device(const std::vector<DeviceBlobList> &
                 devOcImpl_->MemCopyBetweenDevAndHost(localObjects, workerApi_[LOCAL_WORKER]->enableHugeTlb_));
         }
         stagePoint.RecordAndReset(PerfKey::CLIENT_H2D_REMOTE_COPY);
-        for (auto &group : remoteGroups) {
-            RETURN_IF_NOT_OK(ImportSegAndReadHostMemory(group.objects));
-        }
+        RETURN_IF_NOT_OK(ImportRemoteH2DGroups(remoteGroups));
         stagePoint.RecordAndReset(PerfKey::CLIENT_BATCH_BUFFER_DESTRUCT_GET);
     }
 
@@ -2023,6 +2371,53 @@ Status ObjectClientImpl::HostDataCopy2Device(const std::vector<DeviceBlobList> &
     stagePoint.Record();
     point.Record();
     return Status::OK();
+}
+
+Status ObjectClientImpl::CopyCreatedDeviceDataFromDevice(
+    const std::vector<const DeviceBlobList *> &filteredDeviceBlobRefs,
+    std::vector<std::shared_ptr<Buffer>> &bufferList, const std::vector<D2HObjectView> &d2hObjects,
+    uint64_t memoryAlignment, bool useHixlPayloadOnlyLayout)
+{
+    const bool hasExternalMetadata = HasExternalBlobMetadataBuffer(bufferList);
+    auto bufferRawPtrList = BuildBufferRawPtrList(bufferList);
+    if (useHixlPayloadOnlyLayout) {
+        RETURN_IF_NOT_OK(ValidateHixlPayloadOnlyBuffers(bufferRawPtrList));
+    }
+
+    if (hasExternalMetadata || useHixlPayloadOnlyLayout) {
+        std::vector<DeviceBlobList> filteredDeviceBlobList;
+        RETURN_IF_NOT_OK(MaterializeDeviceBlobRefs(filteredDeviceBlobRefs, filteredDeviceBlobList));
+        std::vector<size_t> payloadOnlySizes;
+        BlobListInfo payloadOnlyBlobInfo;
+        RETURN_IF_NOT_OK(PreparePayloadOnlySizeList(payloadOnlySizes, filteredDeviceBlobList, payloadOnlyBlobInfo));
+        for (size_t i = 0; i < bufferList.size(); i++) {
+            const auto &buffer = bufferList[i];
+            CHECK_FAIL_RETURN_STATUS(NeedsExternalBlobMetadata(buffer.get()), K_RUNTIME_ERROR,
+                                     "Mixed POSIX and payload-only buffers in one MSet batch are not supported");
+            CHECK_FAIL_RETURN_STATUS(payloadOnlySizes[i] <= static_cast<size_t>(buffer->GetSize()), K_RUNTIME_ERROR,
+                                     "Payload-only data exceeds the created buffer");
+            buffer->bufferInfo_->dataSize = payloadOnlySizes[i];
+        }
+        if (CanWriteDeviceDataToRemoteHost(bufferRawPtrList)) {
+            return WriteDeviceDataToRemoteHost(filteredDeviceBlobList, bufferRawPtrList);
+        }
+        return devOcImpl_->MemCopyBetweenDevAndHost(filteredDeviceBlobList, bufferRawPtrList,
+                                                    MemcpyKind::DEVICE_TO_HOST,
+                                                    workerApi_[LOCAL_WORKER]->enableHugeTlb_);
+    }
+
+    if (CanWriteDeviceDataToRemoteHost(bufferRawPtrList)) {
+        std::vector<DeviceBlobList> filteredDeviceBlobList;
+        RETURN_IF_NOT_OK(MaterializeDeviceBlobRefs(filteredDeviceBlobRefs, filteredDeviceBlobList));
+        return WriteDeviceDataToRemoteHost(filteredDeviceBlobList, bufferRawPtrList);
+    }
+
+    // Compose from refs and run D2H via the views built during filtering. The Buffer pointees remain stable
+    // when filterBufferList is moved into bufferList.
+    PerfPoint composePoint(PerfKey::CLIENT_D2H_COMPOSE_PREFIX);
+    RETURN_IF_NOT_OK(ComposeBufferDataRefs(filteredDeviceBlobRefs, bufferList, memoryAlignment));
+    composePoint.Record();
+    return devOcImpl_->MemCopyBetweenDevAndHost(d2hObjects, workerApi_[LOCAL_WORKER]->enableHugeTlb_);
 }
 
 Status ObjectClientImpl::DeviceDataCreate(const std::vector<std::string> &objectKeys,
@@ -2048,11 +2443,17 @@ Status ObjectClientImpl::DeviceDataCreate(const std::vector<std::string> &object
     BlobListInfo blobInfo;
     const auto memoryAlignment = workerApi_[LOCAL_WORKER]->GetMemoryAlignment();
     PerfPoint prepareInputPoint(PerfKey::CLIENT_D2H_PREPARE_INPUT);
-    RETURN_IF_NOT_OK(PrepareDataSizeList(dataSizeList, devBlobList, blobInfo, memoryAlignment));
+    const bool useHixlPayloadOnlyLayout = IsHixlRemoteHostTransferEnabled();
+    if (useHixlPayloadOnlyLayout) {
+        RETURN_IF_NOT_OK(PreparePayloadOnlySizeList(dataSizeList, devBlobList, blobInfo));
+    } else {
+        RETURN_IF_NOT_OK(PrepareDataSizeList(dataSizeList, devBlobList, blobInfo, memoryAlignment));
+    }
     prepareInputPoint.Record();
     VLOG(1) << blobInfo.ToString(true);
     exists.resize(objectKeys.size(), false);
-    RETURN_IF_NOT_OK(MultiCreate(objectKeys, dataSizeList, param, false, bufferList, exists));
+    RETURN_IF_NOT_OK(
+        MultiCreate(objectKeys, dataSizeList, param, false, bufferList, exists, useHixlPayloadOnlyLayout));
     RETURN_IF_NOT_OK(ValidateDeviceDataCreatePayload(devBlobList, exists));
     PerfPoint filterPoint(PerfKey::CLIENT_D2H_FILTER_SOURCES);
     std::vector<D2HObjectView> d2hObjects;
@@ -2062,14 +2463,8 @@ Status ObjectClientImpl::DeviceDataCreate(const std::vector<std::string> &object
         return Status::OK();
     }
     point.RecordAndReset(PerfKey::CLIENT_D2H_MEMCPY);
-    // Compose from refs and run D2H via the views built during filtering. The Buffer pointees remain stable
-    // when filterBufferList is moved into bufferList.
-    PerfPoint composePoint(PerfKey::CLIENT_D2H_COMPOSE_PREFIX);
-    RETURN_IF_NOT_OK(ComposeBufferDataRefs(filteredDeviceBlobRefs, bufferList, memoryAlignment));
-    composePoint.Record();
-    RETURN_IF_NOT_OK(devOcImpl_->MemCopyBetweenDevAndHost(d2hObjects, workerApi_[LOCAL_WORKER]->enableHugeTlb_));
-
-    return Status::OK();
+    return CopyCreatedDeviceDataFromDevice(filteredDeviceBlobRefs, bufferList, d2hObjects, memoryAlignment,
+                                           useHixlPayloadOnlyLayout);
 }
 
 Status ObjectClientImpl::MSetD2H(const std::vector<std::string> &objectKeys,
@@ -2089,6 +2484,13 @@ Status ObjectClientImpl::MSetD2H(const std::vector<std::string> &objectKeys,
         access.Result(rc).Record();
         return rc;
     }
+    if (!UseRoutedDeviceWrites()) {
+        auto cfgRc = UpdateClientHeteroTransportConfig(devBlobList[0].deviceIdx);
+        if (cfgRc.IsError()) {
+            access.Result(cfgRc).Record();
+            return cfgRc;
+        }
+    }
     auto status = UseRoutedDeviceWrites() ? MSetD2HRouted(objectKeys, devBlobList, setParam, outLocalSetKeys)
                                           : MSetD2HImpl(objectKeys, devBlobList, setParam, outLocalSetKeys);
     access.Result(status).Record();
@@ -2107,14 +2509,21 @@ std::shared_future<AsyncResult> ObjectClientImpl::AsyncMSetD2H(const std::vector
         return MakeFailedAsyncH2DFuture(*access, rc, devBlobList, objectKeys, objectKeys);
     }
 
-    if (!enableLocalCache_) {
-        return MakeFailedAsyncH2DFuture(*access, Status(K_NOT_SUPPORTED, "Routed D2RH supports synchronous writes only"),
-                                        devBlobList, objectKeys, objectKeys);
-    }
+    if (UseRoutedDeviceWrites()) {
+        if (!enableLocalCache_) {
+            return MakeFailedAsyncH2DFuture(*access, Status(K_NOT_SUPPORTED, "Routed D2RH supports synchronous writes only"),
+                                            devBlobList, objectKeys, objectKeys);
+        }
 
-    // D2H never touches RemoteH2DManager, so this path must not initialize or update RH2D configuration.
-    // Device-id consistency is enforced later in DeviceDataCreate (ValidateDeviceDataCreateBlobs +
-    // CheckDeviceValid), matching the synchronous MSetD2H path above.
+        // D2H never touches RemoteH2DManager, so this path must not initialize or update RH2D configuration.
+        // Device-id consistency is enforced later in DeviceDataCreate (ValidateDeviceDataCreateBlobs +
+        // CheckDeviceValid), matching the synchronous MSetD2H path above.
+    } else {
+        auto cfgRc = UpdateClientHeteroTransportConfig(devBlobList[0].deviceIdx);
+        if (cfgRc.IsError()) {
+            return MakeFailedAsyncH2DFuture(*access, cfgRc, devBlobList, objectKeys, objectKeys);
+        }
+    }
     auto asyncState = std::make_shared<AsyncMSetD2HState>(objectKeys, devBlobList, setParam);
     access->ObjectKeysSummaryRef(asyncState->objectKeys)
         .DataSizeProvider([asyncState] { return CalculateDeviceBlobSize(asyncState->devBlobList); });
@@ -2363,7 +2772,7 @@ Status ObjectClientImpl::Create(const std::string &objectKey, uint64_t dataSize,
 Status ObjectClientImpl::MultiCreate(const std::vector<std::string> &objectKeyList,
                                      const std::vector<uint64_t> &dataSizeList, const FullParam &param,
                                      const bool skipCheckExistence, std::vector<std::shared_ptr<Buffer>> &bufferList,
-                                     std::vector<bool> &exists)
+                                     std::vector<bool> &exists, bool requireRemoteHostInfo)
 {
     std::shared_lock<std::shared_timed_mutex> shutdownLck(shutdownMux_);
     RETURN_IF_NOT_OK(IsClientReady());
@@ -2392,12 +2801,13 @@ Status ObjectClientImpl::MultiCreate(const std::vector<std::string> &objectKeyLi
         RETURN_IF_NOT_OK(transportLayer_->CheckLocalUbSenderAdmission());
     }
     bool canUseShm = workerApi->IsShmEnable() && dataSizeSum >= workerApi->shmThreshold_;
-    if (canUseShm || IsUrmaEnabled() || !skipCheckExistence) {
+    const bool needHixlRemoteHostInfo = requireRemoteHostInfo && IsHixlRemoteHostTransferEnabled();
+    if (canUseShm || IsUrmaEnabled() || needHixlRemoteHostInfo || !skipCheckExistence) {
         if (!skipCheckExistence) {
             exists.assign(objectKeyList.size(), false);
         }
-        // Call MultiCreate if: 1) using shared memory, OR 2) UB enabled (need urma_info), OR 3) need to check existence
-        // When shared memory is unavailable but UB is enabled or we need to check existence, MultiCreate will use RPC
+        // Call MultiCreate if: 1) using shared memory, 2) UB enabled (need urma_info), 3) HIXL needs host_info,
+        // or 4) need to check existence. Without shared memory, MultiCreate can still use RPC for metadata.
         RETURN_IF_NOT_OK(
             workerApi->MultiCreate(skipCheckExistence, multiCreateParamList, version, exists, useShmTransfer));
     } else {
@@ -5109,16 +5519,12 @@ Status ObjectClientImpl::GetMetaInfo(const std::vector<std::string> &keys, const
     return Status::OK();
 }
 
-Status ObjectClientImpl::UpdateClientRemoteH2DConfig(int32_t devId)
+Status ObjectClientImpl::UpdateClientHeteroTransportConfig(int32_t devId)
 {
-    if (devId_ >= 0 && devId_ != devId) {
-        LOG(WARNING) << "The client device id is changing from " << devId_ << " to " << devId;
-    }
     const char *localIp = std::getenv("DS_HIXL_D2RH_LOCAL_IP");
     const auto &endpointIp = UseRoutedDeviceWrites() && localIp != nullptr && localIp[0] != '\0'
                                 ? std::string(localIp) : ipAddress_.Host();
-    RETURN_IF_NOT_OK(SetClientRemoteH2DConfig(enableRemoteH2D_, devId, endpointIp));
-    devId_ = devId;
+    RETURN_IF_NOT_OK(datasystem::UpdateClientHeteroTransportConfig(enableHeteroTransport_, devId, endpointIp));
     return Status::OK();
 }
 

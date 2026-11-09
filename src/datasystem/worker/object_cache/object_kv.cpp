@@ -99,6 +99,8 @@ void SetObjectEntryAccordingToMeta(const ObjectMetaPb &meta, uint64_t metaDataSi
               .entryState = StateInfo(DataFormat(configPb.data_format())),
               .lifeState = static_cast<ObjectLifeState>(meta.life_state()) }));
     }
+    entry->SetBlobSizes(
+        std::vector<uint64_t>(meta.device_info().blob_sizes().begin(), meta.device_info().blob_sizes().end()));
 }
 
 void SetEmptyObjectEntry(const std::string &objectKey, SafeObjType &entry)

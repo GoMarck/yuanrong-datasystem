@@ -57,6 +57,14 @@ int FreeDeviceMemory(void *deviceData);
 int GetDeviceIdx(int32_t &deviceIdx);
 
 /**
+ * @brief Get the physical device index mapped from a logical device index.
+ * @param[in] logicDeviceIdx The logical device index.
+ * @param[out] physicalDeviceIdx The physical device index.
+ * @return 0 if get success.
+ */
+int GetPhysicalDeviceId(int32_t logicDeviceIdx, int32_t &physicalDeviceIdx);
+
+/**
  * @brief Copy device memory from device to host.
  * @param[out] hostDst The destination host memory pointer.
  * @param[in] dstMaxSize The max size of destination pointer.

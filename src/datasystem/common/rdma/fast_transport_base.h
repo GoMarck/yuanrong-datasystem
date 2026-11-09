@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <string>
 #include <vector>
 
 #include "datasystem/common/rdma/urma_late_completion_observer.h"
@@ -46,12 +47,47 @@ static constexpr int URMA_REMOTE_ACK_TIMEOUT_STATUS = 9;
 Status RegisterFastTransportMemory(void *segAddress, const uint64_t &segSize);
 
 /**
+ * @brief Initialize the host-memory transport context before using transport-specific backing APIs.
+ * @return Status of the call.
+ */
+Status InitializeHostMemoryContext();
+
+/**
+ * @brief Allocate FabricMem host backing memory through the HIXL plugin.
+ * @param[in] size The allocation size.
+ * @param[out] ptr The allocated address.
+ * @return Status of the call.
+ */
+Status AllocateFabricMemory(uint64_t size, int32_t deviceId, void **ptr);
+
+/**
+ * @brief Get the device ids used to place FabricMem arenas.
+ * @param[out] deviceIds Parsed device ids.
+ * @return Status of the call.
+ */
+Status GetFabricMemoryArenaDeviceIds(std::vector<int32_t> &deviceIds);
+
+/**
+ * @brief Free FabricMem host backing memory allocated by AllocateFabricMemory.
+ * @param[in] ptr The allocated address.
+ * @return Status of the call.
+ */
+Status FreeFabricMemory(void *ptr);
+
+/**
  * @brief Register host side memory (shared memory) to NPU device as segment.
  * @param[in] data The memory address.
  * @param[in] dataSize The size of the memory segment.
  * @return Status of the call.
  */
 Status RegisterHostMemory(void *segAddress, const uint64_t &segSize);
+
+/**
+ * @brief Unregister host memory before releasing its backing allocation.
+ * @param[in] segAddress Starting address of the segment.
+ * @return Status of the call.
+ */
+Status UnregisterHostMemory(void *segAddress);
 
 /**
  * @brief Check if fast transport is enabled.
@@ -64,6 +100,12 @@ bool IsFastTransportEnabled();
  * @return true if remote H2D is enabled.
  */
 bool IsRemoteH2DEnabled();
+
+/**
+ * @brief Check whether shared memory arenas should be backed by FabricMem physical memory.
+ * @return True if HCCS RemoteH2D FabricMem is enabled.
+ */
+bool UsePhysicalFabricArena();
 
 /**
  * @brief Check if URMA is enabled.

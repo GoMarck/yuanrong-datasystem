@@ -100,6 +100,15 @@ public:
      * @return Allocation information if success; nullptr otherwise.
      */
     virtual Optional<Allocation> GetAllocation(void *pointer) const = 0;
+
+    /**
+     * @brief Get the physical memory size pre-allocated by this mmap.
+     * @return Pre-allocated physical memory size in bytes. Returns 0 for mappings without eager physical allocation.
+     */
+    virtual uint64_t GetPhysicalBackingSize() const
+    {
+        return 0;
+    }
 };
 }  // namespace memory
 }  // namespace datasystem

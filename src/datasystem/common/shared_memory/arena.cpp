@@ -42,6 +42,7 @@
 #include "datasystem/common/log/trace.h"
 #include "datasystem/common/metrics/kv_metrics.h"
 #include "datasystem/common/perf/perf_manager.h"
+#include "datasystem/common/rdma/fast_transport_base.h"
 #include "datasystem/common/shared_memory/allocator.h"
 #include "datasystem/common/shared_memory/jemalloc.h"
 #include "datasystem/common/shared_memory/mmap/flexible_mmap.h"
@@ -52,7 +53,6 @@
 #include "datasystem/common/util/status_helper.h"
 #include "datasystem/common/util/strings_util.h"
 #include "datasystem/common/util/validator.h"
-#include "datasystem/common/rdma/fast_transport_base.h"
 DS_DEFINE_uint32_dynamic(
     arena_per_tenant, 16,
     "The arena count for each tenant. Multiple arenas can improve the performance of share memory allocation for "
@@ -72,6 +72,8 @@ DS_DECLARE_uint32(ub_transport_arena_num);
 namespace datasystem {
 namespace memory {
 namespace {
+constexpr uint64_t K_FABRIC_MEM_ARENA_ALIGNMENT = 1ULL << 30;  // 1GB
+
 // Extent hooks execute synchronously inside Jemalloc::Allocate on this thread.
 struct ExtentAllocationDiagnostic {
     bool active = false;
@@ -351,9 +353,11 @@ void ArenaGroup::GetArenaGroupStat(ShmMemStat &stat)
     stat.numOfFds = fdPointerTable_.size();
     stat.realMemoryUsage = 0;
     stat.physicalMemoryUsage = 0;
+    stat.fabricMemPhysicalMemoryUsage = 0;
     for (const auto &arena : arenas_) {
         stat.realMemoryUsage += arena->GetRealMemoryUsage();
         stat.physicalMemoryUsage += arena->GetPhysicalMemoryUsage();
+        stat.fabricMemPhysicalMemoryUsage += arena->GetFabricMemPhysicalMemoryUsage();
     }
     std::shared_lock<SharedMutex> l(allocatedMutex_);
     stat.numOfAllocated = allocatedTable_.size();
@@ -405,7 +409,26 @@ ArenaManager::ArenaManager(bool populate, bool scaling, ssize_t decayMs)
     arenas_.resize(ARENAS_INIT_SIZE);
     Jemalloc::Init(&ArenaManager::AllocHook, &ArenaManager::DestroyHook, &ArenaManager::CommitHook);
     handleExpiredTenantThread_ = std::make_unique<ThreadPool>(handleExpiredTenantThreadNum_, 0, "TenantExpired");
-    if (populate || FLAGS_enable_huge_tlb || NeedRegisterWholeArena()) {
+    const bool usePhysicalFabricArena = UsePhysicalFabricArena();
+    if (usePhysicalFabricArena) {
+        std::vector<int32_t> fabricDeviceIds;
+        // Worker startup validates remote_h2d_device_ids while initializing RemoteH2DManager before allocator
+        // initialization. ArenaManager only reuses the parsed list to derive the FabricMem arena count.
+        Status rc = GetFabricMemoryArenaDeviceIds(fabricDeviceIds);
+        if (rc.IsOk()) {
+            auto arenaNum = static_cast<uint32_t>(fabricDeviceIds.size());
+            if (arenaNum != FLAGS_arena_per_tenant) {
+                LOG(INFO) << "HCCS FabricMem arena count adjusted from " << FLAGS_arena_per_tenant << " to "
+                          << arenaNum << " according to remote_h2d_device_ids=" << VectorToString(fabricDeviceIds);
+            }
+            FLAGS_arena_per_tenant = arenaNum;
+        } else {
+            // Keep this path non-fatal because constructors cannot return Status. In normal worker startup this should
+            // be unreachable: invalid FabricMem device ids fail earlier during RemoteH2DManager initialization.
+            LOG(ERROR) << "Failed to resolve HCCS FabricMem arena device ids: " << rc.ToString();
+        }
+        FLAGS_enable_fallocate = false;
+    } else if (populate || FLAGS_enable_huge_tlb || NeedRegisterWholeArena()) {
         // Adding multiple arenas per tenant allows parallel physical memory binding operations across different arenas.
         // For scenarios requiring pre-allocation of physical memory, a single arena is sufficient.
         FLAGS_arena_per_tenant = 1;
@@ -506,6 +529,21 @@ Status ArenaManager::ComputeArenaParams(CacheType type, uint64_t maxSize, ArenaP
     arenasNum = (type == CacheType::DEV_DEVICE || type == CacheType::DEV_HOST) ? 1 : arenasNum;
     params.mmapSizeForArena = mmapSize;
     params.fakeAllocateSizeForArena = maxSize;
+    CHECK_FAIL_RETURN_STATUS(arenasNum > 0, K_RUNTIME_ERROR, "Arena number must be greater than 0");
+    if (type == CacheType::MEMORY && UsePhysicalFabricArena()) {
+        // FabricMem arenas pre-allocate physical memory during mmap initialization. For multiple arenas, split the
+        // configured shared memory limit across arenas while keeping each arena aligned for GB-scale physical chunks.
+        if (arenasNum > 1) {
+            CHECK_FAIL_RETURN_STATUS(mmapSize % arenasNum == 0, K_RUNTIME_ERROR,
+                                     FormatString("mmapSize %lu must be divisible by FabricMem arena num %u", mmapSize,
+                                                  arenasNum));
+            params.mmapSizeForArena = mmapSize / arenasNum;
+            params.fakeAllocateSizeForArena = maxSize / arenasNum;
+        }
+        CHECK_FAIL_RETURN_STATUS(params.mmapSizeForArena % K_FABRIC_MEM_ARENA_ALIGNMENT == 0, K_RUNTIME_ERROR,
+                                 FormatString("FabricMem arena size %lu must be aligned to 1GB",
+                                              params.mmapSizeForArena));
+    }
     if (type == CacheType::UB_TRANSPORT) {
         arenasNum = FLAGS_ub_transport_arena_num;
         CHECK_FAIL_RETURN_STATUS(arenasNum > 0, K_RUNTIME_ERROR, "Arena number must be greater than 0");
@@ -520,7 +558,6 @@ Status ArenaManager::ComputeArenaParams(CacheType type, uint64_t maxSize, ArenaP
                                  "No jemalloc size class fits in arena max size");
     }
     LOG(INFO) << "The fake allocate size for arena: " << params.fakeAllocateSizeForArena;
-    CHECK_FAIL_RETURN_STATUS(arenasNum > 0, K_RUNTIME_ERROR, "Arena number must be greater than 0");
     params.arenasNum = arenasNum;
     return Status::OK();
 }
@@ -589,6 +626,18 @@ void ArenaManager::FakeAllocate(CacheType type, const std::vector<uint64_t> &are
     for (const auto &arenaInd : arenaInds) {
         arenas_[arenaInd]->currentFakeAllocate_.store(false, std::memory_order_relaxed);
     }
+}
+
+uint64_t ArenaManager::GetFabricMemPhysicalMemoryUsage()
+{
+    std::shared_lock<SharedMutex> l(mutex_);
+    uint64_t usage = 0;
+    for (const auto &arena : arenas_) {
+        if (arena != nullptr) {
+            usage += arena->GetFabricMemPhysicalMemoryUsage();
+        }
+    }
+    return usage;
 }
 
 Status ArenaManager::CreateArenaGroup(const std::string &tenantId, CacheType type, uint64_t maxSize,

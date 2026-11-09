@@ -635,6 +635,10 @@
         "value": "false",
         "description": "Enable pipeline Host-to-Device (H2D) transfer to overlap host-side data preparation with device-side copies. Only effective when enable_urma is true; otherwise ignored. Default is false."
     },
+    "enable_shm_decrease_ref_queue": {
+        "value": "true",
+        "description": "Enable shared memory queue for client object-cache shm reference release. FabricMem mode requires this option to be false."
+    },
     "pipeline_h2d_thread_num": {
         "value": "64",
         "description": "Number of pipeline H2D worker threads. Valid range [8, 128]. Values outside the range fall back to the default (64) at runtime. Default is 64."
@@ -761,7 +765,7 @@
     },
     "remote_h2d_device_ids": {
         "value": "",
-        "description": "The NPU device ids to be used for Remote H2D purposes given as a list of comma seperated values, default is none. Assigning values enables RemoteH2D."
+        "description": "The NPU device ids to be used for Remote H2D purposes given as a list of comma separated values, default is none. Assigning values enables RemoteH2D. In HCCS FabricMem mode, the first id is used for the single HIXL engine and the full list is used for FabricMem arena placement."
     },
     "remote_h2d_link_type": {
         "value": "ROCE",
@@ -769,7 +773,11 @@
     },
     "remote_h2d_hccs_buffer_pool": {
         "value": "0:0",
-        "description": "HIXL buffer-pool spec for RH2D, format \"<count>:<size>\" (both positive), or \"0:0\" to disable the buffer pool. Only used when remote_h2d_link_type=HCCS."
+        "description": "HIXL buffer-pool spec for RH2D, format \"<count>:<size>\" (both positive), or \"0:0\" to disable the buffer pool. Only used when remote_h2d_link_type=HCCS and remote_h2d_hccs_enable_fabric_mem=false."
+    },
+    "remote_h2d_hccs_enable_fabric_mem": {
+        "value": "false",
+        "description": "Enable HIXL FabricMem mode for HCCS RH2D. Requires CANN 9.0.0+ and HDK 26.0.0+. This mode is mutually exclusive with HIXL buffer-pool mode."
     },
     "urma_failover_success_rate_ratio": {
         "value": "0.5",

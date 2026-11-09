@@ -31,6 +31,7 @@
 #include "datasystem/common/parallel/parallel_for.h"
 #include "datasystem/common/perf/perf_manager.h"
 #include "datasystem/common/inject/inject_point.h"
+#include "datasystem/common/rdma/fast_transport_base.h"
 #include "datasystem/common/rdma/fast_transport_manager_wrapper.h"
 #include "datasystem/common/string_intern/string_ref.h"
 #include "datasystem/common/util/format.h"
@@ -49,13 +50,11 @@ DS_DECLARE_uint32(memory_alignment);
 namespace datasystem {
 namespace object_cache {
 
-
 static constexpr double US_PER_MS = 1000.0;
 
 static bool IsHexDigit(char value)
 {
-    return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f') ||
-        (value >= 'A' && value <= 'F');
+    return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f') || (value >= 'A' && value <= 'F');
 }
 
 static bool IsAllocationIdValid(const std::string &allocationId)
@@ -75,9 +74,7 @@ static bool IsAllocationIdValid(const std::string &allocationId)
 
 WorkerOcServiceCreateImpl::WorkerOcServiceCreateImpl(WorkerOcServiceCrudParam &initParam,
                                                      std::shared_ptr<AkSkManager> akSkManager, HostPort &localAddress)
-    : WorkerOcServiceCrudCommonApi(initParam),
-      akSkManager_(std::move(akSkManager)),
-      localAddress_(localAddress)
+    : WorkerOcServiceCrudCommonApi(initParam), akSkManager_(std::move(akSkManager)), localAddress_(localAddress)
 {
 }
 
@@ -124,8 +121,7 @@ Status WorkerOcServiceCreateImpl::ResolveCreateShmId(const std::string &allocati
     return Status::OK();
 }
 
-Status WorkerOcServiceCreateImpl::ReserveMultiAllocationIds(const MultiCreateReqPb &req,
-                                                            std::vector<ShmKey> &shmIds,
+Status WorkerOcServiceCreateImpl::ReserveMultiAllocationIds(const MultiCreateReqPb &req, std::vector<ShmKey> &shmIds,
                                                             std::vector<ShmKey> &reservations)
 {
     if (req.allocation_ids_size() == 0) {
@@ -153,15 +149,27 @@ void WorkerOcServiceCreateImpl::ReleaseReservations(const std::vector<ShmKey> &r
 
 Status WorkerOcServiceCreateImpl::FillCreateResponse(const ClientKey &clientId,
                                                      const std::shared_ptr<ShmUnit> &shmUnit,
-                                                     size_t metadataSize, CreateRspPb &resp, bool hixlWrite)
+                                                     size_t metadataSize, CreateRspPb &resp, bool hixlWrite,
+                                                     const std::string &commId,
+                                                     const RemoteH2DClientDeviceInfoPb *clientDeviceInfo)
 {
     (void)clientId;
     (void)hixlWrite;
+    (void)commId;
+    (void)clientDeviceInfo;
     resp.set_store_fd(shmUnit->GetFd());
     resp.set_mmap_size(shmUnit->GetMmapSize());
     resp.set_offset(shmUnit->GetOffset());
     resp.set_shm_id(shmUnit->GetId());
     resp.set_metadata_size(metadataSize);
+
+#ifdef BUILD_HETERO
+    if (IsRemoteH2DEnabled() && !commId.empty()) {
+        RETURN_IF_NOT_OK(FillRemoteH2DHostInfoFromShm(commId, shmUnit, metadataSize, false, *resp.mutable_host_info(),
+                                                      clientDeviceInfo, nullptr, true));
+    }
+#endif
+
 #ifdef USE_URMA
     if (!hixlWrite && !ClientShmEnabled(clientId) && IsUrmaEnabled()) {
         RETURN_IF_NOT_OK(FillRequestUrmaInfo(localAddress_, shmUnit->GetPointer(), shmUnit->GetOffset(), metadataSize,
@@ -202,7 +210,8 @@ Status WorkerOcServiceCreateImpl::Create(const CreateReqPb &req, CreateRspPb &re
     if (remainingTimeMs <= 0) {
         const auto totalUs = static_cast<uint64_t>(timer.ElapsedMicroSecond());
         FinalizeWorkerLatencyTrace(LatencyTickKey::WORKER_CREATE_END, config, traceEnabled, totalUs, false, resp);
-        Status rc = Status(StatusCode::K_RPC_DEADLINE_EXCEEDED,
+        Status rc = Status(
+            StatusCode::K_RPC_DEADLINE_EXCEEDED,
             FormatString("The create request process time has exceeded the request timeout time (remaining: %lld ms)",
                          remainingTimeMs));
         access.Result(rc).Record();
@@ -214,9 +223,11 @@ Status WorkerOcServiceCreateImpl::Create(const CreateReqPb &req, CreateRspPb &re
         access.Result(authRc).Record();
         return authRc;
     }
+    const auto *clientDeviceInfo =
+        req.has_remote_h2d_client_device_info() ? &req.remote_h2d_client_device_info() : nullptr;
     Status rc = CreateImpl(tenantId, ClientKey::Intern(req.client_id()), req.object_key(), req.data_size(),
-                           req.request_timeout(), req.allocation_id(), resp,
-                           static_cast<CacheType>(req.cache_type()));
+                           req.request_timeout(), req.allocation_id(), req.comm_id(), resp,
+                           static_cast<CacheType>(req.cache_type()), clientDeviceInfo);
     const auto totalUs = static_cast<uint64_t>(timer.ElapsedMicroSecond());
     FinalizeWorkerLatencyTrace(LatencyTickKey::WORKER_CREATE_END, config, traceEnabled, totalUs, true, resp);
     access.Result(rc).Record();
@@ -230,10 +241,14 @@ Status WorkerOcServiceCreateImpl::Create(const CreateReqPb &req, CreateRspPb &re
 }
 
 Status WorkerOcServiceCreateImpl::CreateImpl(const std::string &tenantId, const ClientKey &clientId,
-                                             const std::string &rawObjectKey, size_t dataSize,
-                                             int64_t requestTimeoutMs, const std::string &allocationId,
-                                             CreateRspPb &resp, CacheType cacheType)
+                                             const std::string &rawObjectKey, size_t dataSize, int64_t requestTimeoutMs,
+                                             const std::string &allocationId, const std::string &commId,
+                                             CreateRspPb &resp, CacheType cacheType,
+                                             const RemoteH2DClientDeviceInfoPb *clientDeviceInfo)
 {
+    (void)clientDeviceInfo;
+    CHECK_FAIL_RETURN_STATUS(!UsePhysicalFabricArena() || !commId.empty(), K_NOT_SUPPORTED,
+                             "FabricMem Create requires HIXL/RH2D host_info support from client.");
     auto objectKey = TenantAuthManager::ConstructNamespaceUriWithTenantId(tenantId, rawObjectKey);
     std::shared_ptr<SafeObjType> entry;
     bool isExist = objectTable_->Get(objectKey, entry).IsOk();
@@ -244,6 +259,8 @@ Status WorkerOcServiceCreateImpl::CreateImpl(const std::string &tenantId, const 
             CHECK_FAIL_RETURN_STATUS(!(*entry)->IsSealed(), K_OC_ALREADY_SEALED, "Cannot create sealed object.");
         }
     }
+
+    // Handle allocation ID reservation (for client-provided UUID support)
     ShmKey shmId;
     bool reserved = false;
     RETURN_IF_NOT_OK(ResolveCreateShmId(allocationId, shmId, reserved));
@@ -260,7 +277,7 @@ Status WorkerOcServiceCreateImpl::CreateImpl(const std::string &tenantId, const 
         "worker allocate memory failed");
 
     shmUnit->id = shmId;
-    RETURN_IF_NOT_OK(FillCreateResponse(clientId, shmUnit, metadataSize, resp));
+    RETURN_IF_NOT_OK(FillCreateResponse(clientId, shmUnit, resp, commId, clientDeviceInfo));
     bool reclaimable = !ClientShmEnabled(clientId);
     INJECT_POINT_NO_RETURN("worker.Create.reclaimable", [&reclaimable](bool value) { reclaimable = value; });
 #ifdef WITH_TESTS
@@ -307,10 +324,11 @@ bool WorkerOcServiceCreateImpl::IsMultiCreateObjectExisting(const MultiCreateReq
     return exists;
 }
 
-Status WorkerOcServiceCreateImpl::AllocateMultiCreateShmUnit(
-    const MultiCreateReqPb &req, int index, const std::string &objectKey,
-    const std::vector<std::shared_ptr<ShmOwner>> &shmOwners,
-    const std::vector<uint32_t> &shmIndexMapping, std::shared_ptr<ShmUnit> &shmUnit)
+Status WorkerOcServiceCreateImpl::AllocateMultiCreateShmUnit(const MultiCreateReqPb &req, int index,
+                                                             const std::string &objectKey,
+                                                             const std::vector<std::shared_ptr<ShmOwner>> &shmOwners,
+                                                             const std::vector<uint32_t> &shmIndexMapping,
+                                                             std::shared_ptr<ShmUnit> &shmUnit)
 {
     std::shared_ptr<ShmOwner> shmOwner;
     if (shmIndexMapping.size() > static_cast<size_t>(index) && shmOwners.size() > shmIndexMapping[index]) {
@@ -327,21 +345,18 @@ Status WorkerOcServiceCreateImpl::AllocateMultiCreateShmUnit(
 
 Status WorkerOcServiceCreateImpl::FillMultiCreateShmUnits(
     const MultiCreateReqPb &req, const std::string &tenantId, const ClientKey &clientId,
-    const std::vector<std::shared_ptr<ShmOwner>> &shmOwners,
-    const std::vector<uint32_t> &shmIndexMapping, const std::vector<ShmKey> &requestShmIds,
-    std::vector<std::shared_ptr<ShmUnit>> &shmUnits, std::vector<CreateRspPb> &subRsp,
-    std::vector<Status> &results, MultiCreateRspPb &resp)
+    const std::vector<std::shared_ptr<ShmOwner>> &shmOwners, const std::vector<uint32_t> &shmIndexMapping,
+    const std::vector<ShmKey> &requestShmIds, std::vector<std::shared_ptr<ShmUnit>> &shmUnits,
+    std::vector<CreateRspPb> &subRsp, std::vector<Status> &results, MultiCreateRspPb &resp, const std::string &commId,
+    const RemoteH2DClientDeviceInfoPb *clientDeviceInfo)
 {
-    const auto metadataSize = GetMetadataSize();
     for (int index = 0; index < req.object_key_size(); ++index) {
-        const auto objectKey =
-            TenantAuthManager::ConstructNamespaceUriWithTenantId(tenantId, req.object_key(index));
+        const auto objectKey = TenantAuthManager::ConstructNamespaceUriWithTenantId(tenantId, req.object_key(index));
         if (IsMultiCreateObjectExisting(req, index, objectKey, resp)) {
             continue;
         }
         PerfPoint point(PerfKey::WORKER_MULTI_CREATE_ALLOC_FOR_OBJECT);
-        results[index] = AllocateMultiCreateShmUnit(
-            req, index, objectKey, shmOwners, shmIndexMapping, shmUnits[index]);
+        results[index] = AllocateMultiCreateShmUnit(req, index, objectKey, shmOwners, shmIndexMapping, shmUnits[index]);
         RETURN_IF_NOT_OK_PRINT_ERROR_MSG(results[index], "worker allocate memory failed");
         point.RecordAndReset(PerfKey::WORKER_MULTI_CREATE_GENERATE_SHM_UUID);
         if (requestShmIds.empty()) {
@@ -353,7 +368,7 @@ Status WorkerOcServiceCreateImpl::FillMultiCreateShmUnits(
         }
         point.RecordAndReset(PerfKey::WORKER_MULTI_CREATE_FILL_SUB_RSP);
         results[index] = FillCreateResponse(clientId, shmUnits[index], metadataSize, subRsp[index],
-                                                   req.hixl_layouts_size() > 0);
+                                            req.hixl_layouts_size() > 0, commId, clientDeviceInfo);
         if (results[index].IsOk() && req.hixl_layouts_size() > 0) {
             results[index] = FillHixlTarget(req, index, shmUnits[index], subRsp[index]);
         }
@@ -421,6 +436,8 @@ Status WorkerOcServiceCreateImpl::FillHixlTarget(const MultiCreateReqPb &req, in
 Status WorkerOcServiceCreateImpl::MultiCreateImpl(const MultiCreateReqPb &req, const std::string &tenantId,
                                                   MultiCreateRspPb &resp)
 {
+    CHECK_FAIL_RETURN_STATUS(!UsePhysicalFabricArena() || !req.comm_id().empty(), K_NOT_SUPPORTED,
+                             "FabricMem MultiCreate requires HIXL/RH2D host_info support from client.");
     PerfPoint point(PerfKey::WORKER_MULTI_CREATE_AGGREGATE_ALLOC);
     int objectSize = req.object_key_size();
     const auto clientId = ClientKey::Intern(req.client_id());
@@ -456,13 +473,28 @@ Status WorkerOcServiceCreateImpl::MultiCreateImpl(const MultiCreateReqPb &req, c
     }
     std::vector<CreateRspPb> subRsp(objectSize);
     std::vector<Status> results(objectSize);
+    bool createSuccess = false;
+    Raii rollbackAllocatedShm([this, &createSuccess, &req, &subRsp]() {
+        if (createSuccess) {
+            return;
+        }
+        const auto clientId = ClientKey::Intern(req.client_id());
+        for (const auto &resp : subRsp) {
+            if (!resp.shm_id().empty()) {
+                LOG_IF_ERROR(memoryRefTable_->RemoveShmUnit(clientId, ShmKey::Intern(resp.shm_id())),
+                             "Rollback shm unit failed after MultiCreate error");
+            }
+        }
+    });
 
     point.RecordAndReset(PerfKey::WORKER_MULTI_CREATE_GET_SHM_UNITS);
     TbbMemoryClientRefTable::const_accessor clientAccessor;
-    memoryRefTable_->ClientTableGetOrInsert(clientId, clientAccessor);
+    memoryRefTable_->ClientTableGetOrInsert(ClientKey::Intern(req.client_id()), clientAccessor);
     std::vector<std::shared_ptr<ShmUnit>> shmUnits(objectSize);
-    RETURN_IF_NOT_OK(FillMultiCreateShmUnits(req, tenantId, clientId, shmOwners, shmIndexMapping,
-                                             requestShmIds, shmUnits, subRsp, results, resp));
+    const auto *clientDeviceInfo =
+        req.has_remote_h2d_client_device_info() ? &req.remote_h2d_client_device_info() : nullptr;
+    RETURN_IF_NOT_OK(FillMultiCreateShmUnits(req, tenantId, clientId, shmOwners, shmIndexMapping, requestShmIds,
+                                             shmUnits, subRsp, results, resp, req.comm_id(), clientDeviceInfo));
     for (const auto &result : results) {
         RETURN_IF_NOT_OK(result);
     }
@@ -481,6 +513,7 @@ Status WorkerOcServiceCreateImpl::MultiCreateImpl(const MultiCreateReqPb &req, c
     for (int i = 0; i < objectSize; i++) {
         resp.mutable_results()->Add(std::move(subRsp[i]));
     }
+    createSuccess = true;
     return Status::OK();
 }
 
@@ -515,8 +548,8 @@ Status WorkerOcServiceCreateImpl::MultiCreate(const MultiCreateReqPb &req, Multi
     Status authRc = req.is_routed() ? worker::AuthenticateRequest(akSkManager_, req, req.tenant_id(), tenantId)
                                     : worker::Authenticate(akSkManager_, req, tenantId);
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(authRc, "Authenticate failed.");
-    CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(Validator::IsBatchSizeUnderLimit(req.object_key_size()),
-                                         StatusCode::K_INVALID, "invalid object size");
+    CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(Validator::IsBatchSizeUnderLimit(req.object_key_size()), StatusCode::K_INVALID,
+                                         "invalid object size");
     CHECK_FAIL_RETURN_STATUS(req.object_key_size() == req.data_size_size(), K_INVALID,
                              FormatString("object key count %zu not match with data size count %zu",
                                           req.object_key_size(), req.data_size_size()));

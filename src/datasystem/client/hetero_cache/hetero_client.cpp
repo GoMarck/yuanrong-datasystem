@@ -101,6 +101,9 @@ Status HeteroClient::Init()
     auto access = AccessRecorder::Object(AccessRecorderKey::DS_HETERO_CLIENT_INIT);
     bool needRollbackState;
     auto rc = impl_->Init(needRollbackState, true);
+    if (rc.IsOk()) {
+        rc = impl_->InitRemoteH2D();
+    }
     impl_->CompleteHandler(rc.IsError(), needRollbackState);
     if (rc.IsOk()) {
         // Client logging must set the log directory before the metrics exporter is initialized.

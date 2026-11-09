@@ -21,6 +21,8 @@
 #ifndef DATASYSTEM_COMMON_FAST_TRANSPORT_MANAGER_WRAPPER_H
 #define DATASYSTEM_COMMON_FAST_TRANSPORT_MANAGER_WRAPPER_H
 
+#include <vector>
+
 #include "datasystem/common/rdma/rdma_util.h"
 #include "datasystem/common/object_cache/ub_port_health.h"
 #include "datasystem/common/rdma/urma_send_lane.h"
@@ -36,6 +38,7 @@
 #include "datasystem/common/util/status_helper.h"
 #include "datasystem/common/util/strings_util.h"
 #include "datasystem/protos/meta_transport.pb.h"
+#include "datasystem/protos/object_posix.pb.h"
 
 namespace datasystem {
 
@@ -49,18 +52,26 @@ bool NeedDelayReleaseShmUnit(const Status &status);
 Status GetClientCommUuid(std::string &commId);
 
 /**
- * @brief Client sets global remote h2d configurations according to connect options.
- * @param[in] enableRemoteH2D Whether to enable remote host to device data transfer.
- * @param[in] devId The NPU device id.
- * @param[in] localIp Optional. Local IP address for HCCS endpoint. Forwarded to
- *            RemoteH2DManager::SetClientRemoteH2DConfig.
+ * @brief Fill client RemoteH2D device information if RemoteH2D is enabled.
+ * @param[out] deviceInfo Logical and physical device ids used by worker HIXL engine selection.
+ * @param[out] filled Whether deviceInfo was populated.
  * @return Status of the call.
  */
-Status SetClientRemoteH2DConfig(bool enableRemoteH2D, uint32_t devId, const std::string &localIp = "");
+Status FillClientRemoteH2DDeviceInfo(RemoteH2DClientDeviceInfoPb *deviceInfo, bool *filled = nullptr);
+
+/**
+ * @brief Client sets global remote h2d configurations according to connect options.
+ * @param[in] enableHeteroTransport Whether to enable hetero device transport.
+ * @param[in] devId The NPU device id.
+ * @param[in] localIp Optional. Local IP address for HCCS endpoint. Forwarded to
+ *            RemoteH2DManager::UpdateClientHeteroTransportConfig.
+ * @return Status of the call.
+ */
+Status UpdateClientHeteroTransportConfig(bool enableHeteroTransport, uint32_t devId, const std::string &localIp = "");
 
 /**
  * @brief Configure the local H2D endpoint IP for HCCS on the worker side.
- *        This is a thin wrapper that is only active when BUILD_HETERO is defined;
+ *        This is a thin wrapper that is only active when USE_NPU is defined;
  *        otherwise the call is a no-op so workers do not need their own #ifdef.
  * @param[in] localIp The local endpoint IP.
  * @return Status of the call.
@@ -149,6 +160,26 @@ Status RemoveRemoteFastTransportClient(const ClientKey &clientId);
  */
 void GetSegmentInfoFromShmUnit(std::shared_ptr<ShmUnit> shmUnit, uint64_t memoryAddress, uint64_t &segAddress,
                                uint64_t &segSize);
+
+/**
+ * @brief Fill HIXL RemoteH2D host info from a local worker shm unit.
+ * @param[in] commId Client communicator id used as the HIXL endpoint key.
+ * @param[in] shmUnit Local worker shm unit that has been registered to RemoteH2D.
+ * @param[in] metadataSize Metadata bytes before user payload in the shm unit.
+ * @param[in] fillDataInfo Whether to parse D2H payload layout and fill device blob sizes.
+ * @param[out] hostInfo Host info returned to the client for one-sided HIXL transfer.
+ * @param[in] clientDeviceInfo Optional client device information used to select a compatible worker HIXL engine.
+ * @param[in] blobSizes Optional blob metadata for FabricMem payload-only layout.
+ * @param[in] avoidClientDeviceForSameNode Whether to avoid selecting the client's physical device. This should only be
+ *            set for direct same-node client-worker HIXL transfer. Cross-worker flows may still run on the same
+ *            physical node in unsupported one-node-multi-worker deployments, but are treated as cross-node here.
+ * @return Status of the call.
+ */
+Status FillRemoteH2DHostInfoFromShm(const std::string &commId, const std::shared_ptr<ShmUnit> &shmUnit,
+                                    uint64_t metadataSize, bool fillDataInfo, RemoteH2DHostInfoPb &hostInfo,
+                                    const RemoteH2DClientDeviceInfoPb *clientDeviceInfo = nullptr,
+                                    const std::vector<uint64_t> *blobSizes = nullptr,
+                                    bool avoidClientDeviceForSameNode = false);
 
 /**
  * @brief Trigger UrmaManager logic to import segment and write payload.

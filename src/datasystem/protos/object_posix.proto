@@ -54,6 +54,8 @@ message CreateReqPb {
   int64 request_timeout = 7;
   // Routed SDK requests are authenticated by signature and do not require registration on every target worker.
   bool is_routed = 8;
+  string comm_id = 9;
+  RemoteH2DClientDeviceInfoPb remote_h2d_client_device_info = 10;
 
   // put to the end, the previous data is used to generate AK and SK signatures.
   uint64 timestamp = 100;
@@ -90,6 +92,7 @@ message CreateRspPb {
   string shm_id = 4;
   uint64 metadata_size = 5;
   UrmaRemoteAddrPb urma_info = 6;
+  RemoteH2DHostInfoPb host_info = 8;
   HixlWriteTargetPb hixl_target = 30;
   repeated uint32 latency_phase_us = 20;
   uint32 latency_tick_dropped_count = 21; // Stores total dropped tick+phase count. See FormatLatencySummary for breakdown.
@@ -105,6 +108,8 @@ message MultiCreateReqPb {
   int64 request_timeout = 7;
   // Routed SDK requests are authenticated by signature and do not require registration on every target worker.
   bool is_routed = 8;
+  string comm_id = 9;
+  RemoteH2DClientDeviceInfoPb remote_h2d_client_device_info = 10;
 
   // put to the end, the previous data is used to generate AK and SK signatures.
   uint64 timestamp = 100;
@@ -242,6 +247,7 @@ message GetReqPb {
   int64 request_timeout = 13;
 
   repeated uint64 pipeline_rh2d_reqids = 14;
+  RemoteH2DClientDeviceInfoPb remote_h2d_client_device_info = 15;
 
   // put to the end, the previous data is used to generate AK and SK signatures.
   uint64 timestamp = 100;
@@ -267,6 +273,8 @@ message GetRspPb {
     uint32 object_index = 14;
     RemoteH2DHostInfoPb host_info = 15;
     int32 pipeline_done_step = 16;
+    // Only set when the shm payload uses external blob metadata.
+    repeated uint64 blob_sizes = 17;
   }
   message PayloadInfoPb {
   	string object_key = 1;

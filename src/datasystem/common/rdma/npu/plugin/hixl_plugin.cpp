@@ -16,6 +16,9 @@
 #include <acl/acl.h>
 #include <hixl/hixl.h>
 #include <hixl/hixl_types.h>
+#ifdef ASCEND_HIXL_FABRIC_MEM_AVAILABLE
+#include <adxl/adxl_engine.h>
+#endif
 
 #include <exception>
 #include <limits>
@@ -341,6 +344,45 @@ DsHixlResult TransferSync(DsHixlEngineHandle engine, const DsHixlTransferRequest
     });
 }
 
+#ifdef ASCEND_HIXL_FABRIC_MEM_AVAILABLE
+DsHixlResult MallocMemory(uint32_t memoryType, uint64_t length, void **ptr, uint32_t *vendorStatus) noexcept
+{
+    return InvokeNoexcept([=]() {
+        SetVendorStatus(vendorStatus, adxl::SUCCESS);
+        if (ptr == nullptr) {
+            return DS_HIXL_INVALID_ARGUMENT;
+        }
+        *ptr = nullptr;
+        if (length == 0 || !FitsSizeT(length)
+            || (memoryType != DS_HIXL_MEMORY_DEVICE && memoryType != DS_HIXL_MEMORY_HOST)) {
+            return DS_HIXL_INVALID_ARGUMENT;
+        }
+        adxl::MemType type = memoryType == DS_HIXL_MEMORY_DEVICE ? adxl::MEM_DEVICE : adxl::MEM_HOST;
+        adxl::Status status = adxl::AdxlEngine::MallocMem(type, static_cast<size_t>(length), ptr);
+        SetVendorStatus(vendorStatus, status);
+        if (status == adxl::SUCCESS && *ptr == nullptr) {
+            return DS_HIXL_RUNTIME_ERROR;
+        }
+        return ToDsResult(static_cast<hixl::Status>(status));
+    });
+}
+#endif
+
+#ifdef ASCEND_HIXL_FABRIC_MEM_AVAILABLE
+DsHixlResult FreeMemory(void *ptr, uint32_t *vendorStatus) noexcept
+{
+    return InvokeNoexcept([=]() {
+        SetVendorStatus(vendorStatus, adxl::SUCCESS);
+        if (ptr == nullptr) {
+            return DS_HIXL_INVALID_ARGUMENT;
+        }
+        adxl::Status status = adxl::AdxlEngine::FreeMem(ptr);
+        SetVendorStatus(vendorStatus, status);
+        return ToDsResult(static_cast<hixl::Status>(status));
+    });
+}
+#endif
+
 const DsHixlApi HIXL_API_V1 = {
     DS_HIXL_ABI_VERSION_1,
     sizeof(DsHixlApi),
@@ -353,6 +395,13 @@ const DsHixlApi HIXL_API_V1 = {
     &RegisterMemory,
     &DeregisterMemory,
     &TransferSync,
+#ifdef ASCEND_HIXL_FABRIC_MEM_AVAILABLE
+    &MallocMemory,
+    &FreeMemory,
+#else
+    nullptr,
+    nullptr,
+#endif
 };
 
 }  // namespace

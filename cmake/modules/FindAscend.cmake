@@ -43,6 +43,12 @@ find_file(ASCEND_HIXL_TYPES_HEADER hixl/hixl_types.h
         NO_CMAKE_SYSTEM_PATH
         NO_SYSTEM_ENVIRONMENT_PATH)
 
+find_file(ASCEND_HIXL_ADXL_HEADER adxl/adxl_engine.h
+        DOC   "Path to CANN HIXL ADXL header (optional)"
+        HINTS ${Ascend_ROOT}/include
+        NO_CMAKE_SYSTEM_PATH
+        NO_SYSTEM_ENVIRONMENT_PATH)
+
 find_file(ASCEND_HIXL_VERSION_HEADER version/hixl_version.h
         DOC   "Path to CANN HIXL version header (optional)"
         HINTS ${Ascend_ROOT}/include
@@ -58,6 +64,13 @@ find_file(ASCEND_HIXL_VERSION_INFO version.info
 find_library(METADEF_LIBRARY
         ${CMAKE_SHARED_LIBRARY_PREFIX}metadef${CMAKE_SHARED_LIBRARY_SUFFIX}
         DOC   "Path to Ascend metadef library (optional, required by HIXL public C++ APIs)"
+        HINTS ${Ascend_ROOT}/lib64
+        NO_CMAKE_SYSTEM_PATH
+        NO_SYSTEM_ENVIRONMENT_PATH)
+
+find_library(LLM_DATADIST_LIBRARY
+        ${CMAKE_SHARED_LIBRARY_PREFIX}llm_datadist${CMAKE_SHARED_LIBRARY_SUFFIX}
+        DOC   "Path to HIXL ADXL implementation library (optional, required by FabricMem allocation APIs)"
         HINTS ${Ascend_ROOT}/lib64
         NO_CMAKE_SYSTEM_PATH
         NO_SYSTEM_ENVIRONMENT_PATH)
@@ -95,6 +108,17 @@ if (ASCEND_HIXL_FOUND AND ASCEND_HIXL_VERSION AND ASCEND_HIXL_VERSION VERSION_GR
     set(ASCEND_HIXL_HCCS_SUPPORTED TRUE)
 endif()
 
+set(ASCEND_HIXL_FABRIC_MEM_SUPPORTED FALSE)
+if (ASCEND_HIXL_HCCS_SUPPORTED AND ASCEND_HIXL_ADXL_HEADER AND LLM_DATADIST_LIBRARY)
+    file(READ "${ASCEND_HIXL_ADXL_HEADER}" _ASCEND_HIXL_ADXL_CONTENT)
+    if ("${_ASCEND_HIXL_ADXL_CONTENT}" MATCHES "MallocMem"
+        AND "${_ASCEND_HIXL_ADXL_CONTENT}" MATCHES "FreeMem")
+        set(ASCEND_HIXL_FABRIC_MEM_SUPPORTED TRUE)
+        set(ASCEND_HIXL_FABRIC_MEM_LIBRARIES ${LLM_DATADIST_LIBRARY})
+    endif()
+    unset(_ASCEND_HIXL_ADXL_CONTENT)
+endif()
+
 message("ascend lib: ${ASCEND_LIBRARY}")
 message("hccl lib: ${HCCL_LIBRARY}")
 if (CANN_HIXL_LIBRARY)
@@ -109,6 +133,14 @@ else()
 endif()
 if (NOT ASCEND_HIXL_TYPES_HEADER)
     message(STATUS "cann_hixl type header: not found.")
+endif()
+if (NOT ASCEND_HIXL_ADXL_HEADER)
+    message(STATUS "cann_hixl ADXL header: not found.")
+endif()
+if (LLM_DATADIST_LIBRARY)
+    message(STATUS "llm_datadist lib: ${LLM_DATADIST_LIBRARY}")
+else()
+    message(STATUS "llm_datadist lib: not found.")
 endif()
 if (ASCEND_HIXL_VERSION)
     message(STATUS "cann_hixl version: ${ASCEND_HIXL_VERSION}")

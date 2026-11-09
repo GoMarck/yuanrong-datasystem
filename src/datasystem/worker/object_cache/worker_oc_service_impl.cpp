@@ -774,7 +774,9 @@ Status WorkerOCServiceImpl::Init()
     });
     workerDevOcManager_ = std::make_shared<WorkerDeviceOcManager>(this);
     lastReconTime_ = GetSteadyClockTimeStampMs();  // Record current timestamp in case we need reconciliation.
-    RETURN_IF_NOT_OK(StartDecreaseReferenceProcess());
+    if (FLAGS_enable_shm_decrease_ref_queue) {
+        RETURN_IF_NOT_OK(StartDecreaseReferenceProcess());
+    }
     auto kvEventConfig = BuildKvEventConfigFromJsonString(FLAGS_kv_events_config);
     if (kvEventConfig.enabled) {
         kvEventPublisher_ = std::make_shared<KvEventPublisher>(std::move(kvEventConfig));
@@ -2294,6 +2296,13 @@ Status WorkerOCServiceImpl::WarmupWorkerMasterRpc(const HostPort &masterAddr)
 
 Status WorkerOCServiceImpl::GetShmQueueUnit(uint32_t lockId, int &fd, uint64_t &mmapSize, ptrdiff_t &offset, ShmKey &id)
 {
+    if (!FLAGS_enable_shm_decrease_ref_queue) {
+        fd = -1;
+        mmapSize = 0;
+        offset = 0;
+        id = ShmKey::Intern("");
+        return Status::OK();
+    }
     size_t index = lockId / SHM_QUEUE_SLOT_NUM;
     std::shared_ptr<ShmCircularQueue> circularQueue;
     {
@@ -2750,6 +2759,9 @@ long FutexWake(uint32_t *pointer)
 
 Status WorkerOCServiceImpl::TryUnShmQueueLatch(uint32_t lockId)
 {
+    if (!FLAGS_enable_shm_decrease_ref_queue) {
+        return Status::OK();
+    }
     VLOG(1) << FormatString("Try to unlock lockId : %u", lockId);
     std::shared_ptr<ShmCircularQueue> circularQueue;
     {

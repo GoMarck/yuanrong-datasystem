@@ -54,12 +54,14 @@ DS_DEFINE_string(remote_h2d_device_ids, "",
                  "The NPU device ids to be used for Remote H2D purposes given as a list of comma seperated values");
 
 namespace datasystem {
-bool RemoteH2DManager::enableRemoteH2D_ = false;
-int32_t RemoteH2DManager::clientDeviceId_ = -1;
+RemoteH2DManager::ClientHeteroTransportConfig RemoteH2DManager::clientConfig_;
 std::string RemoteH2DManager::hccsLocalEndpointIp_;
 bool RemoteH2DManager::isClient_ = false;
+std::mutex RemoteH2DManager::configMutex_;
 
 namespace {
+constexpr uint32_t K_RH2D_DEVICE_INFO_WARNING_LOG_EVERY_N = 100;
+
 const char *InitStateToString(RemoteH2DContext::InitState state)
 {
     switch (state) {
@@ -90,6 +92,94 @@ std::string CommKeyForLog(const std::string &key)
 {
     return FormatString("len=%zu hash=%u", key.size(), MurmurHash3_32(key));
 }
+
+std::string DeviceIdsForLog(const std::vector<int32_t> &devIds)
+{
+    std::string result = "[";
+    for (size_t i = 0; i < devIds.size(); ++i) {
+        if (i > 0) {
+            result += ",";
+        }
+        result += std::to_string(devIds[i]);
+    }
+    result += "]";
+    return result;
+}
+
+std::string ClientDeviceInfoForLog(const RemoteH2DClientDeviceInfoPb *clientDeviceInfo)
+{
+    if (clientDeviceInfo == nullptr) {
+        return "<unset>";
+    }
+    return FormatString("logic=%d physical=%d", clientDeviceInfo->logic_device_id(),
+                        clientDeviceInfo->physical_device_id());
+}
+
+PerfKey Rh2dTransferBatchPerfKey(HixlTransferOp op)
+{
+    return op == HixlTransferOp::WRITE ? PerfKey::RH2D_MANAGER_TRANSFER_BATCH_WRITE
+                                       : PerfKey::RH2D_MANAGER_TRANSFER_BATCH_READ;
+}
+
+PerfKey Rh2dCommWaitReadyPerfKey(HixlTransferOp op)
+{
+    return op == HixlTransferOp::WRITE ? PerfKey::RH2D_MANAGER_COMM_WAIT_READY_WRITE
+                                       : PerfKey::RH2D_MANAGER_COMM_WAIT_READY_READ;
+}
+
+P2pLink LinkTypeFromFlag()
+{
+    return FLAGS_remote_h2d_link_type == "HCCS" ? P2P_LINK_HCCS : P2P_LINK_ROCE;
+}
+
+bool IsHccsFabricMemEnabled()
+{
+    return FLAGS_remote_h2d_link_type == "HCCS" && FLAGS_remote_h2d_hccs_enable_fabric_mem;
+}
+
+const char *P2pLinkName(P2pLink linkType)
+{
+    switch (linkType) {
+        case P2P_LINK_HCCS:
+            return "HCCS";
+        case P2P_LINK_ROCE:
+            return "ROCE";
+        default:
+            return "UNKNOWN";
+    }
+}
+
+std::string ClientHeteroTransportConfigForLog(bool enableHeteroTransport, int32_t devId, const std::string &localIp)
+{
+    return FormatString("(enable=%d, devId=%d, localIp=%s)", enableHeteroTransport, devId, localIp.c_str());
+}
+
+Status SetCommandLineOptionFromEnv(const char *envName, const char *optionName)
+{
+    const char *envValue = std::getenv(envName);
+    if (envValue == nullptr || strlen(envValue) == 0) {
+        return Status::OK();
+    }
+    std::string errMsg;
+    if (!SetCommandLineOption(optionName, envValue, errMsg)) {
+        RETURN_STATUS_LOG_ERROR(K_INVALID, FormatString("Invalid %s: %s", envName, errMsg.c_str()));
+    }
+    LOG(INFO) << "[RH2D] " << optionName << " overridden by " << envName << "=" << envValue;
+    return Status::OK();
+}
+
+Status ApplyClientHeteroTransportEnv(const std::string &localIp)
+{
+    RETURN_IF_NOT_OK(SetCommandLineOptionFromEnv("DS_RH2D_LINK_TYPE", "remote_h2d_link_type"));
+    RETURN_OK_IF_TRUE(FLAGS_remote_h2d_link_type != "HCCS");
+    RETURN_IF_NOT_OK(SetCommandLineOptionFromEnv("DS_HIXL_CS_ENABLE", "hixl_cs_enable"));
+    RETURN_IF_NOT_OK(
+        SetCommandLineOptionFromEnv("DS_RH2D_HCCS_ENABLE_FABRIC_MEM", "remote_h2d_hccs_enable_fabric_mem"));
+    if (!FLAGS_remote_h2d_hccs_enable_fabric_mem) {
+        RETURN_IF_NOT_OK(SetCommandLineOptionFromEnv("DS_RH2D_HCCS_BUFFER_POOL", "remote_h2d_hccs_buffer_pool"));
+    }
+    return RemoteH2DManager::SetRH2DLocalEndpointIp(localIp);
+}
 }  // namespace
 
 HostSegment::HostSegment(std::byte *data, std::uint64_t dataSize, P2pSegmentInfo segmentInfo,
@@ -111,57 +201,66 @@ RemoteH2DManager &RemoteH2DManager::Instance()
     return manager;
 }
 
-Status RemoteH2DManager::SetClientRemoteH2DConfig(bool enableRemoteH2D, uint32_t devId, const std::string &localIp)
+bool RemoteH2DManager::IsSameClientHeteroTransportConfig(bool enableHeteroTransport, uint32_t devId,
+                                                         const std::string &localIp)
 {
-    static std::mutex configMutex;
-    static bool hixlConfigured = false;
-    std::lock_guard<std::mutex> lock(configMutex);
-    if (hixlConfigured) {
-        CHECK_FAIL_RETURN_STATUS(enableRemoteH2D && clientDeviceId_ == static_cast<int32_t>(devId)
-                                     && hccsLocalEndpointIp_ == localIp, K_NOT_SUPPORTED,
-                                 "A shared HIXL SDK process requires consistent device, IP and RH2D settings");
-        return Instance().GetInitStatus();
+    const bool sameTransportConfig = clientConfig_.enableHeteroTransport == enableHeteroTransport;
+    const bool sameDeviceId = clientConfig_.devId == static_cast<int32_t>(devId);
+    const bool sameLocalIp = FLAGS_remote_h2d_link_type != "HCCS" || clientConfig_.localIp == localIp;
+    return sameTransportConfig && sameDeviceId && sameLocalIp;
+}
+
+Status RemoteH2DManager::CheckClientHeteroTransportConfig(bool enableHeteroTransport, uint32_t devId,
+                                                          const std::string &localIp)
+{
+    if (clientConfig_.devId < 0 || IsSameClientHeteroTransportConfig(enableHeteroTransport, devId, localIp)) {
+        return Status::OK();
     }
-    LOG(INFO) << "[RH2D] Client config: enable=" << enableRemoteH2D << " devId=" << devId << " localIp=" << localIp;
+    auto currentConfig = ClientHeteroTransportConfigForLog(
+        clientConfig_.enableHeteroTransport, clientConfig_.devId, clientConfig_.localIp);
+    auto newConfig = ClientHeteroTransportConfigForLog(enableHeteroTransport, static_cast<int32_t>(devId), localIp);
+    RETURN_STATUS_LOG_ERROR(K_RUNTIME_ERROR,
+                            "Client hetero transport config cannot change after initialization, current="
+                                + currentConfig + ", new=" + newConfig);
+}
+
+void RemoteH2DManager::CommitClientHeteroTransportConfig(bool enableHeteroTransport, uint32_t devId,
+                                                         const std::string &localIp)
+{
+    clientConfig_.enableHeteroTransport = enableHeteroTransport;
+    clientConfig_.devId = static_cast<int32_t>(devId);
+    clientConfig_.localIp = FLAGS_remote_h2d_link_type == "HCCS" ? localIp : "";
+}
+
+Status RemoteH2DManager::UpdateClientHeteroTransportConfig(bool enableHeteroTransport, uint32_t devId,
+                                                           const std::string &localIp)
+{
+    std::lock_guard<std::mutex> configLock(configMutex_);
+    if (clientConfig_.devId >= 0) {
+        RETURN_IF_NOT_OK(CheckClientHeteroTransportConfig(enableHeteroTransport, devId, localIp));
+        if (IsRemoteH2DEnabled()) {
+            return RemoteH2DManager::Instance().GetInitStatus();
+        }
+        return Status::OK();
+    }
+
+    // Note: The parameter needs to be consistent in the same client process.
+    LOG(INFO) << "[RH2D] Client hetero transport config: enable=" << enableHeteroTransport << " devId=" << devId
+              << " localIp=" << localIp;
     isClient_ = true;
-    enableRemoteH2D_ = enableRemoteH2D;
-    clientDeviceId_ = static_cast<int32_t>(devId);
-    std::string errMsg;
-    const char *envLinkType = std::getenv("DS_RH2D_LINK_TYPE");
-    if (envLinkType && strlen(envLinkType) > 0) {
-        if (!SetCommandLineOption("remote_h2d_link_type", envLinkType, errMsg)) {
-            RETURN_STATUS_LOG_ERROR(K_INVALID, FormatString("Invalid DS_RH2D_LINK_TYPE: %s", errMsg));
-        }
-        LOG(INFO) << "[RH2D] link_type overridden by DS_RH2D_LINK_TYPE=" << envLinkType;
+    RETURN_IF_NOT_OK(ApplyClientHeteroTransportEnv(localIp));
+    CommitClientHeteroTransportConfig(enableHeteroTransport, devId, localIp);
+    if (IsRemoteH2DEnabled()) {
+        auto &instance = RemoteH2DManager::Instance();
+        instance.initStatus_ = instance.Init();
+        RETURN_IF_NOT_OK(instance.GetInitStatus());
     }
-    if (FLAGS_remote_h2d_link_type == "HCCS") {
-        const char *envHixlCsEnable = std::getenv("DS_HIXL_CS_ENABLE");
-        if (envHixlCsEnable && strlen(envHixlCsEnable) > 0) {
-            if (!SetCommandLineOption("hixl_cs_enable", envHixlCsEnable, errMsg)) {
-                RETURN_STATUS_LOG_ERROR(K_INVALID, FormatString("Invalid DS_HIXL_CS_ENABLE: %s", errMsg));
-            }
-            LOG(INFO) << "[RH2D] hixl_cs_enable overridden by DS_HIXL_CS_ENABLE=" << envHixlCsEnable;
-        }
-        const char *envBufferPool = std::getenv("DS_RH2D_HCCS_BUFFER_POOL");
-        if (envBufferPool && strlen(envBufferPool) > 0) {
-            if (!SetCommandLineOption("remote_h2d_hccs_buffer_pool", envBufferPool, errMsg)) {
-                RETURN_STATUS_LOG_ERROR(K_INVALID, FormatString("Invalid DS_RH2D_HCCS_BUFFER_POOL: %s", errMsg));
-            }
-            LOG(INFO) << "[RH2D] hccs_buffer_pool overridden by DS_RH2D_HCCS_BUFFER_POOL=" << envBufferPool;
-        }
-        // Configure the HCCS local IP for this client process.
-        RETURN_IF_NOT_OK(SetRH2DLocalEndpointIp(localIp));
-    }
-    if (enableRemoteH2D) {
-        RETURN_IF_NOT_OK(Instance().GetInitStatus());
-    }
-    hixlConfigured = enableRemoteH2D && FLAGS_remote_h2d_link_type == "HCCS";
     return Status::OK();
 }
 
 bool RemoteH2DManager::IsRemoteH2DEnabled()
 {
-    return enableRemoteH2D_ || !FLAGS_remote_h2d_device_ids.empty();
+    return clientConfig_.enableHeteroTransport || !FLAGS_remote_h2d_device_ids.empty();
 }
 
 Status RemoteH2DManager::SetDeviceIdx(std::optional<int32_t> specifiedDevId)
@@ -203,8 +302,8 @@ Status RemoteH2DManager::GetClientCommUuid(std::string &commId)
 
 Status RemoteH2DManager::GetClientDeviceId(int32_t &devId)
 {
-    if (clientDeviceId_ >= 0) {
-        devId = clientDeviceId_;
+    if (clientConfig_.devId >= 0) {
+        devId = clientConfig_.devId;
         return Status::OK();
     }
     try {
@@ -214,6 +313,17 @@ Status RemoteH2DManager::GetClientDeviceId(int32_t &devId)
     } catch (const std::out_of_range &e) {
         RETURN_STATUS(StatusCode::K_INVALID, "RemoteH2D dev id out of range: " + FLAGS_remote_h2d_device_ids);
     }
+    return Status::OK();
+}
+
+Status RemoteH2DManager::GetClientRemoteH2DDeviceInfo(RemoteH2DClientDeviceInfoPb &deviceInfo)
+{
+    int32_t logicDeviceId = -1;
+    RETURN_IF_NOT_OK(GetClientDeviceId(logicDeviceId));
+    int32_t physicalDeviceId = logicDeviceId;
+    RETURN_IF_NOT_OK(ResolvePhysicalDeviceId(logicDeviceId, physicalDeviceId));
+    deviceInfo.set_logic_device_id(logicDeviceId);
+    deviceInfo.set_physical_device_id(physicalDeviceId);
     return Status::OK();
 }
 
@@ -234,23 +344,33 @@ Status RemoteH2DManager::GetWorkerDeviceIds(std::vector<int32_t> *devIds)
 
         while (start < devIdStr.size()) {
             size_t end = devIdStr.find(',', start);
+            int32_t devId = -1;
             try {
-                workerDeviceIds_.push_back(std::stoi(devIdStr.substr(start, end - start)));
+                devId = std::stoi(devIdStr.substr(start, end - start));
             } catch (const std::invalid_argument &e) {
                 RETURN_STATUS(K_INVALID, "remote_h2d_device_ids flag has invalid form: " + devIdStr
                                              + ". Must use form \"1, 2, 3\"");
             } catch (const std::out_of_range &e) {
                 RETURN_STATUS(K_INVALID, "remote_h2d_device_ids flag contains out of range number: " + devIdStr);
             }
+            if (devId < 0 || devId >= int32_t(npuCount)) {
+                RETURN_STATUS(K_INVALID, "remote_h2d_device_ids flag contains out of range id: "
+                                             + std::to_string(devId) + ". Total NPU count: "
+                                             + std::to_string(npuCount));
+            }
+            workerDeviceIds_.push_back(devId);
             if (end == std::string::npos) {
                 break;
             }
-            if (workerDeviceIds_[workerDeviceIds_.size() - 1] >= int32_t(npuCount)) {
-                RETURN_STATUS(K_INVALID, "remote_h2d_device_ids flag has invalid id: "
-                                             + std::to_string(workerDeviceIds_[workerDeviceIds_.size() - 1])
-                                             + ". Total NPU count: " + std::to_string(npuCount));
-            }
             start = end + 1;
+        }
+        if (IsHccsFabricMemEnabled() && workerDeviceIds_.size() > 1) {
+            LOG(INFO) << "[RH2D] HCCS FabricMem uses a single HIXL engine; effective engine device id is "
+                      << workerDeviceIds_.front() << ". Additional configured device ids are used only for "
+                      << "FabricMem arena placement: "
+                      << DeviceIdsForLog(std::vector<int32_t>(workerDeviceIds_.begin() + 1,
+                                                               workerDeviceIds_.end()));
+            workerDeviceIds_.resize(1);
         }
     }
     if (devIds != nullptr) {
@@ -259,7 +379,89 @@ Status RemoteH2DManager::GetWorkerDeviceIds(std::vector<int32_t> *devIds)
     return Status::OK();
 }
 
-Status RemoteH2DManager::P2PGetRootInfo(const std::string &key, RemoteH2DRootInfoPb *p2pRootInfo)
+Status RemoteH2DManager::ResolvePhysicalDeviceId(int32_t logicDeviceId, int32_t &physicalDeviceId)
+{
+    physicalDeviceId = logicDeviceId;
+    Status rc = acl::AclDeviceManager::Instance()->GetPhysicalDeviceId(logicDeviceId, physicalDeviceId);
+    if (rc.IsError()) {
+        physicalDeviceId = logicDeviceId;
+        LOG_FIRST_AND_EVERY_N(WARNING, K_RH2D_DEVICE_INFO_WARNING_LOG_EVERY_N)
+            << "[RH2D] Failed to resolve physical device id for logic devId=" << logicDeviceId
+            << ", use logic devId as comparable device id. Detail: " << rc.ToString();
+    }
+    return Status::OK();
+}
+
+Status RemoteH2DManager::GetWorkerPhysicalDeviceId(int32_t logicDeviceId, int32_t &physicalDeviceId)
+{
+    auto iter = workerPhysicalDeviceIds_.find(logicDeviceId);
+    if (iter != workerPhysicalDeviceIds_.end()) {
+        physicalDeviceId = iter->second;
+        return Status::OK();
+    }
+    LOG_FIRST_AND_EVERY_N(WARNING, K_RH2D_DEVICE_INFO_WARNING_LOG_EVERY_N)
+        << "[RH2D] Worker physical device id cache miss for logic devId=" << logicDeviceId
+        << ", resolve it without updating runtime cache.";
+    RETURN_IF_NOT_OK(ResolvePhysicalDeviceId(logicDeviceId, physicalDeviceId));
+    return Status::OK();
+}
+
+Status RemoteH2DManager::SelectWorkerDeviceId(const std::vector<int32_t> &devIds,
+                                              const RemoteH2DClientDeviceInfoPb *clientDeviceInfo,
+                                              bool avoidClientDeviceForSameNode, int32_t &devId)
+{
+    CHECK_FAIL_RETURN_STATUS(!devIds.empty(), K_INVALID, "RemoteH2D worker device ids are empty.");
+    const bool allowSameDeviceConnection = transport_ != nullptr && transport_->AllowSameDeviceConnection();
+    const bool avoidClientDevice = avoidClientDeviceForSameNode && !allowSameDeviceConnection
+                                   && clientDeviceInfo != nullptr && clientDeviceInfo->physical_device_id() >= 0;
+    std::vector<int32_t> candidates;
+    candidates.reserve(devIds.size());
+    if (avoidClientDevice) {
+        for (auto workerDevId : devIds) {
+            int32_t workerPhysicalDeviceId = workerDevId;
+            RETURN_IF_NOT_OK(GetWorkerPhysicalDeviceId(workerDevId, workerPhysicalDeviceId));
+            if (workerPhysicalDeviceId == clientDeviceInfo->physical_device_id()) {
+                continue;
+            }
+            candidates.emplace_back(workerDevId);
+        }
+    } else {
+        candidates = devIds;
+    }
+    if (candidates.empty()) {
+        RETURN_STATUS(K_RUNTIME_ERROR,
+                      FormatString("[RH2D] No worker HIXL device can avoid the client device. clientDevice=%s, "
+                                   "workerDeviceIds=%s",
+                                   ClientDeviceInfoForLog(clientDeviceInfo), DeviceIdsForLog(devIds)));
+    }
+    devId = candidates[nextDevIdIndex_.fetch_add(1, std::memory_order_relaxed) % candidates.size()];
+    int32_t selectedPhysicalDeviceId = devId;
+    RETURN_IF_NOT_OK(GetWorkerPhysicalDeviceId(devId, selectedPhysicalDeviceId));
+    LOG(INFO) << "[RH2D] Select worker HIXL device devId=" << devId
+              << " physicalDevId=" << selectedPhysicalDeviceId
+              << " clientDevice=" << ClientDeviceInfoForLog(clientDeviceInfo)
+              << " avoidClientDeviceForSameNode=" << avoidClientDeviceForSameNode
+              << " avoidClientDevice=" << avoidClientDevice
+              << " allowSameDeviceConnection=" << allowSameDeviceConnection
+              << " candidates=" << DeviceIdsForLog(candidates);
+    return Status::OK();
+}
+
+void RemoteH2DManager::FillRootInfoDeviceFields(int32_t devId, RemoteH2DRootInfoPb *p2pRootInfo)
+{
+    if (p2pRootInfo == nullptr || devId < 0) {
+        return;
+    }
+    int32_t physicalDeviceId = devId;
+    LOG_IF_ERROR(GetWorkerPhysicalDeviceId(devId, physicalDeviceId),
+                 "Failed to fill RemoteH2D root info worker physical device id");
+    p2pRootInfo->set_worker_logic_device_id(devId);
+    p2pRootInfo->set_worker_physical_device_id(physicalDeviceId);
+}
+
+Status RemoteH2DManager::P2PGetRootInfo(const std::string &key, RemoteH2DRootInfoPb *p2pRootInfo,
+                                        const RemoteH2DClientDeviceInfoPb *clientDeviceInfo,
+                                        bool avoidClientDeviceForSameNode)
 {
     RETURN_OK_IF_TRUE(!IsRemoteH2DEnabled());
     RETURN_IF_NOT_OK(initStatus_);
@@ -270,6 +472,7 @@ Status RemoteH2DManager::P2PGetRootInfo(const std::string &key, RemoteH2DRootInf
     CommunicatorMap::ConstAccessor constAcc;
     if (communicatorMap_->Find(constAcc, key)) {
         p2pRootInfo->set_internal(constAcc.entry->data->localIdentity);
+        FillRootInfoDeviceFields(constAcc.entry->data->devId, p2pRootInfo);
         return Status::OK();
     }
 
@@ -278,6 +481,7 @@ Status RemoteH2DManager::P2PGetRootInfo(const std::string &key, RemoteH2DRootInf
         // Insert() already returns an accessor locked on the existing entry when another thread won the race.
         // Re-finding the same key here would try to lock the same entry mutex again in the same thread.
         p2pRootInfo->set_internal(accessor.entry->data->localIdentity);
+        FillRootInfoDeviceFields(accessor.entry->data->devId, p2pRootInfo);
         return Status::OK();
     }
 
@@ -291,12 +495,19 @@ Status RemoteH2DManager::P2PGetRootInfo(const std::string &key, RemoteH2DRootInf
 
     auto ctx = std::make_shared<RemoteH2DContext>();
     std::string identity;
-    RETURN_IF_NOT_OK(GetConnectionIdentityForComm(key, identity));
+    int32_t devId = -1;
+    RETURN_IF_NOT_OK(GetDevIdForComm(key, devId, clientDeviceInfo, avoidClientDeviceForSameNode));
+    {
+        PerfPoint identityPoint(PerfKey::RH2D_MANAGER_GET_CONNECTION_IDENTITY);
+        RETURN_IF_NOT_OK(transport_->GetConnectionIdentity(&identity, devId));
+    }
     ctx->localIdentity = identity;
+    ctx->devId = devId;
     accessor.entry->data = ctx;
     needRollback = false;
 
     p2pRootInfo->set_internal(ctx->localIdentity);
+    FillRootInfoDeviceFields(devId, p2pRootInfo);
     return Status::OK();
 }
 
@@ -463,6 +674,37 @@ Status RemoteH2DManager::P2PCommInitRootInfo(const std::string &key, const Remot
     return Status::OK();
 }
 
+Status RemoteH2DManager::RegisterHostMemoryOnDevice(int32_t devId, void *data, uint64_t dataSize)
+{
+    RETURN_IF_NOT_OK(SetDeviceIdx(devId));
+
+    uint64_t castedData = reinterpret_cast<uint64_t>(data);
+    std::shared_lock<std::shared_timed_mutex> l(segmentMutex_);
+    HostSegmentMap::Accessor accessor;
+    bool insertedDevEntry = false;
+    if (!hostSegmentMap_->Find(accessor, devId)) {
+        (void)hostSegmentMap_->Insert(accessor, devId);
+        insertedDevEntry = true;
+    }
+
+    RETURN_OK_IF_TRUE(accessor.entry->data.find(castedData) != accessor.entry->data.end());
+    bool needRollback = insertedDevEntry;
+    Raii eraseRaii([this, &needRollback, &accessor]() {
+        if (needRollback) {
+            hostSegmentMap_->BlockingErase(accessor);
+        }
+    });
+    P2pSegmentInfo segmentInfo;
+    P2pSegmentPermissions permissions = P2pSegmentPermissions::P2P_SEGMENT_READ_WRITE;
+    RETURN_IF_NOT_OK(transport_->RegisterMemory(data, dataSize, &segmentInfo));
+
+    std::shared_ptr<HostSegment> hostSegment;
+    HostSegment::Create(hostSegment, reinterpret_cast<std::byte *>(data), dataSize, segmentInfo, permissions);
+    accessor.entry->data[castedData] = hostSegment;
+    needRollback = false;
+    return Status::OK();
+}
+
 Status RemoteH2DManager::RegisterHostMemory(void *data, uint64_t dataSize)
 {
     RETURN_OK_IF_TRUE(!IsRemoteH2DEnabled());
@@ -471,11 +713,13 @@ Status RemoteH2DManager::RegisterHostMemory(void *data, uint64_t dataSize)
               << " link_type=" << FLAGS_remote_h2d_link_type;
 
     // mlock is needed only for RoCE: DSP2PRegisterHostMem DMAs from these pages so they must be resident.
-    // HCCS bufferpool mode doesn't DMA from the worker's host buffer.
+    // HCCS buffer-pool mode uses a relay. HCCS FabricMem uses a physical-backed arena directly when available.
     if (FLAGS_remote_h2d_link_type != "HCCS") {
         CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(mlock(data, dataSize) == 0, K_RUNTIME_ERROR,
                                              "Failed to lock physical pages.");
         LOG(INFO) << "RemoteH2DManager::RegisterHostMemory mlock done";
+    } else {
+        LOG(INFO) << "RemoteH2DManager::RegisterHostMemory skipping mlock for HCCS link type";
     }
 
     RETURN_IF_NOT_OK(GetWorkerDeviceIds());
@@ -483,38 +727,10 @@ Status RemoteH2DManager::RegisterHostMemory(void *data, uint64_t dataSize)
     std::vector<std::future<Status>> futures;
     auto pool = std::make_unique<ThreadPool>(workerDeviceIds_.size(), workerDeviceIds_.size(), "", false, 10 * 1000);
 
-    // Register Host Memory on all allowed devices
+    // Register Host Memory on the effective worker device set.
     for (const int32_t &devId : workerDeviceIds_) {
         futures.emplace_back(pool->Submit([this, devId, data, dataSize] {
-            RETURN_IF_NOT_OK(SetDeviceIdx(devId));
-
-            uint64_t castedData = reinterpret_cast<uint64_t>(data);
-            std::shared_lock<std::shared_timed_mutex> l(segmentMutex_);
-            HostSegmentMap::Accessor accessor;
-
-            // Insert devId mapping if not yet inserted
-            if (!hostSegmentMap_->Find(accessor, devId)) {
-                RETURN_OK_IF_TRUE(!hostSegmentMap_->Insert(accessor, devId));
-            }
-
-            RETURN_OK_IF_TRUE(accessor.entry->data.find(castedData) != accessor.entry->data.end());
-            bool needRollback = true;
-            Raii eraseRaii([this, &needRollback, &accessor]() {
-                if (needRollback) {
-                    hostSegmentMap_->BlockingErase(accessor);
-                }
-            });
-            P2pSegmentInfo segmentInfo;
-            P2pSegmentPermissions permissions = P2pSegmentPermissions::P2P_SEGMENT_READ_WRITE;
-            RETURN_IF_NOT_OK(transport_->RegisterMemory(data, dataSize, &segmentInfo));
-
-            // Create Host Segment
-            std::shared_ptr<HostSegment> hostSegment;
-            HostSegment::Create(hostSegment, reinterpret_cast<std::byte *>(data), dataSize, segmentInfo, permissions);
-            accessor.entry->data[castedData] = hostSegment;
-            needRollback = false;
-
-            return Status::OK();
+            return RegisterHostMemoryOnDevice(devId, data, dataSize);
         }));
     }
     Status firstError = Status::OK();
@@ -533,6 +749,7 @@ Status RemoteH2DManager::RegisterHostMemory(void *data, uint64_t dataSize)
 
 Status RemoteH2DManager::PreRegisterDeviceMemory(const std::vector<void *> &data, const std::vector<uint64_t> &dataSize)
 {
+    PerfPoint point(PerfKey::RH2D_MANAGER_PRE_REGISTER_DEVICE_MEMORY);
     CHECK_FAIL_RETURN_STATUS(IsRemoteH2DEnabled(), K_RUNTIME_ERROR,
                              "RemoteH2D is not enabled for device memory pre-registration.");
     CHECK_FAIL_RETURN_STATUS(FLAGS_remote_h2d_link_type == "HCCS", K_RUNTIME_ERROR,
@@ -569,16 +786,70 @@ Status RemoteH2DManager::UnregisterDeviceMemory(const std::vector<void *> &data)
     return Status::OK();
 }
 
-Status RemoteH2DManager::FillSegmentInfo(uint64_t segLen, uint64_t segDataOffset, uint64_t key,
-                                         RemoteHostSegmentPb &segmentPb, int32_t devId)
+Status RemoteH2DManager::UnregisterHostMemory(void *data)
+{
+    RETURN_OK_IF_TRUE(!IsRemoteH2DEnabled() || data == nullptr || hostSegmentMap_ == nullptr);
+    RETURN_IF_NOT_OK(GetWorkerDeviceIds());
+
+    const bool unregisterFabricOnce = IsHccsFabricMemEnabled();
+    if (unregisterFabricOnce) {
+        RETURN_IF_NOT_OK(transport_->UnregisterMemory(data));
+    }
+
+    Status firstError = Status::OK();
+    for (const int32_t devId : workerDeviceIds_) {
+        if (!unregisterFabricOnce) {
+            Status rc = SetDeviceIdx(devId);
+            if (rc.IsError()) {
+                firstError = firstError.IsOk() ? rc : firstError;
+                continue;
+            }
+        }
+
+        std::shared_lock<std::shared_timed_mutex> l(segmentMutex_);
+        HostSegmentMap::Accessor accessor;
+        if (!hostSegmentMap_->Find(accessor, devId)) {
+            continue;
+        }
+        auto segmentIt = accessor.entry->data.find(reinterpret_cast<uint64_t>(data));
+        if (segmentIt == accessor.entry->data.end()) {
+            continue;
+        }
+        if (!unregisterFabricOnce) {
+            Status rc = transport_->UnregisterMemory(data);
+            if (rc.IsError()) {
+                firstError = firstError.IsOk() ? rc : firstError;
+                continue;
+            }
+        }
+        accessor.entry->data.erase(segmentIt);
+        if (accessor.entry->data.empty()) {
+            hostSegmentMap_->BlockingErase(accessor);
+        }
+    }
+    return firstError;
+}
+
+Status RemoteH2DManager::FillSegmentInfo(uint64_t segLen, uint64_t segDataOffset, uint64_t dataOffset,
+                                         uint64_t dataSize, uint64_t key, RemoteHostSegmentPb &segmentPb, int32_t devId)
 {
     PerfPoint point(PerfKey::P2P_FILL_SEG_INFO);
 
     HostSegmentMap::Accessor accessor;
     if (hostSegmentMap_->Find(accessor, devId)) {
-        auto &segInfo = accessor.entry->data[key]->segmentInfo;
+        auto segmentIt = accessor.entry->data.find(key);
+        CHECK_FAIL_RETURN_STATUS(segmentIt != accessor.entry->data.end() && segmentIt->second != nullptr,
+                                 StatusCode::K_NOT_FOUND,
+                                 FormatString("Cannot find segment address %zu for devId %d", key, devId));
+        auto &segInfo = segmentIt->second->segmentInfo;
+        CHECK_FAIL_RETURN_STATUS(segDataOffset <= segLen && dataOffset <= segLen - segDataOffset
+                                     && dataSize <= segLen - segDataOffset - dataOffset,
+                                 K_INVALID, "Remote H2D data range exceeds registered host segment");
+        uint64_t remoteAddr = 0;
+        RETURN_IF_NOT_OK(transport_->PrepareRemoteMemory(reinterpret_cast<void *>(key), segDataOffset + dataOffset,
+                                                         dataSize, &remoteAddr));
         segmentPb.set_name(std::string(std::begin(segInfo.internal), std::end(segInfo.internal)));
-        segmentPb.set_seg_va(key);
+        segmentPb.set_seg_va(remoteAddr);
         segmentPb.set_seg_len(segLen);
         segmentPb.set_seg_data_offset(segDataOffset);
         return Status::OK();
@@ -620,13 +891,73 @@ void RemoteH2DManager::EnsureStateMaps()
     }
 }
 
+Status RemoteH2DManager::FillDataInfo(const std::vector<uint64_t> &blobSizes, RemoteH2DDataInfoPb &dataInfoPb)
+{
+    PerfPoint point(PerfKey::P2P_FILL_DATA_INFO);
+    CHECK_FAIL_RETURN_STATUS(!blobSizes.empty(), K_INVALID, "HIXL payload-only blob metadata is empty");
+
+    dataInfoPb.set_offset(0);
+    dataInfoPb.mutable_sizes()->Add(blobSizes.begin(), blobSizes.end());
+    return Status::OK();
+}
+
+Status RemoteH2DManager::InitAclRuntime()
+{
+    Status rc = acl::AclDeviceManager::Instance()->aclInit(nullptr);
+    if (rc.IsError()) {
+        LOG(INFO) << "RemoteH2DManager acl init failed. Repeated init with error code 100002 is acceptable. "
+                  << rc.ToString();
+    }
+    aclInitialized_ = true;
+    return Status::OK();
+}
+
+Status RemoteH2DManager::PrepareTransportDeviceIds(std::vector<int32_t> &workerDevIdsForInit)
+{
+    if (!isClient_) {
+        // Parse worker device IDs before initializing the transport, so that HCCS can create one HIXL engine per
+        // device for multi-device load balancing.
+        RETURN_IF_NOT_OK(GetWorkerDeviceIds(&workerDevIdsForInit));
+        workerPhysicalDeviceIds_.clear();
+        for (auto devId : workerDevIdsForInit) {
+            int32_t physicalDeviceId = devId;
+            RETURN_IF_NOT_OK(ResolvePhysicalDeviceId(devId, physicalDeviceId));
+            workerPhysicalDeviceIds_[devId] = physicalDeviceId;
+            LOG(INFO) << "[RH2D] Worker HIXL device mapping logicDevId=" << devId
+                      << " physicalDevId=" << physicalDeviceId;
+        }
+        return Status::OK();
+    }
+    Status rc = SetDeviceIdx();
+    LOG_IF_ERROR(rc, FormatString("RemoteH2DManager set device index failed. %s", rc.ToString()));
+    return rc;
+}
+
+Status RemoteH2DManager::StartHeartbeatThread()
+{
+    try {
+        heartbeatThread_ = std::thread(&RemoteH2DManager::ManageHeartbeats, this);
+    } catch (const std::system_error &error) {
+        RETURN_STATUS(K_RUNTIME_ERROR, "Failed to start RemoteH2D heartbeat thread: " + std::string(error.what()));
+    }
+    return Status::OK();
+}
+
 Status RemoteH2DManager::Init()
 {
-    LOG(INFO) << "RemoteH2DManager::Init enter, enabled=" << IsRemoteH2DEnabled()
-              << " device_ids=" << FLAGS_remote_h2d_device_ids;
-    interrupted_.store(false);
-    EnsureStateMaps();
+    std::lock_guard<std::mutex> lock(initMutex_);
     RETURN_OK_IF_TRUE(!IsRemoteH2DEnabled());
+    RETURN_OK_IF_TRUE(initialized_);
+    LOG(INFO) << "RemoteH2DManager::Init enter, enabled=" << IsRemoteH2DEnabled()
+              << " device_ids=" << FLAGS_remote_h2d_device_ids
+              << " link_type=" << FLAGS_remote_h2d_link_type << " role=" << (isClient_ ? "client" : "worker")
+              << " hccsLocalIp=" << hccsLocalEndpointIp_
+              << " hccsBufferPool=" << FLAGS_remote_h2d_hccs_buffer_pool;
+
+    RETURN_IF_NOT_OK(EnsureTransportForCurrentConfig());
+    RETURN_RUNTIME_ERROR_IF_NULL(transport_);
+    EnsureStateMaps();
+    interrupted_.store(false);
 
     bool initCommitted = false;
     Raii rollback([this, &initCommitted]() {
@@ -643,34 +974,17 @@ Status RemoteH2DManager::Init()
         }
     });
 
-    LOG(INFO) << "RemoteH2DManager::Init calling AclDeviceManager::aclInit";
-    Status rc = acl::AclDeviceManager::Instance()->aclInit(nullptr);
-    if (rc.IsError()) {
-        LOG(INFO) << "RemoteH2DManager acl init failed. Repeated init with error code 100002 is acceptable. "
-                  << rc.ToString();
-    }
-    aclInitialized_ = true;
-    LOG(INFO) << "RemoteH2DManager::Init aclInit returned";
-
-    // Parse worker device IDs before initializing the transport, so that HCCS
-    // can create one HIXL engine per device for multi-device load balancing.
+    RETURN_IF_NOT_OK(InitAclRuntime());
     std::vector<int32_t> workerDevIdsForInit;
-    if (!isClient_) {
-        RETURN_IF_NOT_OK(GetWorkerDeviceIds(&workerDevIdsForInit));
-    } else {
-        RETURN_IF_NOT_OK_PRINT_ERROR_MSG(SetDeviceIdx(), "RemoteH2DManager set device index failed.");
-    }
+    RETURN_IF_NOT_OK(PrepareTransportDeviceIds(workerDevIdsForInit));
 
     LOG(INFO) << "RemoteH2DManager::Init calling transport_->Init() with " << workerDevIdsForInit.size() << " devId(s)";
     RETURN_IF_NOT_OK(transport_->Init(workerDevIdsForInit));
-    LOG(INFO) << "RemoteH2DManager::Init starting heartbeat thread";
-    try {
-        heartbeatThread_ = std::thread(&RemoteH2DManager::ManageHeartbeats, this);
-    } catch (const std::system_error &error) {
-        RETURN_STATUS(K_RUNTIME_ERROR, "Failed to start RemoteH2D heartbeat thread: " + std::string(error.what()));
-    }
+    RETURN_IF_NOT_OK(StartHeartbeatThread());
     initCommitted = true;
-    LOG(INFO) << "RemoteH2DManager::Init done";
+    initialized_ = true;
+    LOG(INFO) << "RemoteH2DManager::Init done, transport=" << P2pLinkName(transport_->LinkType())
+              << " role=" << (isClient_ ? "client" : "worker");
     return Status::OK();
 }
 
@@ -716,10 +1030,11 @@ Status RemoteH2DManager::GetClientHixlTransport(int32_t deviceId, std::shared_pt
 {
     RETURN_IF_NOT_OK(initStatus_);
 #ifdef ASCEND_HIXL_AVAILABLE
-    CHECK_FAIL_RETURN_STATUS(isClient_ && enableRemoteH2D_ && !interrupted_.load() && transport_ != nullptr,
+    CHECK_FAIL_RETURN_STATUS(isClient_ && clientConfig_.enableHeteroTransport && !interrupted_.load()
+                                 && transport_ != nullptr,
                              K_NOT_READY,
                              "Client RH2D transport is not initialized");
-    CHECK_FAIL_RETURN_STATUS(clientDeviceId_ == deviceId && transport_->LinkType() == P2P_LINK_HCCS,
+    CHECK_FAIL_RETURN_STATUS(clientConfig_.devId == deviceId && transport_->LinkType() == P2P_LINK_HCCS,
                              K_NOT_SUPPORTED, "Shared D2RH requires the same RH2D HIXL device");
     auto hixl = std::static_pointer_cast<HixlTransport>(transport_);
     RETURN_IF_NOT_OK(hixl->CheckReady());
@@ -735,7 +1050,9 @@ Status RemoteH2DManager::GetClientHixlTransport(int32_t deviceId, std::shared_pt
 
 Status RemoteH2DManager::Uninit()
 {
+    std::lock_guard<std::mutex> lock(initMutex_);
     interrupted_.store(true);
+    interruptCv_.notify_all();
     if (heartbeatThread_.joinable()) {
         heartbeatThread_.join();
     }
@@ -765,6 +1082,7 @@ Status RemoteH2DManager::Uninit()
     }
 
     commDevIdMap_.clear();
+    workerPhysicalDeviceIds_.clear();
 
     if (transport_) {
         RETURN_IF_NOT_OK(transport_->DisconnectAll());
@@ -774,7 +1092,14 @@ Status RemoteH2DManager::Uninit()
         RETURN_IF_NOT_OK(acl::AclDeviceManager::Instance()->aclFinalize());
         aclInitialized_ = false;
     }
+    initialized_ = false;
     return Status::OK();
+}
+
+Status RemoteH2DManager::ShutdownTransport()
+{
+    RETURN_OK_IF_TRUE(!IsRemoteH2DEnabled() || transport_ == nullptr);
+    return transport_->DisconnectAll();
 }
 
 Status RemoteH2DManager::ImportHostSegment(const std::string &remoteEndpoint, const RemoteHostSegmentPb &seg)
@@ -812,20 +1137,51 @@ Status RemoteH2DManager::ScatterBatch(P2pScatterEntry *entries, uint32_t size,
     RETURN_IF_NOT_OK(initStatus_);
 
     PerfPoint point(PerfKey::P2P_SCATTER_BATCH);
+    PerfPoint readPoint(PerfKey::RH2D_MANAGER_SCATTER_BATCH_READ);
 
     // Thread safety needs to be ensured for the p2p communicator.
     std::lock_guard<std::mutex> lock(p2pComm->mutex);
     PerfPoint waitPoint(PerfKey::P2P_COMM_INIT_WAIT_READY);
+    PerfPoint readWaitPoint(PerfKey::RH2D_MANAGER_COMM_WAIT_READY_READ);
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(p2pComm->waitPost.WaitAndGetStatus(),
                                      "[RH2D][ScatterBatch][Manager] waitPost failed");
+    readWaitPoint.Record();
     waitPoint.Record();
 
+    PerfPoint transportPoint(PerfKey::P2P_TRANSPORT_SCATTER_BATCH);
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(transport_->ScatterBatch(entries, size, p2pComm->remoteEndpoint, p2pComm->stream),
                                      "[RH2D][ScatterBatch][Manager] transport ScatterBatch failed");
     return Status::OK();
 }
 
-Status RemoteH2DManager::GetDevIdForComm(const std::string &commId, int32_t &devId)
+Status RemoteH2DManager::TransferBatch(HixlTransferOp op, const std::vector<HixlTransferDesc> &descs,
+                                       std::shared_ptr<RemoteH2DContext> p2pComm)
+{
+    RETURN_OK_IF_TRUE(!IsRemoteH2DEnabled());
+    RETURN_IF_NOT_OK(initStatus_);
+    RETURN_RUNTIME_ERROR_IF_NULL(p2pComm);
+    RETURN_OK_IF_TRUE(descs.empty());
+
+    PerfPoint point(PerfKey::P2P_SCATTER_BATCH);
+    PerfPoint directionPoint(Rh2dTransferBatchPerfKey(op));
+
+    std::lock_guard<std::mutex> lock(p2pComm->mutex);
+    PerfPoint waitPoint(PerfKey::P2P_COMM_INIT_WAIT_READY);
+    PerfPoint directionWaitPoint(Rh2dCommWaitReadyPerfKey(op));
+    RETURN_IF_NOT_OK(p2pComm->waitPost.WaitAndGetStatus());
+    directionWaitPoint.Record();
+    waitPoint.Record();
+
+    {
+        PerfPoint transferPoint(PerfKey::RH2D_MANAGER_TRANSPORT_SCATTER_BATCH);
+        RETURN_IF_NOT_OK(transport_->TransferBatch(op, descs, p2pComm->remoteEndpoint, p2pComm->stream));
+    }
+    return Status::OK();
+}
+
+Status RemoteH2DManager::GetDevIdForComm(const std::string &commId, int32_t &devId,
+                                         const RemoteH2DClientDeviceInfoPb *clientDeviceInfo,
+                                         bool avoidClientDeviceForSameNode)
 {
     RETURN_IF_NOT_OK(initStatus_);
     if (transport_ != nullptr && transport_->LinkType() == P2P_LINK_HCCS) {
@@ -845,12 +1201,15 @@ Status RemoteH2DManager::GetDevIdForComm(const std::string &commId, int32_t &dev
         }
     }
     if (devId == -1) {
-        // slow path
         std::vector<int32_t> devIds;
         RETURN_IF_NOT_OK(GetWorkerDeviceIds(&devIds));
+        int32_t selectedDevId = -1;
+        RETURN_IF_NOT_OK(SelectWorkerDeviceId(devIds, clientDeviceInfo, avoidClientDeviceForSameNode, selectedDevId));
+
         tbb::concurrent_hash_map<std::string, int32_t>::accessor acc;
-        commDevIdMap_.insert(acc, commId);
-        acc->second = devIds[nextDevIdIndex_.fetch_add(1, std::memory_order_relaxed) % devIds.size()];
+        if (commDevIdMap_.insert(acc, commId)) {
+            acc->second = selectedDevId;
+        }
         devId = acc->second;
     }
     return Status::OK();
@@ -888,6 +1247,8 @@ Status RemoteH2DManager::SetRH2DLocalEndpointIp(const std::string &localIp)
 std::unique_ptr<RH2DTransportStrategy> RemoteH2DManager::CreateTransport()
 {
     const std::string &type = FLAGS_remote_h2d_link_type;
+    LOG(INFO) << "RemoteH2DManager::CreateTransport link_type=" << type
+              << " role=" << (isClient_ ? "client" : "worker") << " hccsLocalIp=" << hccsLocalEndpointIp_;
     if (type == "ROCE") {
         return std::make_unique<RoCETransport>();
     }
@@ -907,6 +1268,34 @@ std::unique_ptr<RH2DTransportStrategy> RemoteH2DManager::CreateTransport()
     return nullptr;
 }
 
+Status RemoteH2DManager::EnsureTransportForCurrentConfig()
+{
+    const P2pLink expectedLinkType = LinkTypeFromFlag();
+    if (transport_ == nullptr) {
+        transport_ = CreateTransport();
+        RETURN_RUNTIME_ERROR_IF_NULL(transport_);
+        return Status::OK();
+    }
+    if (transport_->LinkType() == expectedLinkType) {
+#ifdef ASCEND_HIXL_AVAILABLE
+        if (!initialized_ && expectedLinkType == P2P_LINK_HCCS) {
+            auto *hixlTransport = dynamic_cast<HixlTransport *>(transport_.get());
+            RETURN_RUNTIME_ERROR_IF_NULL(hixlTransport);
+            hixlTransport->SetLocalEndpoint(hccsLocalEndpointIp_, isClient_);
+        }
+#endif
+        return Status::OK();
+    }
+    CHECK_FAIL_RETURN_STATUS(!initialized_, K_RUNTIME_ERROR,
+                             FormatString("RemoteH2D transport is already initialized as %s, cannot switch to %s",
+                                          P2pLinkName(transport_->LinkType()), P2pLinkName(expectedLinkType)));
+    LOG(WARNING) << "RemoteH2DManager recreate transport before initialization, old="
+                 << P2pLinkName(transport_->LinkType()) << " new=" << P2pLinkName(expectedLinkType);
+    transport_ = CreateTransport();
+    RETURN_RUNTIME_ERROR_IF_NULL(transport_);
+    return Status::OK();
+}
+
 void RemoteH2DManager::ManageHeartbeats()
 {
     INJECT_POINT("RH2D.ManageHeartbeats.heartbeat_interval_s",
@@ -914,8 +1303,15 @@ void RemoteH2DManager::ManageHeartbeats()
     INJECT_POINT("RH2D.ManageHeartbeats.heartbeat_timeout_s",
                  [this](int32_t timeout) { this->heartbeatTimeoutS_ = timeout; });
     while (!interrupted_.load()) {
+        {
+            std::unique_lock<std::mutex> lock(interruptMutex_);
+            interruptCv_.wait_for(lock, std::chrono::seconds(heartbeatIntervalS_),
+                                  [this] { return interrupted_.load(); });
+        }
+        if (interrupted_.load()) {
+            break;
+        }
         TraceGuard traceGuard = Trace::Instance().SetTraceNewID("H2DHeartbeat;" + GetStringUuid());
-        std::this_thread::sleep_for(std::chrono::seconds(heartbeatIntervalS_));
         DispatchPings();
         std::vector<std::string> disconnected = CheckDisconnectedClients();
         CleanupDisconnectedClients(disconnected);
@@ -987,7 +1383,7 @@ void RemoteH2DManager::CleanupDisconnectedClients(const std::vector<std::string>
     }
 }
 
-RemoteH2DManager::RemoteH2DManager() : transport_(CreateTransport())
+RemoteH2DManager::RemoteH2DManager()
 {
     LOG(INFO) << "RemoteH2DManager::Constructor start, link_type=" << FLAGS_remote_h2d_link_type;
     int rc = pthread_atfork(nullptr, nullptr, &RemoteH2DChildAfterFork);

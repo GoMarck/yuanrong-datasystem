@@ -35,11 +35,13 @@ public:
     ~RoCETransport() override = default;
 
     Status Init(const std::vector<int32_t> &deviceIds) override;
-    Status GetConnectionIdentity(std::string *identity) override;
+    Status GetConnectionIdentity(std::string *identity, int32_t devId = -1) override;
     Status Connect(const std::string &remoteIdentity, P2pKind kind, std::function<int()> *heartbeatCallback) override;
     Status Disconnect(const std::string &remoteIdentity) override;
     Status DisconnectAll() override;
     Status RegisterMemory(void *addr, uint64_t size, P2pSegmentInfo *segInfo) override;
+    Status UnregisterMemory(void *addr) override;
+    Status PrepareRemoteMemory(void *addr, uint64_t offset, uint64_t size, uint64_t *remoteAddr) override;
     Status ImportRemoteAddressInfo(const std::string &remoteEndpoint, const RemoteHostSegmentPb &seg) override;
     Status ScatterBatch(P2pScatterEntry *entries, uint32_t count, const std::string &remoteEndpoint,
                         std::shared_ptr<aclrtStream> stream) override;

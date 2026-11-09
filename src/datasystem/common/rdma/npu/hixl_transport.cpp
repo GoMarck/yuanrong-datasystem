@@ -20,6 +20,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <future>
 #include <limits>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -34,11 +37,13 @@
 #include "datasystem/common/log/log.h"
 #include "datasystem/common/metrics/kv_metrics.h"
 #include "datasystem/common/device/ascend/acl_device_manager.h"
+#include "datasystem/common/perf/perf_manager.h"
 #include "datasystem/common/rdma/npu/hixl_plugin_loader.h"
 #include "datasystem/common/rpc/timeout_duration.h"
 #include "datasystem/common/util/format.h"
 #include "datasystem/common/util/net_util.h"
 #include "datasystem/common/util/raii.h"
+#include "datasystem/common/util/thread_pool.h"
 #include "datasystem/common/util/validator.h"
 #include "datasystem/protos/utils.pb.h"
 #include "datasystem/common/util/status_helper.h"
@@ -47,12 +52,15 @@ DS_DECLARE_string(remote_h2d_hccs_buffer_pool);
 DS_DECLARE_bool(hixl_cs_enable);
 DS_DECLARE_bool(log_monitor);
 DS_DECLARE_bool(json_log_monitor);
+DS_DECLARE_bool(remote_h2d_hccs_enable_fabric_mem);
 
 namespace {
 
 // Fixed device-NIC listen port for worker one-sided comm. Each worker device has its own
 // device IP, so the same port across devices does not collide.
-constexpr int K_WORKER_DEVICE_COMM_PORT = 26666;
+constexpr int K_DEFAULT_WORKER_DEVICE_COMM_PORT = 26666;
+constexpr int K_MIN_DEVICE_COMM_PORT = 1;
+constexpr int K_MAX_DEVICE_COMM_PORT = 65535;
 #ifdef WITH_TESTS
 constexpr int K_FAKE_HIXL_TEST_PORT = 26667;
 #endif
@@ -63,18 +71,44 @@ constexpr int32_t K_HIXL_CONNECT_TIMEOUT_MS = 30 * 1000;
 constexpr int32_t K_HIXL_DISCONNECT_TIMEOUT_MS = 1000;
 constexpr int32_t K_HIXL_TRANSFER_TIMEOUT_MS = 10 * 1000;
 const std::string K_HCCL_INTRA_ROCE_ENABLE = "HCCL_INTRA_ROCE_ENABLE";
+const std::string K_HIXL_DIRECT_ROCE_BUFFER_POOL = "0:0";
 const std::string K_HIXL_OPTION_BUFFER_POOL = "BufferPool";
 const std::string K_HIXL_OPTION_LOCAL_COMM_RES = "LocalCommRes";
-const std::string K_HIXL_CS_LOCAL_COMM_RES = R"({"version":"1.3"})";
+const std::string K_HIXL_OPTION_ENABLE_USE_FABRIC_MEM = "EnableUseFabricMem";
 const std::string K_HIXL_OPTION_GLOBAL_RESOURCE_CONFIG = "GlobalResourceConfig";
+constexpr uint64_t K_FABRIC_MEM_MAX_CAPACITY_TB = 32;
+const std::string K_HIXL_CS_LOCAL_COMM_RES = R"({"version":"1.3"})";
+const std::string K_WORKER_DEVICE_COMM_PORT_ENV = "DS_RH2D_HCCS_WORKER_DEVICE_COMM_PORT";
+const std::string K_FABRIC_MEM_AICPU_UNFOLD_ENV = "DS_RH2D_HCCS_ENABLE_AICPU_UNFOLD";
+const std::string K_HIXL_TRANSFER_SYNC_PARALLELISM_ENV = "DS_HIXL_TRANSFER_SYNC_PARALLELISM";
+constexpr uint32_t K_FABRIC_MEM_AICPU_TASK_STREAM_NUM = 1;
+constexpr uint32_t K_FABRIC_MEM_HOST_TASK_STREAM_NUM = 8;
+constexpr int32_t K_DEFAULT_HIXL_TRANSFER_SYNC_PARALLELISM = 4;
+constexpr int32_t K_MAX_HIXL_TRANSFER_SYNC_PARALLELISM = 16;
 
 // HCCL registration limit: keep a small reserve under the 256 MEM_DEVICE limit.
 // Long-lived pre-registrations and temporary fallback registrations share this budget.
 constexpr size_t MAX_DEVICE_REGISTRATIONS = 253;
 
+struct FabricSegmentIdentity {
+    uint64_t endpointHash;
+    uint64_t address;
+    uint64_t size;
+    int32_t devId;
+};
+
+static_assert(sizeof(FabricSegmentIdentity) <= P2P_SEGMENT_INFO_BYTES);
+
+struct HixlTransferChunk {
+    const DsHixlTransferDesc *descs = nullptr;
+    size_t count = 0;
+};
+
 datasystem::HixlMemoryMode DetermineHixlMemoryMode()
 {
-    // FabricMem mode can be inserted here once its worker/client flag is available in this branch.
+    if (FLAGS_remote_h2d_hccs_enable_fabric_mem) {
+        return datasystem::HixlMemoryMode::FABRIC_MEM;
+    }
     if (datasystem::GetBoolFromEnv(K_HCCL_INTRA_ROCE_ENABLE.c_str(), false)) {
         return datasystem::HixlMemoryMode::ROCE_DIRECT;
     }
@@ -138,6 +172,94 @@ DsHixlResult TransferWithMetrics(const DsHixlApi *api, DsHixlEngineHandle engine
         METRIC_ADD(bytes, transferred);
     }
     return result;
+datasystem::PerfKey HixlTransferSyncPerfKey(datasystem::HixlTransferOp op)
+{
+    return op == datasystem::HixlTransferOp::WRITE ? datasystem::PerfKey::HCCS_HIXL_TRANSFER_SYNC_WRITE
+                                                   : datasystem::PerfKey::HCCS_HIXL_TRANSFER_SYNC_READ;
+}
+
+datasystem::PerfKey HixlTransferDescCountPerfKey(datasystem::HixlTransferOp op)
+{
+    return op == datasystem::HixlTransferOp::WRITE ? datasystem::PerfKey::HCCS_HIXL_TRANSFER_DESC_COUNT_WRITE
+                                                   : datasystem::PerfKey::HCCS_HIXL_TRANSFER_DESC_COUNT_READ;
+}
+
+datasystem::PerfKey HixlTransferBytesPerfKey(datasystem::HixlTransferOp op)
+{
+    return op == datasystem::HixlTransferOp::WRITE ? datasystem::PerfKey::HCCS_HIXL_TRANSFER_BYTES_WRITE
+                                                   : datasystem::PerfKey::HCCS_HIXL_TRANSFER_BYTES_READ;
+}
+
+datasystem::PerfKey HixlRegisteredDeviceMemoryPerfKey(datasystem::HixlTransferOp op, bool registered)
+{
+    if (op == datasystem::HixlTransferOp::WRITE) {
+        return registered ? datasystem::PerfKey::HCCS_HIXL_REGISTERED_DEVICE_MEMORY_HIT_WRITE
+                          : datasystem::PerfKey::HCCS_HIXL_REGISTERED_DEVICE_MEMORY_MISS_WRITE;
+    }
+    return registered ? datasystem::PerfKey::HCCS_HIXL_REGISTERED_DEVICE_MEMORY_HIT_READ
+                      : datasystem::PerfKey::HCCS_HIXL_REGISTERED_DEVICE_MEMORY_MISS_READ;
+}
+
+uint64_t SumTransferBytes(const std::vector<datasystem::HixlTransferDesc> &descs)
+{
+    uint64_t totalBytes = 0;
+    for (const auto &desc : descs) {
+        totalBytes += desc.len;
+    }
+    return totalBytes;
+}
+
+int ResolveWorkerDeviceCommPort()
+{
+    int32_t port =
+        datasystem::GetInt32FromEnv(K_WORKER_DEVICE_COMM_PORT_ENV.c_str(), K_DEFAULT_WORKER_DEVICE_COMM_PORT);
+    if (port < K_MIN_DEVICE_COMM_PORT || port > K_MAX_DEVICE_COMM_PORT) {
+        LOG(WARNING) << "[HCCS] Invalid " << K_WORKER_DEVICE_COMM_PORT_ENV << "=" << port << ", fallback to "
+                     << K_DEFAULT_WORKER_DEVICE_COMM_PORT;
+        return K_DEFAULT_WORKER_DEVICE_COMM_PORT;
+    }
+    return port;
+}
+
+bool IsFabricMemAicpuUnfoldEnabled()
+{
+    return datasystem::GetBoolFromEnv(K_FABRIC_MEM_AICPU_UNFOLD_ENV.c_str(), false);
+}
+
+int32_t GetHixlTransferSyncParallelism()
+{
+    int32_t parallelism =
+        datasystem::GetInt32FromEnv(K_HIXL_TRANSFER_SYNC_PARALLELISM_ENV.c_str(),
+                                    K_DEFAULT_HIXL_TRANSFER_SYNC_PARALLELISM);
+    if (parallelism < 1) {
+        return 1;
+    }
+    return std::min(parallelism, K_MAX_HIXL_TRANSFER_SYNC_PARALLELISM);
+}
+
+datasystem::ThreadPool &GetHixlTransferThreadPool()
+{
+    static datasystem::ThreadPool pool(0, static_cast<size_t>(GetHixlTransferSyncParallelism()),
+                                       "hixl_transfer_sync");
+    return pool;
+}
+
+std::vector<HixlTransferChunk> BuildHixlTransferChunks(const std::vector<DsHixlTransferDesc> &descs,
+                                                       size_t maxChunkCount)
+{
+    std::vector<HixlTransferChunk> chunks;
+    if (descs.empty() || maxChunkCount == 0) {
+        return chunks;
+    }
+    maxChunkCount = std::min(maxChunkCount, descs.size());
+    chunks.reserve(maxChunkCount);
+
+    const size_t chunkSize = (descs.size() + maxChunkCount - 1) / maxChunkCount;
+    for (size_t start = 0; start < descs.size(); start += chunkSize) {
+        size_t count = std::min(chunkSize, descs.size() - start);
+        chunks.push_back(HixlTransferChunk{ descs.data() + start, count });
+    }
+    return chunks;
 }
 
 // Allocate a random available ephemeral port. Tries up to K_MAX_PORT_ALLOC_ATTEMPTS times.
@@ -179,18 +301,52 @@ int AllocateRandomPort()
     return 0;  // all attempts failed
 }
 
-std::vector<std::pair<std::string, std::string>> BuildHixlOptions(
-    const datasystem::HixlTransport::Options &options, int deviceCommPort)
+std::string BuildGlobalResourceConfig(bool isClient, datasystem::HixlMemoryMode mode)
+{
+    std::string config = "{";
+    bool hasConfig = false;
+    auto appendCommaIfNeeded = [&config, &hasConfig]() {
+        if (hasConfig) {
+            config += ",";
+        }
+        hasConfig = true;
+    };
+
+    if (!isClient) {
+        appendCommaIfNeeded();
+        config += R"("comm_resource_config.listen_port":")" + std::to_string(ResolveWorkerDeviceCommPort()) + R"(")";
+    }
+    if (mode == datasystem::HixlMemoryMode::FABRIC_MEM) {
+        appendCommaIfNeeded();
+        config += R"("fabric_memory.max_capacity":)" + std::to_string(K_FABRIC_MEM_MAX_CAPACITY_TB);
+        bool enableAicpuUnfold = IsFabricMemAicpuUnfoldEnabled();
+        appendCommaIfNeeded();
+        config += R"("fabric_memory.enable_aicpu_unfold":)" + std::string(enableAicpuUnfold ? "true" : "false");
+        appendCommaIfNeeded();
+        auto streamNum = enableAicpuUnfold ? K_FABRIC_MEM_AICPU_TASK_STREAM_NUM : K_FABRIC_MEM_HOST_TASK_STREAM_NUM;
+        config += R"("fabric_memory.task_stream_num":)" + std::to_string(streamNum);
+    }
+    config += "}";
+    return hasConfig ? config : "";
+}
+
+std::vector<std::pair<std::string, std::string>> BuildHixlOptions(const std::string &bufferPool, bool isClient,
+                                                                  datasystem::HixlMemoryMode mode,
+                                                                  const std::string &localCommRes)
 {
     std::vector<std::pair<std::string, std::string>> optionValues;
-    optionValues.emplace_back(K_HIXL_OPTION_BUFFER_POOL, options.bufferPool);
-    if (options.csEnable) {
-        optionValues.emplace_back(K_HIXL_OPTION_LOCAL_COMM_RES, K_HIXL_CS_LOCAL_COMM_RES);
-        LOG(INFO) << "[HCCS] HIXL CS enabled with LocalCommRes version 1.3";
+    if (mode == datasystem::HixlMemoryMode::FABRIC_MEM) {
+        optionValues.emplace_back(K_HIXL_OPTION_ENABLE_USE_FABRIC_MEM, "1");
+    } else {
+        optionValues.emplace_back(K_HIXL_OPTION_BUFFER_POOL, bufferPool);
     }
-    std::string resourceConfig =
-        R"({"comm_resource_config.listen_port":")" + std::to_string(deviceCommPort) + R"("})";
-    optionValues.emplace_back(K_HIXL_OPTION_GLOBAL_RESOURCE_CONFIG, std::move(resourceConfig));
+    if (!localCommRes.empty()) {
+        optionValues.emplace_back(K_HIXL_OPTION_LOCAL_COMM_RES, localCommRes);
+    }
+    std::string resourceConfig = BuildGlobalResourceConfig(isClient, mode);
+    if (!resourceConfig.empty()) {
+        optionValues.emplace_back(K_HIXL_OPTION_GLOBAL_RESOURCE_CONFIG, std::move(resourceConfig));
+    }
     return optionValues;
 }
 
@@ -205,8 +361,50 @@ HixlTransport::~HixlTransport()
 
 void HixlTransport::SetLocalEndpoint(const std::string &ep, bool isClient)
 {
+    if (initialized_ && (localIp_ != ep || isClient_ != isClient)) {
+        LOG(WARNING) << "[HCCS] Ignore local endpoint update after initialization. currentRole=" << RoleName()
+                     << " currentIp=" << localIp_ << " requestedRole=" << (isClient ? "client" : "worker")
+                     << " requestedIp=" << ep;
+        return;
+    }
     localIp_ = ep;
     isClient_ = isClient;
+}
+
+bool HixlTransport::IsHixlRoceDirectMode() const
+{
+    return hixlMemoryMode_ == HixlMemoryMode::ROCE_DIRECT;
+}
+
+bool HixlTransport::IsHixlFabricMemMode() const
+{
+    return hixlMemoryMode_ == HixlMemoryMode::FABRIC_MEM;
+}
+
+bool HixlTransport::IsHixlBufferPoolMode() const
+{
+    return bufferPoolEnabled_;
+}
+
+bool HixlTransport::ShouldAllowSameDeviceConnection() const
+{
+    if (IsHixlFabricMemMode()) {
+        return true;
+    }
+    if (IsHixlBufferPoolMode()) {
+        return false;
+    }
+    return GetBoolFromEnv(K_HCCL_INTRA_ROCE_ENABLE.c_str(), false) && FLAGS_hixl_cs_enable;
+}
+
+const char *HixlTransport::RoleName() const
+{
+    return isClient_ ? "client" : "worker";
+}
+
+bool HixlTransport::AllowSameDeviceConnection() const
+{
+    return allowSameDeviceConnection_;
 }
 
 void HixlTransport::DestroyEngine(DsHixlEngineHandle engine) const
@@ -215,29 +413,70 @@ void HixlTransport::DestroyEngine(DsHixlEngineHandle engine) const
         return;
     }
     DsHixlResult finalizeResult = api_->finalize_engine(engine);
-    LOG_IF(WARNING, finalizeResult != DS_HIXL_OK)
-        << "HIXL plugin finalize_engine failed, result=" << finalizeResult;
+    LOG_IF(WARNING, finalizeResult != DS_HIXL_OK) << "HIXL plugin finalize_engine failed, result=" << finalizeResult;
     DsHixlResult destroyResult = api_->destroy_engine(engine);
-    LOG_IF(WARNING, destroyResult != DS_HIXL_OK)
-        << "HIXL plugin destroy_engine failed, result=" << destroyResult;
+    LOG_IF(WARNING, destroyResult != DS_HIXL_OK) << "HIXL plugin destroy_engine failed, result=" << destroyResult;
 }
 
 Status HixlTransport::InitializeSingleDevice(int32_t devId, const Options &options,
                                              DsHixlEngineHandle &engine, std::string &endpoint)
 {
     engine = nullptr;
+    RETURN_IF_NOT_OK(BindDeviceForEngine(devId));
+    RETURN_IF_NOT_OK(ResolveDeviceEndpoint(devId, endpoint));
+
+    RETURN_IF_NOT_OK(HixlResultToStatus(api_->create_engine(&engine), 0, "create_engine"));
+    bool needRollback = true;
+    Raii rollback([this, &engine, &needRollback]() {
+        if (needRollback) {
+            DestroyEngine(engine);
+            engine = nullptr;
+        }
+    });
+
+    const std::string localCommRes = ResolveLocalCommRes(options.bufferPool);
+    auto optionValues = BuildHixlOptions(options.bufferPool, isClient_, hixlMemoryMode_, localCommRes);
+    std::vector<DsHixlOption> pluginOptions;
+    pluginOptions.reserve(optionValues.size());
+    for (const auto &option : optionValues) {
+        pluginOptions.push_back(DsHixlOption{ { option.first.data(), option.first.size() },
+                                              { option.second.data(), option.second.size() } });
+    }
+    const std::string globalResourceConfig = BuildGlobalResourceConfig(isClient_, hixlMemoryMode_);
+    LOG(INFO) << "[HCCS] Hixl::Initialize start role=" << RoleName() << " devId=" << devId
+              << " endpoint=" << endpoint << " memoryMode=" << HixlMemoryModeName(hixlMemoryMode_)
+              << " bufferPool=" << (bufferPoolEnabled_ ? options.bufferPool : "<disabled>")
+              << " localCommRes=" << (localCommRes.empty() ? "<unset>" : localCommRes)
+              << " globalResourceConfig=" << (globalResourceConfig.empty() ? "<unset>" : globalResourceConfig);
+
+    uint32_t vendorStatus = 0;
+    DsHixlResult result =
+        api_->initialize_engine(engine, DsHixlStringView{ endpoint.data(), endpoint.size() }, pluginOptions.data(),
+                                pluginOptions.size(), &vendorStatus);
+    RETURN_IF_NOT_OK(HixlResultToStatus(result, vendorStatus, "initialize_engine"));
+    needRollback = false;
+    LOG(INFO) << "[HCCS] Engine created role=" << RoleName() << " devId=" << devId
+              << " endpoint=" << endpoint;
+    return Status::OK();
+}
+
+Status HixlTransport::BindDeviceForEngine(int32_t devId) const
+{
 #ifdef WITH_TESTS
-    if (!skipDeviceBinding_) {
+    if (skipDeviceBinding_) {
+        return Status::OK();
+    }
 #endif
     Status setDevSt = acl::AclDeviceManager::Instance()->SetDeviceIdx(devId);
     if (setDevSt.IsError()) {
         LOG(WARNING) << "[HCCS] SetDeviceIdx failed for devId " << devId << ": " << setDevSt.GetMsg();
         return setDevSt;
     }
-#ifdef WITH_TESTS
-    }
-#endif
+    return Status::OK();
+}
 
+Status HixlTransport::ResolveDeviceEndpoint(int32_t devId, std::string &endpoint) const
+{
     int port = 0;
 #ifdef WITH_TESTS
     if (skipDeviceBinding_) {
@@ -253,37 +492,32 @@ Status HixlTransport::InitializeSingleDevice(int32_t devId, const Options &optio
         LOG(WARNING) << "[HCCS] Failed to allocate random port for devId " << devId;
         return Status(StatusCode::K_RUNTIME_ERROR, "Failed to allocate port for at least one device");
     }
-
     endpoint = localIp_ + ":" + std::to_string(port);
-    // Separate device ports let RH2D and D2RH SDK engines coexist on one NPU.
-    const int deviceCommPort = isClient_ ? port : K_WORKER_DEVICE_COMM_PORT;
-    LOG(INFO) << "[HCCS] Hixl::Initialize start devId=" << devId << " endpoint=" << endpoint
-              << " deviceCommPort=" << deviceCommPort;
-    RETURN_IF_NOT_OK(HixlResultToStatus(api_->create_engine(&engine), 0, "create_engine"));
-    bool needRollback = true;
-    Raii rollback([this, &engine, &needRollback]() {
-        if (needRollback) {
-            DestroyEngine(engine);
-            engine = nullptr;
-        }
-    });
-
-    auto optionValues = BuildHixlOptions(options, deviceCommPort);
-    std::vector<DsHixlOption> pluginOptions;
-    pluginOptions.reserve(optionValues.size());
-    for (const auto &option : optionValues) {
-        pluginOptions.push_back(DsHixlOption{ { option.first.data(), option.first.size() },
-                                              { option.second.data(), option.second.size() } });
-    }
-
-    uint32_t vendorStatus = 0;
-    DsHixlResult result = api_->initialize_engine(
-        engine, DsHixlStringView{ endpoint.data(), endpoint.size() }, pluginOptions.data(), pluginOptions.size(),
-        &vendorStatus);
-    RETURN_IF_NOT_OK(HixlResultToStatus(result, vendorStatus, "initialize_engine"));
-    needRollback = false;
-    LOG(INFO) << "[HCCS] Engine created for devId " << devId << " at " << endpoint;
     return Status::OK();
+}
+
+Status HixlTransport::ResolveTargetDeviceIds(const std::vector<int32_t> &deviceIds,
+                                             std::vector<int32_t> &targetDevIds) const
+{
+    if (!deviceIds.empty()) {
+        targetDevIds = deviceIds;
+        return Status::OK();
+    }
+    int32_t singleDevId = -1;
+    RETURN_IF_NOT_OK(acl::AclDeviceManager::Instance()->GetDeviceIdx(singleDevId));
+    targetDevIds.push_back(singleDevId);
+    return Status::OK();
+}
+
+std::string HixlTransport::ResolveLocalCommRes(const std::string &bufferPool) const
+{
+    std::string localCommRes = FLAGS_hixl_cs_enable ? K_HIXL_CS_LOCAL_COMM_RES : "";
+    if (!localCommRes.empty() && IsHixlBufferPoolMode() && bufferPool != K_HIXL_DIRECT_ROCE_BUFFER_POOL) {
+        LOG(WARNING) << "[HCCS] Ignore LocalCommRes=" << localCommRes
+                     << " in buffer_pool mode because HixlEngine only supports BufferPool=0:0.";
+        localCommRes.clear();
+    }
+    return localCommRes;
 }
 
 Status HixlTransport::Init(const std::vector<int32_t> &deviceIds)
@@ -302,7 +536,8 @@ Status HixlTransport::Init(const std::vector<int32_t> &deviceIds, const Options 
     CHECK_FAIL_RETURN_STATUS(!poolSpec.fail() && colon == ':' && !(poolSpec >> trailing)
                                  && ((poolCount > 0 && poolSize > 0) || options.bufferPool == "0:0"), K_INVALID,
                              "Invalid HIXL buffer pool: expected positive count:size or 0:0");
-    LOG(INFO) << "[HCCS] Init localIp=" << localIp_ << " numDevices=" << deviceIds.size();
+    LOG(INFO) << "[HCCS] Init role=" << RoleName() << " localIp=" << localIp_
+              << " numDevices=" << deviceIds.size();
     RETURN_OK_IF_TRUE(initialized_);
     CHECK_FAIL_RETURN_STATUS(!localIp_.empty(), StatusCode::K_INVALID,
                              "HCCS local IP not configured. Call SetLocalEndpoint()");
@@ -310,18 +545,19 @@ Status HixlTransport::Init(const std::vector<int32_t> &deviceIds, const Options 
         RETURN_IF_NOT_OK(HixlPluginLoader::Instance().GetApi(api_));
     }
 
+    PerfPoint initPoint(PerfKey::HCCS_TRANSPORT_INIT);
     std::vector<int32_t> targetDevIds;
-    if (!deviceIds.empty()) {
-        targetDevIds = deviceIds;
-    } else {
-        int32_t singleDevId = -1;
-        RETURN_IF_NOT_OK(acl::AclDeviceManager::Instance()->GetDeviceIdx(singleDevId));
-        targetDevIds.push_back(singleDevId);
-    }
+    RETURN_IF_NOT_OK(ResolveTargetDeviceIds(deviceIds, targetDevIds));
 
     hixlMemoryMode_ = DetermineHixlMemoryMode();
-    const std::string &bufferPool = options.bufferPool;
-    bufferPoolEnabled_ = bufferPool != "0:0";
+    allowSameDeviceConnection_ = ShouldAllowSameDeviceConnection();
+    // FabricMem arenas are registered as HIXL MEM_HOST and transferred directly, so the buffer pool stays disabled.
+    Options effectiveOptions = options;
+    if (IsHixlFabricMemMode()) {
+        effectiveOptions.bufferPool = K_HIXL_DIRECT_ROCE_BUFFER_POOL;
+    }
+    bufferPoolEnabled_ = effectiveOptions.bufferPool != K_HIXL_DIRECT_ROCE_BUFFER_POOL;
+
     std::map<int32_t, DsHixlEngineHandle> pendingEngines;
     std::map<int32_t, std::string> pendingEndpoints;
     std::vector<DsHixlEngineHandle> pendingOrder;
@@ -339,7 +575,7 @@ Status HixlTransport::Init(const std::vector<int32_t> &deviceIds, const Options 
                                  "Duplicate HCCS device id: " + std::to_string(devId));
         DsHixlEngineHandle engine = nullptr;
         std::string endpoint;
-        RETURN_IF_NOT_OK(InitializeSingleDevice(devId, options, engine, endpoint));
+        RETURN_IF_NOT_OK(InitializeSingleDevice(devId, effectiveOptions, engine, endpoint));
         // Record ownership before map insertion so allocation failures still destroy this engine.
         pendingOrder.emplace_back(engine);
         pendingEngines.emplace(devId, engine);
@@ -353,15 +589,34 @@ Status HixlTransport::Init(const std::vector<int32_t> &deviceIds, const Options 
     LOG(INFO) << "[HCCS] Initialized with " << engines_.size() << " engine(s) on IP " << localIp_
               << " with hixl memory mode: " << HixlMemoryModeName(hixlMemoryMode_)
               << ", buffer pool enabled: " << bufferPoolEnabled_
-              << ", buffer pool config: " << bufferPool;
+              << (IsHixlFabricMemMode() ? "" : ", buffer pool config: " + effectiveOptions.bufferPool)
+              << ", hixl cs enable: " << FLAGS_hixl_cs_enable
+              << ", allow same device connection: " << allowSameDeviceConnection_;
     return Status::OK();
 }
 
-Status HixlTransport::GetConnectionIdentity(std::string *identity)
+Status HixlTransport::GetConnectionIdentity(std::string *identity, int32_t devId)
 {
     std::shared_lock<std::shared_timed_mutex> lock(lifecycleMutex_);
     RETURN_IF_NOT_OK(CheckReadyLocked());
     CHECK_FAIL_RETURN_STATUS(!engines_.empty(), StatusCode::K_RUNTIME_ERROR, "No HCCS engines available");
+
+    if (devId >= 0) {
+        auto endpointIter = localEndpointById_.find(devId);
+        CHECK_FAIL_RETURN_STATUS(endpointIter != localEndpointById_.end(), StatusCode::K_NOT_FOUND,
+                                 "No HCCS endpoint for devId " + std::to_string(devId));
+        CHECK_FAIL_RETURN_STATUS(engines_.find(devId) != engines_.end(), StatusCode::K_NOT_FOUND,
+                                 "No HCCS engine for devId " + std::to_string(devId));
+        *identity = endpointIter->second;
+        LOG(INFO) << "[HCCS] GetConnectionIdentity selected role=" << RoleName() << " devId=" << devId
+                  << " endpoint=" << *identity;
+        return Status::OK();
+    }
+
+    if (IsHixlFabricMemMode()) {
+        *identity = localEndpointById_.at(engines_.begin()->first);
+        return Status::OK();
+    }
 
     // Round-robin across engines so each new p2p connection is distributed
     // across different device IDs and, therefore, different NPU cards.
@@ -543,16 +798,80 @@ Status HixlTransport::DisconnectAll()
     activeEndpoints_.clear();
     ClearRegisteredDeviceMemory();
     ClearRegisteredHostMemory();
+
+    std::vector<std::shared_ptr<FabricMemoryRegion>> regions;
+    regions.reserve(fabricMemoryRegions_.size());
+    for (const auto &[sourceAddr, region] : fabricMemoryRegions_) {
+        (void)sourceAddr;
+        regions.push_back(region);
+    }
     for (const auto &[devId, engine] : engines_) {
-        (void)devId;
+        Status setDeviceStatus = acl::AclDeviceManager::Instance()->SetDeviceIdx(devId);
+        if (setDeviceStatus.IsError()) {
+            LOG(ERROR) << "Failed to set device before finalizing HIXL: " << setDeviceStatus.ToString();
+            continue;
+        }
         DestroyEngine(engine);
     }
+    for (const auto &region : regions) {
+        // Finalize disconnects FabricMem channels and releases every HIXL-owned retained/imported handle.
+        region->registrationHandles.clear();
+    }
+    fabricMemoryRegions_.clear();
     engines_.clear();
     localEndpointById_.clear();
     hixlMemoryMode_ = HixlMemoryMode::BUFFER_POOL;
     bufferPoolEnabled_ = false;
+    allowSameDeviceConnection_ = false;
     initialized_ = false;
     return Status::OK();
+}
+
+Status HixlTransport::DeregisterFabricMemory(const std::shared_ptr<FabricMemoryRegion> &region)
+{
+    Status firstError = Status::OK();
+    for (auto iter = region->registrationHandles.begin(); iter != region->registrationHandles.end();) {
+        auto &[devId, handle] = *iter;
+        Status setDeviceStatus = acl::AclDeviceManager::Instance()->SetDeviceIdx(devId);
+        if (setDeviceStatus.IsError()) {
+            LOG(ERROR) << "Failed to set device before deregistering FabricMem: " << setDeviceStatus.ToString();
+            if (firstError.IsOk()) {
+                firstError = setDeviceStatus;
+            }
+            ++iter;
+            continue;
+        }
+        auto engineIt = engines_.find(devId);
+        if (engineIt == engines_.end()) {
+            Status rc(StatusCode::K_RUNTIME_ERROR,
+                      "No HCCS engine available when deregistering FabricMem on devId " + std::to_string(devId));
+            LOG(ERROR) << rc.ToString();
+            if (firstError.IsOk()) {
+                firstError = rc;
+            }
+            ++iter;
+            continue;
+        }
+        if (handle == nullptr) {
+            iter = region->registrationHandles.erase(iter);
+            continue;
+        }
+        uint32_t vendorStatus = 0;
+        DsHixlResult result = api_->deregister_memory(engineIt->second, handle, &vendorStatus);
+        if (result != DS_HIXL_OK) {
+            Status rc = HixlResultToStatus(result, vendorStatus, "deregister_memory(FabricMem MEM_HOST)");
+            rc = Status(rc.GetCode(),
+                        FormatString("Failed to deregister FabricMem on devId %d: %s", devId, rc.GetMsg()));
+            LOG(ERROR) << rc.ToString();
+            if (firstError.IsOk()) {
+                firstError = rc;
+            }
+            ++iter;
+            continue;
+        }
+        iter = region->registrationHandles.erase(iter);
+    }
+    return firstError;
 }
 
 Status HixlTransport::RegisterMemory(void *addr, uint64_t size, P2pSegmentInfo *segInfo)
@@ -564,13 +883,108 @@ Status HixlTransport::RegisterMemory(void *addr, uint64_t size, P2pSegmentInfo *
 
     // HIXL buffer-pool RH2D intentionally does not register the remote source host buffer, regardless of whether HIXL
     // selects HCCS or RoCE as its link protocol. The source address is carried inline by P2pScatterEntry::ddrBuf and
-    // routed through the internal relay. Disabling the pool with 0:0 requires the worker host buffer to be registered.
-    RETURN_OK_IF_TRUE(bufferPoolEnabled_);
+    // routed through the internal relay. Disabling the pool with 0:0 requires the worker host buffer to be registered
+    // before Connect.
+    if (IsHixlBufferPoolMode()) {
+        LOG(INFO) << "[HCCS] Skip MEM_HOST registration in " << HixlMemoryModeName(hixlMemoryMode_)
+                  << " mode, role=" << RoleName() << " addr=" << addr << " size=" << size;
+        return Status::OK();
+    }
     RETURN_OK_IF_TRUE(isClient_);
     CHECK_FAIL_RETURN_STATUS(initialized_, StatusCode::K_RUNTIME_ERROR, "HixlTransport not initialized");
     CHECK_FAIL_RETURN_STATUS(addr != nullptr, StatusCode::K_INVALID, "HCCS host memory address cannot be null");
     CHECK_FAIL_RETURN_STATUS(size > 0, StatusCode::K_INVALID, "HCCS host memory size must be greater than 0");
 
+    if (IsHixlFabricMemMode()) {
+        return RegisterFabricMemory(addr, size, segInfo);
+    }
+    return RegisterRoceDirectHostMemory(addr, size);
+}
+
+Status HixlTransport::FillFabricSegmentIdentity(int32_t devId, const std::shared_ptr<FabricMemoryRegion> &region,
+                                                P2pSegmentInfo *segInfo) const
+{
+    RETURN_RUNTIME_ERROR_IF_NULL(region);
+    RETURN_RUNTIME_ERROR_IF_NULL(segInfo);
+    FabricSegmentIdentity identity{ std::hash<std::string>{}(localEndpointById_.at(devId)),
+                                    reinterpret_cast<uint64_t>(region->sourceAddr), region->size, devId };
+    int ret = memcpy_s(segInfo->internal, sizeof(segInfo->internal), &identity, sizeof(identity));
+    CHECK_FAIL_RETURN_STATUS(ret == EOK, StatusCode::K_RUNTIME_ERROR, "Failed to set HCCS FabricMem segment identity");
+    return Status::OK();
+}
+
+Status HixlTransport::RegisterHostMemoryOnEngine(int32_t devId, void *addr, uint64_t size, DsHixlMemHandle &handle)
+{
+    auto engineIt = engines_.find(devId);
+    CHECK_FAIL_RETURN_STATUS(engineIt != engines_.end(), StatusCode::K_RUNTIME_ERROR,
+                             "No HCCS engine available for devId " + std::to_string(devId));
+    uint32_t vendorStatus = 0;
+    DsHixlRegisterMemoryRequest request{ reinterpret_cast<uintptr_t>(addr), size, DS_HIXL_MEMORY_HOST };
+    DsHixlResult result = api_->register_memory(engineIt->second, &request, &handle, &vendorStatus);
+    return HixlResultToStatus(result, vendorStatus, "register_memory(MEM_HOST)");
+}
+
+Status HixlTransport::EnsureFabricMemoryRegisteredOnDevice(int32_t devId,
+                                                           const std::shared_ptr<FabricMemoryRegion> &region)
+{
+    RETURN_RUNTIME_ERROR_IF_NULL(region);
+    RETURN_OK_IF_TRUE(region->registrationHandles.count(devId) != 0);
+
+    RETURN_IF_NOT_OK(acl::AclDeviceManager::Instance()->SetDeviceIdx(devId));
+    DsHixlMemHandle handle = nullptr;
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
+        RegisterHostMemoryOnEngine(devId, region->sourceAddr, region->size, handle),
+        FormatString("Hixl RegisterMem(MEM_HOST) failed for shared physical FabricMem, devId=%d addr=%p size=%zu",
+                     devId, region->sourceAddr, region->size));
+    region->registrationHandles[devId] = handle;
+    return Status::OK();
+}
+
+Status HixlTransport::RegisterFabricMemory(void *addr, uint64_t size, P2pSegmentInfo *segInfo)
+{
+    CHECK_FAIL_RETURN_STATUS(segInfo != nullptr, StatusCode::K_INVALID,
+                             "HCCS FabricMem registration requires segment identity output");
+    int32_t devId = -1;
+    RETURN_IF_NOT_OK(acl::AclDeviceManager::Instance()->GetDeviceIdx(devId));
+    CHECK_FAIL_RETURN_STATUS(engines_.find(devId) != engines_.end(), StatusCode::K_RUNTIME_ERROR,
+                             "No HCCS engine available for FabricMem registration on devId " + std::to_string(devId));
+
+    std::lock_guard<std::mutex> lock(fabricMemoryMutex_);
+    const auto sourceAddr = reinterpret_cast<uintptr_t>(addr);
+    auto regionIt = fabricMemoryRegions_.find(sourceAddr);
+    if (regionIt != fabricMemoryRegions_.end()) {
+        CHECK_FAIL_RETURN_STATUS(regionIt->second->size == size, StatusCode::K_INVALID,
+                                 "HCCS FabricMem source address is already registered with a different size");
+        bool additionalEngine = regionIt->second->registrationHandles.count(devId) == 0;
+        RETURN_IF_NOT_OK(EnsureFabricMemoryRegisteredOnDevice(devId, regionIt->second));
+        if (additionalEngine) {
+            LOG(INFO) << "[HCCS] Registered physical FabricMem source arena on additional engine addr=" << addr
+                      << " size=" << size << " devId=" << devId;
+        }
+        return FillFabricSegmentIdentity(devId, regionIt->second, segInfo);
+    }
+
+    auto region = std::make_shared<FabricMemoryRegion>();
+    region->sourceAddr = addr;
+    region->size = size;
+    bool needCleanup = true;
+    Raii cleanup([this, &region, &needCleanup]() {
+        if (needCleanup) {
+            LOG_IF_ERROR(DeregisterFabricMemory(region), "Failed to roll back FabricMem registrations");
+        }
+    });
+
+    RETURN_IF_NOT_OK(EnsureFabricMemoryRegisteredOnDevice(devId, region));
+    RETURN_IF_NOT_OK(FillFabricSegmentIdentity(devId, region, segInfo));
+    fabricMemoryRegions_[sourceAddr] = region;
+    needCleanup = false;
+    LOG(INFO) << "[HCCS] Registered physical FabricMem source arena addr=" << addr << " size=" << size
+              << " devId=" << devId;
+    return Status::OK();
+}
+
+Status HixlTransport::RegisterRoceDirectHostMemory(void *addr, uint64_t size)
+{
     int32_t devId = -1;
     RETURN_IF_NOT_OK(acl::AclDeviceManager::Instance()->GetDeviceIdx(devId));
 
@@ -578,16 +992,72 @@ Status HixlTransport::RegisterMemory(void *addr, uint64_t size, P2pSegmentInfo *
     uintptr_t hostAddr = reinterpret_cast<uintptr_t>(addr);
     RETURN_OK_IF_TRUE(HasRegisteredHostMemoryLocked(devId, hostAddr, size));
 
-    auto engineIter = engines_.find(devId);
-    CHECK_FAIL_RETURN_STATUS(engineIter != engines_.end(), StatusCode::K_RUNTIME_ERROR,
-                             "No HCCS engine available for devId " + std::to_string(devId));
-
     DsHixlMemHandle handle = nullptr;
-    uint32_t vendorStatus = 0;
-    DsHixlRegisterMemoryRequest request{ hostAddr, size, DS_HIXL_MEMORY_HOST };
-    DsHixlResult result = api_->register_memory(engineIter->second, &request, &handle, &vendorStatus);
-    RETURN_IF_NOT_OK(HixlResultToStatus(result, vendorStatus, "register_memory(MEM_HOST)"));
+    RETURN_IF_NOT_OK(RegisterHostMemoryOnEngine(devId, addr, size, handle));
     registeredHostMemories_.push_back(RegisteredHostMemory{ devId, hostAddr, size, handle });
+    LOG(INFO) << "[HCCS] Registered MEM_HOST for RoCE direct, role=" << RoleName() << " devId=" << devId
+              << " addr=" << addr << " size=" << size;
+    return Status::OK();
+}
+
+Status HixlTransport::UnregisterMemory(void *addr)
+{
+    RETURN_OK_IF_TRUE(isClient_ || addr == nullptr || hixlMemoryMode_ == HixlMemoryMode::BUFFER_POOL);
+
+    if (IsHixlFabricMemMode()) {
+        std::lock_guard<std::mutex> lock(fabricMemoryMutex_);
+        auto regionIt = fabricMemoryRegions_.find(reinterpret_cast<uintptr_t>(addr));
+        RETURN_OK_IF_TRUE(regionIt == fabricMemoryRegions_.end());
+        RETURN_IF_NOT_OK(DeregisterFabricMemory(regionIt->second));
+        fabricMemoryRegions_.erase(regionIt);
+        return Status::OK();
+    }
+
+    int32_t devId = -1;
+    RETURN_IF_NOT_OK(acl::AclDeviceManager::Instance()->GetDeviceIdx(devId));
+
+    std::unique_lock<std::shared_timed_mutex> lifecycleLock(lifecycleMutex_);
+    const uintptr_t hostAddr = reinterpret_cast<uintptr_t>(addr);
+    auto registered = std::find_if(registeredHostMemories_.begin(), registeredHostMemories_.end(),
+                                   [devId, hostAddr](const RegisteredHostMemory &memory) {
+                                       return memory.devId == devId && memory.addr == hostAddr;
+                                   });
+    RETURN_OK_IF_TRUE(registered == registeredHostMemories_.end());
+
+    auto engineIt = engines_.find(devId);
+    CHECK_FAIL_RETURN_STATUS(engineIt != engines_.end(), StatusCode::K_RUNTIME_ERROR,
+                             "No HCCS engine available for devId " + std::to_string(devId));
+    uint32_t vendorStatus = 0;
+    DsHixlResult result = api_->deregister_memory(engineIt->second, registered->handle, &vendorStatus);
+    RETURN_IF_NOT_OK(HixlResultToStatus(result, vendorStatus, "deregister_memory(MEM_HOST)"));
+    registeredHostMemories_.erase(registered);
+    return Status::OK();
+}
+
+Status HixlTransport::PrepareRemoteMemory(void *addr, uint64_t offset, uint64_t size, uint64_t *remoteAddr)
+{
+    CHECK_FAIL_RETURN_STATUS(addr != nullptr && remoteAddr != nullptr, StatusCode::K_INVALID,
+                             "Invalid HCCS remote memory arguments");
+    if (!IsHixlFabricMemMode()) {
+        *remoteAddr = reinterpret_cast<uint64_t>(addr);
+        return Status::OK();
+    }
+
+    std::shared_ptr<FabricMemoryRegion> region;
+    {
+        std::lock_guard<std::mutex> lock(fabricMemoryMutex_);
+        auto regionIt = fabricMemoryRegions_.find(reinterpret_cast<uintptr_t>(addr));
+        CHECK_FAIL_RETURN_STATUS(regionIt != fabricMemoryRegions_.end(), StatusCode::K_NOT_FOUND,
+                                 "No FabricMem arena for source address");
+        region = regionIt->second;
+        CHECK_FAIL_RETURN_STATUS(!region->registrationHandles.empty(), StatusCode::K_NOT_FOUND,
+                                 "FabricMem region has no owner registration");
+    }
+
+    CHECK_FAIL_RETURN_STATUS(offset <= region->size && size <= region->size - offset, StatusCode::K_INVALID,
+                             "FabricMem range exceeds registered arena");
+    // The peer addresses this arena by its original VA; HIXL resolves it to the imported remote VA before copying.
+    *remoteAddr = reinterpret_cast<uint64_t>(region->sourceAddr);
     return Status::OK();
 }
 
@@ -617,7 +1087,9 @@ Status HixlTransport::RegisterDeviceMemoryLocked(uintptr_t addr, uint64_t size)
     DsHixlMemHandle handle = nullptr;
     uint32_t vendorStatus = 0;
     DsHixlRegisterMemoryRequest request{ addr, size, DS_HIXL_MEMORY_DEVICE };
+    PerfPoint point(PerfKey::HCCS_HIXL_PRE_REGISTER_MEM);
     DsHixlResult result = api_->register_memory(engine, &request, &handle, &vendorStatus);
+    point.Record();
     RETURN_IF_NOT_OK(HixlResultToStatus(result, vendorStatus, "register_memory(MEM_DEVICE)"));
     registeredDeviceMemories_.push_back(RegisteredDeviceMemory{ addr, size, handle });
     return Status::OK();
@@ -643,6 +1115,8 @@ Status HixlTransport::ReleaseDeviceMemoryLocked(uintptr_t addr, uint64_t size)
 Status HixlTransport::ValidateDeviceMemoryRegistrationInputs(const std::vector<void *> &addrs,
                                                              const std::vector<uint64_t> &sizes) const
 {
+    PerfPoint point(PerfKey::HCCS_TRANSPORT_PRE_REGISTER_DEVICE_MEMORY);
+    RETURN_OK_IF_TRUE(IsHixlFabricMemMode());
     CHECK_FAIL_RETURN_STATUS(!addrs.empty(), StatusCode::K_INVALID, "Device memory address list cannot be empty.");
     CHECK_FAIL_RETURN_STATUS(
         addrs.size() == sizes.size(), StatusCode::K_INVALID,
@@ -692,8 +1166,7 @@ Status HixlTransport::PreRegisterDeviceMemory(const std::vector<void *> &addrs, 
             continue;
         }
         size_t totalRegistrations = registeredDeviceMemories_.size() + newRegistrations.size() + 1;
-        CHECK_FAIL_RETURN_STATUS(totalRegistrations <= MAX_DEVICE_REGISTRATIONS,
-                                 StatusCode::K_RUNTIME_ERROR,
+        CHECK_FAIL_RETURN_STATUS(totalRegistrations <= MAX_DEVICE_REGISTRATIONS, StatusCode::K_RUNTIME_ERROR,
                                  FormatString("HCCS MEM_DEVICE pre-registration count %zu exceeds limit %zu.",
                                               totalRegistrations, MAX_DEVICE_REGISTRATIONS));
         newRegistrations.push_back(RegisteredDeviceMemory{ addr, sizes[i], nullptr });
@@ -776,6 +1249,7 @@ Status HixlTransport::ReleaseDeviceMemoryReferenceLocked(uintptr_t addr)
         --memory->references;
     }
     if (--reference->second.references == 0) { deviceMemoryReferences_.erase(reference); }
+              << ", totalRegistered=" << totalRegistered << ", ranges=" << FormatDeviceMemoryRanges(newRegistrations);
     return Status::OK();
 }
 
@@ -829,10 +1303,16 @@ void HixlTransport::ClearRegisteredHostMemory()
             LOG(WARNING) << "Failed to find HIXL engine when deregistering MEM_HOST on devId " << registered.devId;
             continue;
         }
+        Status setDeviceStatus = acl::AclDeviceManager::Instance()->SetDeviceIdx(registered.devId);
+        if (setDeviceStatus.IsError()) {
+            LOG(WARNING) << "Failed to set device before deregistering MEM_HOST on devId " << registered.devId << ": "
+                         << setDeviceStatus.ToString();
+            continue;
+        }
         uint32_t vendorStatus = 0;
         DsHixlResult result = api_->deregister_memory(engineIter->second, registered.handle, &vendorStatus);
-        LOG_IF(WARNING, result != DS_HIXL_OK) << "Failed to deregister HIXL host memory handle, result=" << result
-                                              << ", vendor_status=" << vendorStatus;
+        LOG_IF(WARNING, result != DS_HIXL_OK)
+            << "Failed to deregister HIXL host memory handle, result=" << result << ", vendor_status=" << vendorStatus;
     }
     registeredHostMemories_.clear();
 }
@@ -841,7 +1321,8 @@ Status HixlTransport::ImportRemoteAddressInfo(const std::string &remoteEndpoint,
 {
     (void)remoteEndpoint;
     (void)seg;
-    // HCCS does not use remote memory info; addresses are carried in P2pScatterEntry::ddrBuf
+    // HCCS addresses are carried in P2pScatterEntry::ddrBuf. FabricMem source arenas must be registered before the
+    // connection so HIXL can resolve the original VA during transfers.
     return Status::OK();
 }
 
@@ -852,6 +1333,9 @@ struct Batch {
     size_t tempRegisterBudget = 0;
     size_t preRegisteredCount = 0;
     std::atomic<bool> &transferFailed;
+    bool roceDirectMode = false;
+    bool bufferPoolEnabled = false;
+    HixlMemoryMode memoryMode = HixlMemoryMode::BUFFER_POOL;
     std::vector<DsHixlTransferDesc> descs;
     // These handles are temporary fallback registrations for the current batch only.
     std::vector<DsHixlMemHandle> handles;
@@ -872,8 +1356,10 @@ struct Batch {
         if (transferFailed) { return; }
         if (api != nullptr && engine != nullptr) {
             for (auto handle : handles) {
+                PerfPoint point(PerfKey::HCCS_HIXL_DEREGISTER_MEM);
                 uint32_t vendorStatus = 0;
                 DsHixlResult result = api->deregister_memory(engine, handle, &vendorStatus);
+                point.Record();
                 LOG_IF(WARNING, result != DS_HIXL_OK)
                     << "Failed to deregister temporary HIXL memory handle, result=" << result
                     << ", vendor_status=" << vendorStatus;
@@ -889,29 +1375,68 @@ struct Batch {
     }
 };
 
-static Status FlushHixlBatch(Batch &batch)
+static Status FlushHixlBatch(Batch &batch, HixlTransferOp op)
 {
     RETURN_OK_IF_TRUE(batch.descs.empty());
     CHECK_FAIL_RETURN_STATUS(!batch.transferFailed.load(), K_NOT_READY,
                              "HIXL transport is quarantined after a transfer failure");
     CHECK_FAIL_RETURN_STATUS(batch.descs.size() <= std::numeric_limits<uint32_t>::max(), K_INVALID,
                              "HIXL transfer descriptor count exceeds uint32 range");
+    PerfPoint transferPoint(PerfKey::HCCS_HIXL_TRANSFER_SYNC);
+    PerfPoint directionTransferPoint(HixlTransferSyncPerfKey(op));
     uint32_t vendorStatus = 0;
+    uint32_t operation = op == HixlTransferOp::WRITE ? DS_HIXL_TRANSFER_WRITE : DS_HIXL_TRANSFER_READ;
     DsHixlTransferRequest request{ DsHixlStringView{ batch.remoteEndpoint.data(), batch.remoteEndpoint.size() },
-                                   DS_HIXL_TRANSFER_READ,
-                                   batch.descs.data(),
-                                   static_cast<uint32_t>(batch.descs.size()),
+                                   operation, batch.descs.data(), static_cast<uint32_t>(batch.descs.size()),
                                    K_HIXL_TRANSFER_TIMEOUT_MS };
     DsHixlResult result = TransferWithMetrics(batch.api, batch.engine, request, vendorStatus);
     if (result != DS_HIXL_OK) { batch.transferFailed.store(true); }
     LOG_IF(ERROR, result != DS_HIXL_OK)
-        << "HIXL READ failed; retain device arenas until process exit and restart the SDK process";
+        << "HIXL transfer failed; retain device arenas until process exit and restart the SDK process";
+    directionTransferPoint.Record();
+    transferPoint.Record();
     RETURN_IF_NOT_OK(HixlResultToStatus(result, vendorStatus, "transfer_sync"));
     batch.Reset();
     return Status::OK();
 }
 
-static Status RegisterTemporaryDeviceMemoryForBatch(Batch &batch, uintptr_t localAddr, uint64_t len)
+static Status FlushHixlDescriptors(Batch &batch, HixlTransferOp op, const DsHixlTransferDesc *descs, size_t count)
+{
+    RETURN_OK_IF_TRUE(count == 0);
+    CHECK_FAIL_RETURN_STATUS(!batch.transferFailed.load(), K_NOT_READY,
+                             "HIXL transport is quarantined after a transfer failure");
+    CHECK_FAIL_RETURN_STATUS(count <= std::numeric_limits<uint32_t>::max(), K_INVALID,
+                             "HIXL transfer descriptor count exceeds uint32 range");
+    PerfPoint transferPoint(PerfKey::HCCS_HIXL_TRANSFER_SYNC);
+    PerfPoint directionTransferPoint(HixlTransferSyncPerfKey(op));
+    uint32_t vendorStatus = 0;
+    uint32_t operation = op == HixlTransferOp::WRITE ? DS_HIXL_TRANSFER_WRITE : DS_HIXL_TRANSFER_READ;
+    DsHixlTransferRequest request{ DsHixlStringView{ batch.remoteEndpoint.data(), batch.remoteEndpoint.size() },
+                                   operation, descs, static_cast<uint32_t>(count), K_HIXL_TRANSFER_TIMEOUT_MS };
+    DsHixlResult result = TransferWithMetrics(batch.api, batch.engine, request, vendorStatus);
+    if (result != DS_HIXL_OK) { batch.transferFailed.store(true); }
+    LOG_IF(ERROR, result != DS_HIXL_OK)
+        << "HIXL transfer failed; retain device arenas until process exit and restart the SDK process";
+    directionTransferPoint.Record();
+    transferPoint.Record();
+    return HixlResultToStatus(result, vendorStatus, "transfer_sync");
+}
+
+static Status BuildFabricMemTransferDescriptors(const std::vector<HixlTransferDesc> &descs, HixlTransferOp op,
+                                                std::vector<DsHixlTransferDesc> &hixlDescs)
+{
+    hixlDescs.reserve(descs.size());
+    for (const auto &desc : descs) {
+        CHECK_FAIL_RETURN_STATUS(desc.localAddr != 0, StatusCode::K_INVALID, "HIXL local address cannot be null");
+        CHECK_FAIL_RETURN_STATUS(desc.remoteAddr != 0, StatusCode::K_INVALID, "HIXL remote address cannot be null");
+        CHECK_FAIL_RETURN_STATUS(desc.len > 0, StatusCode::K_INVALID, "HIXL transfer length must be greater than 0");
+        PerfPoint::RecordElapsed(HixlRegisteredDeviceMemoryPerfKey(op, true), 1);
+        hixlDescs.push_back(DsHixlTransferDesc{ desc.localAddr, desc.remoteAddr, desc.len });
+    }
+    return Status::OK();
+}
+
+static Status RegisterTemporaryDeviceMemoryForBatch(Batch &batch, HixlTransferOp op, uintptr_t localAddr, uint64_t len)
 {
     CHECK_FAIL_RETURN_STATUS(batch.tempRegisterBudget > 0, StatusCode::K_RUNTIME_ERROR,
                              FormatString("No HCCS MEM_DEVICE registration budget left for fallback registration; "
@@ -919,7 +1444,7 @@ static Status RegisterTemporaryDeviceMemoryForBatch(Batch &batch, uintptr_t loca
                                           batch.preRegisteredCount, MAX_DEVICE_REGISTRATIONS));
     if (batch.handles.size() >= batch.tempRegisterBudget) {
         // Releasing the previous batch's temporary handles restores the remaining registration budget.
-        RETURN_IF_NOT_OK(FlushHixlBatch(batch));
+        RETURN_IF_NOT_OK(FlushHixlBatch(batch, op));
     }
     CHECK_FAIL_RETURN_STATUS(!batch.transferFailed.load(), K_NOT_READY,
                              "HIXL transport is quarantined after a transfer failure");
@@ -927,50 +1452,146 @@ static Status RegisterTemporaryDeviceMemoryForBatch(Batch &batch, uintptr_t loca
     DsHixlMemHandle handle = nullptr;
     uint32_t vendorStatus = 0;
     DsHixlRegisterMemoryRequest request{ localAddr, len, DS_HIXL_MEMORY_DEVICE };
+    PerfPoint registerPoint(PerfKey::HCCS_HIXL_REGISTER_MEM);
     DsHixlResult result = batch.api->register_memory(batch.engine, &request, &handle, &vendorStatus);
+    registerPoint.Record();
     RETURN_IF_NOT_OK(HixlResultToStatus(result, vendorStatus, "register_memory(MEM_DEVICE)"));
     batch.handles.push_back(handle);
     return Status::OK();
 }
 
-Status HixlTransport::ScatterBatch(P2pScatterEntry *entries, uint32_t count, const std::string &remoteEndpoint,
-                                   std::shared_ptr<aclrtStream> stream)
+static Status AppendTransferDescToBatch(Batch &batch, HixlTransferOp op, const HixlTransferDesc &desc,
+                                        bool registered, std::unique_lock<std::mutex> &temporaryRegistrationLock,
+                                        size_t reserveCount)
+{
+    CHECK_FAIL_RETURN_STATUS(desc.localAddr != 0, StatusCode::K_INVALID, "HIXL local address cannot be null");
+    CHECK_FAIL_RETURN_STATUS(desc.remoteAddr != 0, StatusCode::K_INVALID, "HIXL remote address cannot be null");
+    CHECK_FAIL_RETURN_STATUS(desc.len > 0, StatusCode::K_INVALID, "HIXL transfer length must be greater than 0");
+
+    PerfPoint::RecordElapsed(HixlRegisteredDeviceMemoryPerfKey(op, registered), 1);
+    if (!registered) {
+        CHECK_FAIL_RETURN_STATUS(!batch.roceDirectMode || batch.bufferPoolEnabled, StatusCode::K_RUNTIME_ERROR,
+                                 "HIXL RoCE direct transfer requires pre-registered device memory.");
+        CHECK_FAIL_RETURN_STATUS(batch.tempRegisterBudget > 0, StatusCode::K_RUNTIME_ERROR,
+                                 FormatString("No HCCS MEM_DEVICE registration budget left for fallback "
+                                              "registration; pre-registered count: %zu, limit: %zu.",
+                                              batch.preRegisteredCount, MAX_DEVICE_REGISTRATIONS));
+        // Only fallback batches share the temporary registration budget; WRITE and registered READ bypass this lock.
+        if (!temporaryRegistrationLock.owns_lock()) {
+            temporaryRegistrationLock.lock();
+            batch.handles.reserve(std::min(batch.tempRegisterBudget, reserveCount));
+        }
+        CHECK_FAIL_RETURN_STATUS(!batch.transferFailed.load(), K_NOT_READY,
+                                 "HIXL transport is quarantined after a transfer failure");
+        VLOG(1) << "[HCCS] Temporarily registering local MEM_DEVICE for " << HixlMemoryModeName(batch.memoryMode)
+                << " transfer. addr=" << reinterpret_cast<void *>(desc.localAddr) << " size=" << desc.len;
+        RETURN_IF_NOT_OK(RegisterTemporaryDeviceMemoryForBatch(batch, op, desc.localAddr, desc.len));
+    }
+    batch.descs.push_back(DsHixlTransferDesc{ desc.localAddr, desc.remoteAddr, desc.len });
+    return Status::OK();
+}
+
+Status HixlTransport::TransferFabricMemBatchParallel(HixlTransferOp op, const std::vector<HixlTransferDesc> &descs,
+                                                     const std::string &remoteEndpoint)
+{
+    PerfPoint point(PerfKey::HCCS_TRANSPORT_SCATTER_BATCH);
+    auto engineIter = engines_.begin();
+    CHECK_FAIL_RETURN_STATUS(engineIter != engines_.end(), StatusCode::K_RUNTIME_ERROR, "No HCCS engines available");
+    const int32_t devId = engineIter->first;
+    DsHixlEngineHandle engine = engineIter->second;
+    std::vector<DsHixlTransferDesc> hixlDescs;
+    RETURN_IF_NOT_OK(BuildFabricMemTransferDescriptors(descs, op, hixlDescs));
+    Batch batch(api_, engine, remoteEndpoint, 0, 0, transferFailed_);
+
+    size_t workerCount = static_cast<size_t>(GetHixlTransferSyncParallelism());
+    workerCount = std::min(workerCount, hixlDescs.size());
+    RETURN_OK_IF_TRUE(workerCount == 0);
+    auto chunks = BuildHixlTransferChunks(hixlDescs, workerCount);
+    LOG(INFO) << "[HCCS] FabricMem parallel TransferSync enabled, op="
+              << (op == HixlTransferOp::WRITE ? "write" : "read") << ", endpoint=" << remoteEndpoint
+              << ", descs=" << hixlDescs.size() << ", bytes=" << SumTransferBytes(descs)
+              << ", parallelism=" << chunks.size();
+    if (chunks.size() == 1) {
+        RETURN_IF_NOT_OK(BindDeviceForEngine(devId));
+        return FlushHixlDescriptors(batch, op, hixlDescs.data(), hixlDescs.size());
+    }
+
+    std::vector<std::future<Status>> futures;
+    futures.reserve(chunks.size());
+    auto &pool = GetHixlTransferThreadPool();
+    // FabricMem chunks only touch already-registered host backing, so they never take temporary HIXL handles.
+    // The caller keeps the shared lifecycle lease until every future is joined.
+    for (const auto &chunk : chunks) {
+        futures.emplace_back(pool.Submit([this, devId, engine, remoteEndpoint, op, chunk] {
+            RETURN_IF_NOT_OK(BindDeviceForEngine(devId));
+            Batch chunkBatch(api_, engine, remoteEndpoint, 0, 0, transferFailed_);
+            return FlushHixlDescriptors(chunkBatch, op, chunk.descs, chunk.count);
+        }));
+    }
+
+    Status firstError = Status::OK();
+    for (auto &future : futures) {
+        Status status = future.get();
+        if (status.IsError() && firstError.IsOk()) {
+            firstError = status;
+        }
+    }
+    return firstError;
+}
+
+Status HixlTransport::TransferBatch(HixlTransferOp op, const std::vector<HixlTransferDesc> &descs,
+                                    const std::string &remoteEndpoint, std::shared_ptr<aclrtStream> stream)
 {
     (void)stream;
+    RETURN_OK_IF_TRUE(descs.empty());
+    PerfPoint::RecordElapsed(HixlTransferDescCountPerfKey(op), descs.size());
+    PerfPoint::RecordElapsed(HixlTransferBytesPerfKey(op), SumTransferBytes(descs));
+
+    // FabricMem chunks run concurrently, so the shared lifecycle lease must cover the whole call.
     std::shared_lock<std::shared_timed_mutex> lock(lifecycleMutex_);
     RETURN_IF_NOT_OK(CheckReadyLocked());
+    if (IsHixlFabricMemMode() && GetHixlTransferSyncParallelism() > 1) {
+        return TransferFabricMemBatchParallel(op, descs, remoteEndpoint);
+    }
 
     CHECK_FAIL_RETURN_STATUS(!engines_.empty(), StatusCode::K_RUNTIME_ERROR, "No HCCS engines available");
     DsHixlEngineHandle engine = engines_.begin()->second;
 
-    CHECK_FAIL_RETURN_STATUS(registeredDeviceMemories_.size() <= MAX_DEVICE_REGISTRATIONS,
-                             StatusCode::K_RUNTIME_ERROR,
+    CHECK_FAIL_RETURN_STATUS(registeredDeviceMemories_.size() <= MAX_DEVICE_REGISTRATIONS, StatusCode::K_RUNTIME_ERROR,
                              FormatString("HCCS MEM_DEVICE pre-registration count %zu exceeds limit %zu.",
                                           registeredDeviceMemories_.size(), MAX_DEVICE_REGISTRATIONS));
 
-    // Pre-count the flattened descriptor count so the active HIXL batch reserves its TransferOpDesc vector
-    // once (no growth/relocation while appending). HIXL TransferOpDesc count has no upper bound: HIXL
-    // internally splits the submission across the SQ queue depth, so there is no operator-facing cap and no
-    // mid-loop descriptor-driven flush here. The only mid-loop flush is temporary registration budget
-    // exhaustion inside RegisterTemporaryDeviceMemoryForBatch.
-    size_t totalDescriptorCount = 0;
-    for (uint32_t i = 0; i < count; ++i) {
-        const auto numEl = static_cast<size_t>(entries[i].numEl);
-        CHECK_FAIL_RETURN_STATUS(totalDescriptorCount <= SIZE_MAX - numEl, K_INVALID,
-                                 "Total HCCS descriptor count overflows size_t");
-        totalDescriptorCount += numEl;
-    }
-    const size_t reserveCount = totalDescriptorCount;
+    const size_t reserveCount = descs.size();
 
     // Long-lived pre-registered handles and short-lived fallback handles share the HIXL registration budget.
     const size_t preRegisteredCount = registeredDeviceMemories_.size();
     const size_t tempRegisterBudget = MAX_DEVICE_REGISTRATIONS - preRegisteredCount;
-    // Only fallback batches share the temporary registration budget; WRITE and registered READ bypass this lock.
     std::unique_lock<std::mutex> temporaryRegistrationLock(temporaryRegistrationMutex_, std::defer_lock);
     Batch batch(api_, engine, remoteEndpoint, tempRegisterBudget, preRegisteredCount, transferFailed_);
+    batch.roceDirectMode = IsHixlRoceDirectMode();
+    batch.bufferPoolEnabled = bufferPoolEnabled_;
+    batch.memoryMode = hixlMemoryMode_;
     // Reserve the flattened TransferOpDesc count once so the descriptor vector does not relocate while appending.
     batch.descs.reserve(reserveCount);
 
+    for (const auto &desc : descs) {
+        const bool registered = HasRegisteredDeviceMemoryLocked(desc.localAddr, desc.len);
+        RETURN_IF_NOT_OK(
+            AppendTransferDescToBatch(batch, op, desc, registered, temporaryRegistrationLock, reserveCount));
+    }
+
+    return FlushHixlBatch(batch, op);
+}
+
+Status HixlTransport::ScatterBatch(P2pScatterEntry *entries, uint32_t count, const std::string &remoteEndpoint,
+                                   std::shared_ptr<aclrtStream> stream)
+{
+    std::vector<HixlTransferDesc> descs;
+    size_t totalDescCount = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+        totalDescCount += entries[i].numEl;
+    }
+    descs.reserve(totalDescCount);
     for (uint32_t i = 0; i < count; ++i) {
         const auto &entry = entries[i];
         uint64_t entryOffset = 0;
@@ -979,22 +1600,11 @@ Status HixlTransport::ScatterBatch(P2pScatterEntry *entries, uint32_t count, con
             uintptr_t localAddr = reinterpret_cast<uintptr_t>(entry.dstBufs[j]);
             uintptr_t remoteAddr = remoteBase + entryOffset;
             uint64_t len = entry.counts[j];
-
-            bool registered = HasRegisteredDeviceMemoryLocked(localAddr, len);
-            if (!registered) {
-                if (!temporaryRegistrationLock.owns_lock()) {
-                    temporaryRegistrationLock.lock();
-                    batch.handles.reserve(std::min(tempRegisterBudget, reserveCount));
-                }
-                RETURN_IF_NOT_OK(CheckReadyLocked());
-                RETURN_IF_NOT_OK(RegisterTemporaryDeviceMemoryForBatch(batch, localAddr, len));
-            }
-            batch.descs.push_back(DsHixlTransferDesc{ localAddr, remoteAddr, len });
+            descs.push_back(HixlTransferDesc{ localAddr, remoteAddr, len });
             entryOffset += entry.counts[j];
         }
     }
-
-    return FlushHixlBatch(batch);
+    return TransferBatch(HixlTransferOp::READ, descs, remoteEndpoint, stream);
 }
 
 Status HixlTransport::WriteBatch(const std::string &remoteEndpoint,

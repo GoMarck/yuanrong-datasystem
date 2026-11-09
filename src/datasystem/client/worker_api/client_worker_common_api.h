@@ -457,6 +457,8 @@ protected:
 
 class ClientWorkerLocalCommonApi : virtual public IClientWorkerCommonApi {
 public:
+    using IClientWorkerCommonApi::GetClientFd;
+
     explicit ClientWorkerLocalCommonApi(HostPort hostPort,
                                         std::shared_ptr<::datasystem::client::EmbeddedClientWorkerApi> api,
                                         void *worker, HeartbeatType heartbeatType = HeartbeatType::RPC_HEARTBEAT,
@@ -506,6 +508,8 @@ private:
 
 class ClientWorkerRemoteCommonApi : virtual public IClientWorkerCommonApi {
 public:
+    using IClientWorkerCommonApi::GetClientFd;
+
     /**
      * @brief Construct ClientWorkerApi.
      * @param[in] hostPort The address of worker node.

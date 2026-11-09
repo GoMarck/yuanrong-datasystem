@@ -71,11 +71,12 @@ def _ascend_configure_impl(repository_ctx):
     include_dir = repository_ctx.path(root + "/include")
     lib_dir = root + "/lib64"
     lib_dir_path = repository_ctx.path(lib_dir)
-    acl_rt = repository_ctx.path(root + "/include/acl/acl_rt.h")
+    adxl_engine_header = repository_ctx.path(root + "/include/adxl/adxl_engine.h")
     hixl_header = repository_ctx.path(root + "/include/hixl/hixl.h")
     hixl_types_header = repository_ctx.path(root + "/include/hixl/hixl_types.h")
     cann_hixl_lib = repository_ctx.path(root + "/lib64/libcann_hixl.so")
     metadef_lib = repository_ctx.path(root + "/lib64/libmetadef.so")
+    llm_datadist_lib = repository_ctx.path(root + "/lib64/libllm_datadist.so")
     hixl_version = _read_hixl_version(repository_ctx, root)
     hixl_hccs_supported = _hixl_version_at_least(hixl_version, [8, 5, 2])
 
@@ -121,7 +122,15 @@ def _ascend_configure_impl(repository_ctx):
             "-lhccl",
         ])
 
-    if hixl_header.exists and hixl_types_header.exists and cann_hixl_lib.exists and metadef_lib.exists and hixl_hccs_supported:
+    hixl_available = (hixl_header.exists and hixl_types_header.exists and cann_hixl_lib.exists
+                      and metadef_lib.exists and hixl_hccs_supported)
+    if adxl_engine_header.exists:
+        adxl_engine_content = repository_ctx.read(adxl_engine_header)
+    else:
+        adxl_engine_content = ""
+    fabric_mem_available = (hixl_available and llm_datadist_lib.exists and "MallocMem" in adxl_engine_content
+                            and "FreeMem" in adxl_engine_content)
+    if hixl_available:
         hixl_linkopts.extend([
             "-L" + lib_dir,
             "-Wl,-rpath," + lib_dir,
@@ -146,8 +155,11 @@ def _ascend_configure_impl(repository_ctx):
             "hixl_transport.h",
         ])
         hixl_plugin_targets.append("//src/datasystem/common/rdma/npu/plugin:libds_hixl_plugin.so")
+        if fabric_mem_available:
+            hixl_defines.append("ASCEND_HIXL_FABRIC_MEM_AVAILABLE")
+            hixl_plugin_linkopts.append("-llm_datadist")
 
-    if acl_rt.exists and "aclrtMemRetainAllocationHandle" in repository_ctx.read(acl_rt):
+    if fabric_mem_available:
         defines.append("ASCEND_SUPPORT_FABRIC_MEM")
 
     repository_ctx.file(
@@ -179,6 +191,8 @@ cc_library(
     name = "hixl_plugin_sdk",
     defines = {hixl_defines},
     hdrs = glob([
+        "ascend/include/adxl/**/*.h",
+        "ascend/include/adxl/**/*.hpp",
         "ascend/include/hixl/**/*.h",
         "ascend/include/hixl/**/*.hpp",
         "ascend/include/external/ge_common/**/*.h",

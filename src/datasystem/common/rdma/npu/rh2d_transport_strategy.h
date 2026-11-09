@@ -29,6 +29,14 @@
 
 namespace datasystem {
 
+enum class HixlTransferOp { READ, WRITE };
+
+struct HixlTransferDesc {
+    uintptr_t localAddr;
+    uintptr_t remoteAddr;
+    uint64_t len;
+};
+
 /**
  * @brief Strategy interface for RH2D transport protocols.
  *
@@ -55,11 +63,22 @@ public:
     /**
      * @brief Get local connection identity for exchange.
      * @param[out] identity Base64(rootInfo) for RoCE, or "IP:Port" for HCCS.
+     * @param[in] devId Optional HCCS device id. When set, HCCS returns the endpoint bound to that engine.
      * @return Status of the call.
      *
      * Identity string is used by remote peer for connection establishment.
      */
-    virtual Status GetConnectionIdentity(std::string *identity) = 0;
+    virtual Status GetConnectionIdentity(std::string *identity, int32_t devId = -1) = 0;
+
+    /**
+     * @brief Whether this transport can establish a connection when the local worker engine and peer client use the
+     *        same physical NPU card.
+     * @return true if worker device selection does not need to avoid the peer client device.
+     */
+    virtual bool AllowSameDeviceConnection() const
+    {
+        return false;
+    }
 
     /**
      * @brief Establish P2P connection.
@@ -107,8 +126,30 @@ public:
      * - HIXL/HCCS buffer-pool: intentionally skips source host registration; segInfo is zeroed. HIXL routes
      *   unregistered remote host addresses through its internal buffer-pool relay.
      * - HIXL ROCE direct: registers the worker source host buffer with HIXL before Connect.
+     * - HCCS FabricMem: registers the physical-backed source arena as MEM_HOST. HIXL keeps the registration context
+     *   needed by FabricMem peers during connection establishment.
      */
     virtual Status RegisterMemory(void *addr, uint64_t size, P2pSegmentInfo *segInfo) = 0;
+
+    /**
+     * @brief Unregister host memory before its backing allocation is released.
+     * @param[in] addr Registered host-memory base address.
+     * @return Status of the call.
+     */
+    virtual Status UnregisterMemory(void *addr) = 0;
+
+    /**
+     * @brief Prepare a registered host-memory range for remote access.
+     * @param[in] addr Registered host-memory base address.
+     * @param[in] offset Offset of the range to prepare.
+     * @param[in] size Size of the range to prepare.
+     * @param[out] remoteAddr Base address exposed to the remote peer.
+     * @return Status of the call.
+     *
+     * HCCS FabricMem directly exposes a physical-backed source arena. Other modes expose the original shared-memory
+     * address.
+     */
+    virtual Status PrepareRemoteMemory(void *addr, uint64_t offset, uint64_t size, uint64_t *remoteAddr) = 0;
 
     /**
      * @brief Pre-register local device memory for HCCS/HIXL transfers.
@@ -117,7 +158,9 @@ public:
      * @return Status of the call.
      *
      * - RoCE: no-op. RoCE registers/imports remote host segments instead.
-     * - HCCS: registers MEM_DEVICE once and keeps the handle until this memory is unregistered or transport teardown.
+     * - HCCS buffer-pool / ROCE direct: registers MEM_DEVICE once and keeps the handle until this memory is
+     *   unregistered or transport teardown.
+     * - HCCS FabricMem: no-op because HIXL copies directly into regular device memory.
      */
     virtual Status PreRegisterDeviceMemory(const std::vector<void *> &addrs, const std::vector<uint64_t> &sizes)
     {
@@ -163,12 +206,32 @@ public:
      * - RoCE: calls DSP2PScatterBatchFromRemoteHostMem, uses provided stream.
      *         Implementation splits large batches to respect FFTS context limit
      *         (max 16384 blobs per batch).
-     * - HCCS: uses explicitly pre-registered MEM_DEVICE ranges when available. Otherwise it temporarily registers
-     *         local destinations for the transfer. Hixl::TransferSync（READ) batches are split only when number of
-     *         temporary registrations reach the limit.
+     * - HIXL buffer-pool: uses explicitly pre-registered MEM_DEVICE ranges when available. Otherwise it temporarily
+     *         registers local destinations for the transfer. Hixl::TransferSync(READ) batches are split only when the
+     *         number of temporary registrations reaches the limit.
+     * - HIXL RoCE direct: requires local destinations to hit pre-registered MEM_DEVICE ranges.
+     * - HIXL FabricMem: uses FabricMem host registration and does not require local MEM_DEVICE registration.
      */
     virtual Status ScatterBatch(P2pScatterEntry *entries, uint32_t count, const std::string &remoteEndpoint,
                                 std::shared_ptr<aclrtStream> stream) = 0;
+
+    /**
+     * @brief Execute one-sided HIXL transfer descriptors.
+     * @param[in] op READ: remote host -> local device; WRITE: local device -> remote host.
+     * @param[in] descs Transfer descriptors using HIXL local/remote address semantics.
+     * @param[in] remoteEndpoint Remote endpoint identifier.
+     * @param[in] stream Shared pointer to ACL stream for RoCE compatibility. HIXL ignores it.
+     * @return Status of the call.
+     */
+    virtual Status TransferBatch(HixlTransferOp op, const std::vector<HixlTransferDesc> &descs,
+                                 const std::string &remoteEndpoint, std::shared_ptr<aclrtStream> stream)
+    {
+        (void)op;
+        (void)descs;
+        (void)remoteEndpoint;
+        (void)stream;
+        return Status(K_NOT_SUPPORTED, "TransferBatch is not supported by this RH2D transport");
+    }
 
     /**
      * @brief Get link type for conditional logic.

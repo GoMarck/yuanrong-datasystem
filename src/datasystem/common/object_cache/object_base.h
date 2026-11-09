@@ -150,6 +150,16 @@ struct ObjectInterface {
         return 0;
     }
 
+    virtual void SetBlobSizes(std::vector<uint64_t> blobSizes)
+    {
+        (void)blobSizes;
+    }
+
+    virtual std::vector<uint64_t> GetBlobSizes() const
+    {
+        return {};
+    }
+
     /**
      * @brief A setter function for the shared memory unit.
      * @param[in] shmUnit The shared memory unit.
@@ -385,6 +395,7 @@ struct ObjectBufferInfo {
     std::shared_ptr<RpcMessage> payloadPointer;
     std::shared_ptr<client::IMmapTableEntry> mmapEntry;
     std::shared_ptr<RemoteH2DHostInfoPb> remoteHostInfo = nullptr;
+    std::vector<uint64_t> blobSizes;
     std::shared_ptr<UrmaRemoteAddrPb> ubUrmaDataInfo = nullptr;
     bool ubDataSentByMemoryCopy = false;
     Status ubFailureReportRc = Status::OK();

@@ -29,3 +29,7 @@ set(SHARED_MEM_DEPEND_LIBS
 
 add_library(common_shared_memory STATIC ${SHARED_MEM_SRCS})
 target_link_libraries(common_shared_memory PRIVATE ${SHARED_MEM_DEPEND_LIBS})
+if (ASCEND_HIXL_FABRIC_MEM_SUPPORTED)
+    target_compile_definitions(common_shared_memory PRIVATE ASCEND_SUPPORT_FABRIC_MEM)
+    target_link_libraries(common_shared_memory PRIVATE common_acl_device)
+endif()

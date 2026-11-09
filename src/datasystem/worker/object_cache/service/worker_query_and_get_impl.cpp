@@ -30,6 +30,7 @@
 #include "datasystem/common/object_cache/provider_ub_failure_detail.h"
 #include "datasystem/common/object_cache/ub_health_summary_codec.h"
 #include "datasystem/common/object_cache/shm_guard.h"
+#include "datasystem/common/rdma/fast_transport_base.h"
 #include "datasystem/common/rdma/fast_transport_manager_wrapper.h"
 #include "datasystem/common/shared_memory/delayed_release_shm_manager.h"
 #include "datasystem/common/util/raii.h"
@@ -279,6 +280,8 @@ Status WorkerQueryAndGetImpl::ValidateRequest(const QueryAndGetReqPb &request) c
                              "QueryAndGet data transport is not set");
     if (dataRequest.has_shm()) {
         RETURN_RUNTIME_ERROR_IF_NULL(memoryRefTable_);
+        CHECK_FAIL_RETURN_STATUS(!UsePhysicalFabricArena(), K_NOT_SUPPORTED,
+                                 "FabricMem QueryAndGet does not support legacy SHM response.");
         CHECK_FAIL_RETURN_STATUS(!dataRequest.shm().client_id().empty(), K_INVALID,
                                  "QueryAndGet SHM client ID is empty");
         const auto clientId = ClientKey::Intern(dataRequest.shm().client_id());

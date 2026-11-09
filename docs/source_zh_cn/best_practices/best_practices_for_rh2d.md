@@ -11,18 +11,19 @@ openYuanrong datasystem 支持 RH2D over P2P-Transfer RoCE（RDMA over Converged
 | 适用环境 | 配置并打通 RoCE 网络的 Ascend 节点 | HIXL 可用且 HCCS 或 RoCE 可达的 Atlas A2/A3 环境 |
 | Worker链路参数 | `--remote_h2d_link_type "ROCE"`，默认值 | `--remote_h2d_link_type "HCCS"` |
 | Client链路参数 | `DS_RH2D_LINK_TYPE=ROCE`，默认值 | `DS_RH2D_LINK_TYPE=HCCS` |
-| Worker Host内存 | 注册到 NPU，需要锁页 | 启用 HIXL buffer pool 时不注册、不锁页；配置为 `0:0` 时注册 |
+| Worker Host内存 | 注册到 NPU，需要锁页 | HIXL buffer-pool relay 模式不注册、不锁页；RoCE direct 模式需要注册；FabricMem 模式通过 HIXL `MallocMem(MEM_HOST)` 分配预申请物理内存的共享内存 arena，并注册为 HIXL `MEM_HOST` |
 | 传输后端及依赖 | P2P-Transfer及RoCE运行环境 | HIXL及HCCS/RoCE运行环境；需要CANN HIXL头文件、`libcann_hixl.so`、`libmetadef.so` |
 
 使用时需满足以下约束：
 
-1. 同一个 RH2D 通信链路两端必须使用相同的 `remote_h2d_link_type`；HIXL 场景的 buffer-pool 参数和 `HCCL_INTRA_ROCE_ENABLE` 也应保持一致。
+1. 同一个 RH2D 通信链路两端必须使用相同的 `remote_h2d_link_type`；HIXL 场景的 buffer-pool 参数、`HCCL_INTRA_ROCE_ENABLE` 和 FabricMem 开关等内存模式配置也应保持一致。
 2. 链路类型是进程级配置，必须在 Worker 启动前或 Client 第一次 RH2D 操作前设置，运行期间不能动态切换。
 3. Client 进程仅使用一个 NPU device id。Worker 可以配置多个 device id，并按 Client 连接轮询分配。
 4. HCCS 场景要求构建产物包含 HIXL 支持，且使用的 `cann_hixl` 需支持 `comm_resource_config.listen_port`。构建时未发现 HIXL 头文件、`libcann_hixl.so` 或 `libmetadef.so`，将无法使用 `HCCS` 链路。
 5. HCCS 使用 Worker 地址以及 Client 所连接本地 Worker 的地址作为 HIXL endpoint IP。请配置 HCCS 环境中可达的实际 IP，避免使用 `127.0.0.1` 或 `0.0.0.0`。
-6. HIXL 在未设置 `HCCL_INTRA_ROCE_ENABLE` 时由平台选择默认协议：Atlas A2 使用 RoCE，Atlas A3 使用 HCCS；设置为 `1` 时 HIXL 使用 RoCE。数据系统不适配或改写该协议选择，且始终将 buffer-pool 配置原样传给 HIXL；`remote_h2d_hccs_buffer_pool`/`DS_RH2D_HCCS_BUFFER_POOL` 为正数配置时启用 buffer pool，只有配置为 `0:0` 时才关闭。
-7. HCCS 当前在单个进程内串行执行 HIXL `TransferSync()`；需要提高并发度时，建议使用多个 Client 进程。
+6. HIXL 在未设置 `HCCL_INTRA_ROCE_ENABLE` 时由平台选择默认协议：Atlas A2 使用 RoCE，Atlas A3 使用 HCCS；设置为 `1` 时 HIXL 使用 RoCE 链路。`remote_h2d_hccs_buffer_pool`/`DS_RH2D_HCCS_BUFFER_POOL` 为 `0:0` 时使用 RoCE direct，配置正数值时使用 RoCE buffer-pool relay；设置 `remote_h2d_hccs_enable_fabric_mem`/`DS_RH2D_HCCS_ENABLE_FABRIC_MEM` 时进入 FabricMem。buffer-pool relay、RoCE direct 和 FabricMem 三种模式应按进程启动前配置固定下来，不要混用；buffer-pool 参数仅在未启用 FabricMem 时生效。
+7. HCCS 默认在单个进程内执行 HIXL `TransferSync()`；FabricMem 默认会以 4 路并发切分单个请求内的 TransferSync，可通过 `DS_HIXL_TRANSFER_SYNC_PARALLELISM` 调整。若一次 Get 命中多个远端来源，可通过 `DS_HIXL_REMOTE_GROUP_PARALLELISM` 并发处理不同来源 group；其余 HCCS 场景需要提高并发度时建议使用多个 Client 进程。
+8. FabricMem 依赖 CANN HIXL/ADXL 头文件提供 `OPTION_ENABLE_USE_FABRIC_MEM`、`AdxlEngine::MallocMem` 和 `AdxlEngine::FreeMem` 等接口，并依赖 `libllm_datadist.so` 提供 ADXL 实现。构建环境缺少这些接口或库时仍可使用普通 HCCS buffer-pool 模式，但运行时不能启用 FabricMem。
 
 ## Client 无本地 Worker 的 Pipeline H2D
 
@@ -62,8 +63,8 @@ RETURN_IF_NOT_OK(client.Init());
 
 |软件名称|版本|作用|
 |-|-|-|
-|Ascend-hdk-npu-driver|25.5.0+|Ascend驱动依赖|
-|Ascend-cann-toolkit|8.2.RC1+（P2P-Transfer RoCE）；8.5.2+（HIXL HCCS）|Ascend工具包依赖|
+|Ascend-hdk-npu-driver|25.5.0+；26.0.0+（HIXL HCCS FabricMem）|Ascend驱动依赖|
+|Ascend-cann-toolkit|8.2.RC1+（P2P-Transfer RoCE）；8.5.2+（HIXL HCCS）；9.0.0+（HIXL HCCS FabricMem）|Ascend工具包依赖|
 
 ### 下载源码
 
@@ -79,15 +80,15 @@ RH2D需要异构能力的编译。默认配置下数据系统会启用异构能�
 bash build.sh
 ```
 
-构建 HIXL HCCS 能力时，CANN 安装目录中必须包含 `include/hixl/hixl.h`、`include/hixl/hixl_types.h`、`lib64/libcann_hixl.so` 和 `lib64/libmetadef.so`。缺少任一依赖时，构建产物不会包含 HCCS transport，只能使用默认 P2P-Transfer RoCE 链路。
+构建 HIXL HCCS 能力时，CANN 安装目录中必须包含 `include/hixl/hixl.h`、`include/hixl/hixl_types.h`、`lib64/libcann_hixl.so` 和 `lib64/libmetadef.so`。缺少任一依赖时，构建产物不会包含 HCCS transport，只能使用默认 P2P-Transfer RoCE 链路。FabricMem 模式还要求 CANN 9.0.0+ 和 HDK 26.0.0+，并要求 CANN HIXL/ADXL 头文件提供 `OPTION_ENABLE_USE_FABRIC_MEM`、`AdxlEngine::MallocMem` 和 `AdxlEngine::FreeMem` 等接口，同时要求 `lib64/libllm_datadist.so` 提供 ADXL 实现；否则 HCCS transport 可以编译，但启用 FabricMem 会在 FabricMem arena 初始化阶段返回错误。
 
-> 注意：RH2D over HIXL HCCS 的 Worker 侧会通过 HIXL `OPTION_GLOBAL_RESOURCE_CONFIG` 设置 `comm_resource_config.listen_port`，因此仅满足 CANN toolkit 版本要求并不代表在复杂场景可用。已知 CANN 9.0.0 自带的 `cann_hixl` 仍不支持该配置项，使用 HCCS 链路前需手动编译并安装支持该配置项的新版本 HIXL，并确保编译期和运行期加载的都是升级后的 `libcann_hixl.so`。以 aarch64 run 包为例：
+> 注意：RH2D over HIXL HCCS 的 Worker 侧会通过 HIXL `OPTION_GLOBAL_RESOURCE_CONFIG` 设置 `comm_resource_config.listen_port`，因此仅满足 CANN toolkit 版本要求并不代表在复杂场景可用。已知 CANN 9.0.0 自带的 `cann_hixl` 仍不支持该配置项；新版 HIXL FabricMem 可能默认启用 `aicpu_unfold` 路径，请确保运行时 HIXL 包包含对应实现。使用 HCCS/FabricMem 链路前，建议手动编译并安装支持这些能力的新版本 HIXL，并确保编译期和运行期加载的都是升级后的 `libcann_hixl.so`、`libllm_datadist.so` 等库。以 aarch64 run 包为例：
 >
 > ```bash
-> bash cann-hixl-9.1.0_linux-aarch64.run --upgrade --quiet --pylocal
+> bash cann-hixl-9.2.0_linux-aarch64.run --upgrade --quiet --pylocal
 > ```
 >
-> 安装后重新执行 `bash build.sh`，让构建过程重新探测新版本 HIXL。若在容器中运行，也需要挂载升级后的 CANN/HIXL 安装目录，避免运行期仍加载旧版本 `libcann_hixl.so`。
+> 安装后重新执行 `bash build.sh`，让构建过程重新探测新版本 HIXL。若在容器中运行，也需要挂载升级后的 CANN/HIXL 安装目录，避免运行期仍加载旧版本 `libcann_hixl.so` 或缺少 FabricMem 所需的 HIXL/ADXL 实现库。
 
 编译成功后，会在output目录下产生如下编译产物：
 
@@ -204,18 +205,42 @@ dscli start \
     --hixl_cs_enable false
 ```
 
+如果启用 HIXL FabricMem 模式，Worker 侧使用以下命令。FabricMem 与 HIXL buffer-pool relay 互斥，开启后 `remote_h2d_hccs_buffer_pool` 不生效。
+
+```bash
+dscli start \
+    -w \
+    --worker_address "${node_address}" \
+    --etcd_address "${etcd_address}" \
+    --arena_per_tenant 1 \
+    --remote_h2d_device_ids "0,4,8,12" \
+    --remote_h2d_link_type "HCCS" \
+    --remote_h2d_hccs_enable_fabric_mem true \
+    --sc_regular_socket_num 0 \
+    --sc_stream_socket_num 0 \
+    --oc_metadata_header false \
+    --enable_shm_decrease_ref_queue false \
+    --enable_pipeline_h2d false
+```
+
 Worker 参数说明：
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `worker_address` | - | 当前节点通信地址，格式为 `IP:Port`，例如：`192.168.0.1:31501`。HCCS 场景中的 IP 还会作为 HIXL endpoint IP |
 | `etcd_address` | - | ETCD 集群访问地址列表，多个 `IP:Port` 使用逗号分隔 |
-| `arena_per_tenant` | - | 不应超过系统内存资源限制，避免初始化失败，初始建议值为 `1` |
-| `shared_memory_size_mb` | `1024` | Worker 可用于缓存数据的共享内存上限，单位为 MB；RH2D 场景推荐值为 `51200`，普通场景可使用默认值 |
-| `remote_h2d_device_ids` | 空 | 非空时启用 Worker RH2D；多个 device id 使用逗号分隔，例如：`0,1,2,3,4,5,6,7` |
+| `arena_per_tenant` | - | 不应超过系统内存资源限制，避免初始化失败，初始建议值为 `1`。FabricMem 模式下会按 `remote_h2d_device_ids` 的数量自动调整 memory arena 数量 |
+| `shared_memory_size_mb` | `1024` | Worker 可用于缓存数据的共享内存上限，单位为 MB；RH2D 场景推荐值为 `51200`，普通场景可使用默认值。FabricMem 模式下单个 arena 大小必须 1GB 对齐；多 arena 模式还必须能被 arena 数量整除 |
+| `remote_h2d_device_ids` | 空 | 非空时启用 Worker RH2D；多个 device id 使用逗号分隔，例如：`0,1,2,3,4,5,6,7`。FabricMem 模式下只使用第一个 device id 创建 HIXL engine，完整列表用于轮询分配多个 FabricMem arena；A3 多 NUMA 测试建议优先选择分布在不同 NUMA 位置的 device id，例如 `0,4,8,12` |
 | `remote_h2d_link_type` | `ROCE` | 支持 `ROCE`、`HCCS`，区分大小写 |
 | `remote_h2d_hccs_buffer_pool` | `0:0` | HIXL buffer-pool 参数，格式为两个正整数 `<count>:<size>`；默认关闭，配置正数值（例如 `4:8`）时启用 |
 | `hixl_cs_enable` | `False` | 是否由 Worker 通过 HIXL `LocalCommRes` version 1.3 启用 HIXL CS；仅 HCCS 链路使用。启用后支持同节点跨进程、同 NPU 卡建链，并利用 CS 针对小数据传输的专项优化降低通信时延 |
+| `remote_h2d_hccs_enable_fabric_mem` | `false` | HIXL FabricMem 模式开关，仅 HCCS 使用。设置为 `true` 时不使用 HIXL buffer-pool relay |
+| `sc_regular_socket_num` | `16` | FabricMem 模式必须设置为 `0`，关闭 StreamCache regular ShmCircularQueue |
+| `sc_stream_socket_num` | `16` | FabricMem 模式必须设置为 `0`，关闭 StreamCache stream ShmCircularQueue |
+| `oc_metadata_header` | `true` | FabricMem 模式必须设置为 `false`，避免在 FabricMem arena 内写入传统 mmap metadata header |
+| `enable_shm_decrease_ref_queue` | `true` | FabricMem 模式必须设置为 `false`，关闭基于共享内存 ref count 的 decrease-reference queue |
+| `enable_pipeline_h2d` | `false` | FabricMem 模式必须保持为 `false`，避免启用传统 Pipeline H2D 共享内存队列 |
 
 
 :::
@@ -234,9 +259,22 @@ export DS_RH2D_HCCS_BUFFER_POOL=4:8
 export DS_HIXL_CS_ENABLE=0
 ```
 
-如果使用 HIXL RoCE，请在 Worker 和 Client 进程启动前都设置 `HCCL_INTRA_ROCE_ENABLE=1`，并要求两端 RoCE 网络已正确配置且可达。该环境变量只选择 HIXL 链路协议，不关闭 buffer pool；buffer pool 仍使用 `DS_RH2D_HCCS_BUFFER_POOL`/`remote_h2d_hccs_buffer_pool` 的配置，只有 `0:0` 才关闭。
+如果使用 HIXL RoCE，请在 Worker 和 Client 进程启动前都设置 `HCCL_INTRA_ROCE_ENABLE=1`，并要求两端 RoCE 网络已正确配置且可达。`remote_h2d_hccs_buffer_pool`/`DS_RH2D_HCCS_BUFFER_POOL` 为 `0:0` 时不使用 HIXL buffer-pool relay；配置正数值时会按该 buffer-pool 配置初始化 HIXL。
 
 如果使用 HIXL CS RoCE，请在 Worker 设置 `--hixl_cs_enable=true`，并在 Client 设置 `DS_HIXL_CS_ENABLE=1`，同时保持两端 `HCCL_INTRA_ROCE_ENABLE=1`。HIXL 会根据各进程本地配置选择通信 Engine，因此 Worker 和 Client 的 CS 配置必须一致。CS RoCE 除了支持普通同节点通信无法覆盖的“跨进程、同 NPU 卡”场景，还针对小数据传输进行了专项优化，可降低通信时延。
+
+如果使用 HIXL FabricMem 模式，请在 Worker 启动参数中设置 `--remote_h2d_hccs_enable_fabric_mem true`，并在 Client 进程启动前设置：
+
+```bash
+export DS_RH2D_LINK_TYPE=HCCS
+export DS_RH2D_HCCS_ENABLE_FABRIC_MEM=1
+# 可选：单个 FabricMem TransferSync descriptor batch 的并发切分数，默认 4，上限 16
+export DS_HIXL_TRANSFER_SYNC_PARALLELISM=4
+# 可选：一次 MGetH2D 命中多个远端来源 group 时的 group 并发数，默认 4，上限 16
+export DS_HIXL_REMOTE_GROUP_PARALLELISM=4
+```
+
+FabricMem 模式不使用 HIXL buffer-pool relay，`DS_RH2D_HCCS_BUFFER_POOL`/`remote_h2d_hccs_buffer_pool` 不生效；Client 侧也不需要配置 device 内存预注册。
 
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -244,7 +282,11 @@ export DS_HIXL_CS_ENABLE=0
 | `DS_RH2D_LINK_TYPE` | `ROCE` | Client 链路类型，支持 `ROCE`、`HCCS`，必须与 Worker 一致 |
 | `DS_RH2D_HCCS_BUFFER_POOL` | `0:0` | Client HIXL buffer-pool 参数，应与 Worker 一致；默认 `0:0` 关闭，配置正数值时启用 |
 | `DS_HIXL_CS_ENABLE` | `0` | 是否通过 HIXL `LocalCommRes` version 1.3 启用 HIXL CS，必须与 Worker 的 `hixl_cs_enable` 一致 |
-| `HCCL_INTRA_ROCE_ENABLE` | 未设置 | HIXL 链路协议开关。未设置时 A2 默认使用 RoCE、A3 默认使用 HCCS，设置为 `1` 时使用 RoCE；数据系统不感知该协议选择，也不会据此改写 buffer-pool 配置，Worker 和 Client 必须一致 |
+| `HCCL_INTRA_ROCE_ENABLE` | 未设置 | HIXL RoCE 链路开关。未设置时 A2 默认使用 RoCE、A3 默认使用 HCCS；设置为 `1` 时使用 RoCE，是否启用 buffer-pool 由 `remote_h2d_hccs_buffer_pool`/`DS_RH2D_HCCS_BUFFER_POOL` 决定。Worker 和 Client 必须一致 |
+| `DS_RH2D_HCCS_ENABLE_FABRIC_MEM` | 未设置 | Client HIXL FabricMem 模式开关。设置为 `1` 或 `true` 时启用 FabricMem，必须与 Worker 一致 |
+| `DS_HIXL_REMOTE_GROUP_PARALLELISM` | `4` | 一个 MGetH2D 请求中包含多个远端来源 group 时的并发处理数，上限为 16；每个 group 对应一组共享同一远端 HIXL root identity 的对象 |
+| `DS_HIXL_TRANSFER_SYNC_PARALLELISM` | `4` | FabricMem 模式下单个 group 内 HIXL `TransferSync()` descriptor batch 的并发切分数，上限为 16；非 FabricMem 模式不使用该切分 |
+| `DS_RH2D_HCCS_ENABLE_AICPU_UNFOLD` | `0` | FabricMem AICPU 展开开关。默认关闭并使用 Host unfold，此时下发 `fabric_memory.enable_aicpu_unfold=false` 和 `fabric_memory.task_stream_num=8`；设置为 `1` 或 `true` 时下发 `fabric_memory.enable_aicpu_unfold=true` 和 `fabric_memory.task_stream_num=1` |
 
 ## 快速验证
 
@@ -417,17 +459,33 @@ dscli start -w \
 
 ::::
 
+### HIXL HCCS FabricMem模式
+
+FabricMem 是 RH2D over HIXL HCCS 的一种可选内存模式。开启后，Worker 的共享内存 arena 会通过 HIXL `MallocMem(MEM_HOST)` 分配，并注册为 HIXL `MEM_HOST`；底层由 HIXL/ADXL 负责 physical-backed FabricMem 的申请、映射和释放。建立 HIXL 连接时，HIXL 会 retain allocation handle、交换 Fabric shareable handle，并在传输时完成原始 VA 到 imported VA 的地址转换。Client 发起 MGetH2D 时，可通过 HIXL `TransferSync(READ)` 直接从该 arena 将数据读入本地普通 device 目标内存。
+
+使用 FabricMem 时建议遵循以下原则：
+
+1. Worker 和 Client 必须同时启用 FabricMem：Worker 设置 `--remote_h2d_hccs_enable_fabric_mem true`，Client 设置 `DS_RH2D_HCCS_ENABLE_FABRIC_MEM=1`，并保持 `remote_h2d_link_type`/`DS_RH2D_LINK_TYPE` 均为 `HCCS`。
+2. Worker 侧必须同时关闭传统共享内存队列：`sc_regular_socket_num=0`、`sc_stream_socket_num=0`、`oc_metadata_header=false`、`enable_shm_decrease_ref_queue=false`，并保持 `enable_pipeline_h2d=false`。如果缺少这些配置，FabricMem 初始化会直接失败，避免运行时落入依赖 mmap/futex 的路径。
+3. FabricMem 与 HIXL buffer-pool relay、RoCE direct 互斥。启用 FabricMem 后，`remote_h2d_hccs_buffer_pool` 和 `DS_RH2D_HCCS_BUFFER_POOL` 不生效；不要同时设置 `HCCL_INTRA_ROCE_ENABLE=1`，也不要把 buffer-pool 调优结果直接套用到 FabricMem。
+4. FabricMem 模式下 Worker 当前只创建一个 HIXL engine，使用 `remote_h2d_device_ids` 的第一个 device id 作为 engine device；如果配置多个 device id，会按该列表创建多个 HIXL `MallocMem(MEM_HOST)` arena，并在 arena 分配时轮询选择 device id。数据系统不会直接指定 NUMA id，而是在调用 HIXL `MallocMem(MEM_HOST)` 前切换当前 device，交由 HIXL/ADXL 根据 device 到 NUMA 的映射选择 Host FabricMem 申请位置。因此示例使用 `0,4,8,12`，目的是在 A3 上尽量覆盖不同 NUMA 位置，让多个 arena 分散到不同 Host 内存域；如果机器拓扑不同，应按实际 device/NUMA 映射选择对应的 device id。多 arena 场景下 `shared_memory_size_mb` 表示所有 FabricMem arena 的总容量，每个 arena 约为 `shared_memory_size_mb / remote_h2d_device_ids 数量`；部署前应保证总容量可被 arena 数量整除，且单个 arena 大小 1GB 对齐，并按 `shared_memory_size_mb` 预留足够 Host 物理内存、优先保证大页和 NUMA 配置正确。可通过 `resource.log` / `kv_resource.log` 中的 `fabricmem_physical_memory_usage` 观察 FabricMem arena 已预申请的物理内存。
+5. FabricMem 模式下 Client 侧 device 目标内存不需要调用 `PreRegisterDeviceMemory` 做预注册。性能测试时无需开启 `--pre-register-device-memory`。
+6. FabricMem 需要 CANN 9.0.0+ 和 HDK 26.0.0+。如果启动日志出现 `HIXL plugin does not provide FabricMem allocation APIs` 或 `FabricMem allocation APIs are unavailable`，说明当前构建环境或运行时加载的 HIXL plugin 不支持 FabricMem 申请接口。请检查 ADXL header、`libllm_datadist.so`、CANN/HIXL/HDK 版本是否一致，或改用 HCCS buffer-pool 模式。
+7. FabricMem 模式默认关闭 AICPU 展开，并显式设置 `fabric_memory.enable_aicpu_unfold=false` 与 `fabric_memory.task_stream_num=8`，使用 Host 展开路径。若需要测试 AICPU 展开，可设置 `DS_RH2D_HCCS_ENABLE_AICPU_UNFOLD=1`，此时会下发 `fabric_memory.enable_aicpu_unfold=true` 与 `fabric_memory.task_stream_num=1`。
+8. 如果日志中出现 `HIXL plugin malloc_memory(MEM_HOST) failed`，优先检查 Host 物理内存、大页能力、NUMA 配置、容器特权配置以及当前机器是否支持 HIXL FabricMem。FabricMem arena 的具体申请策略由 HIXL/ADXL 内部实现决定。
+
 ### HIXL HCCS设备内存预注册
 
-RH2D over HIXL HCCS 支持在 Client 侧预注册后续 MGetH2D 会写入的 device 目标内存，减少热路径中反复执行 HIXL `RegisterMem(MEM_DEVICE)` 的开销。Python 使用 `HeteroClient.pre_register_device_memory(dev_ptrs, sizes)`，C++ 使用 `HeteroClient::PreRegisterDeviceMemory(devPtrs, sizes)`。
+RH2D over HIXL HCCS buffer-pool 和 RoCE direct 模式支持在 Client 侧预注册后续 MGetH2D 会写入的 device 目标内存，减少热路径中反复执行 HIXL `RegisterMem(MEM_DEVICE)` 的开销。Python 使用 `HeteroClient.pre_register_device_memory(dev_ptrs, sizes)`，C++ 使用 `HeteroClient::PreRegisterDeviceMemory(devPtrs, sizes)`。
 
 使用该接口时需满足以下约束：
 
-1. 仅支持 `enable_remote_h2d=True` 且链路类型为 `HCCS` 的 RH2D 场景，不适用于 P2P-Transfer RoCE、GPU 或未启用 RH2D 的场景。
+1. 仅支持 `enable_remote_h2d=True`、链路类型为 `HCCS` 且未启用 FabricMem 的 RH2D 场景，不适用于 P2P-Transfer RoCE、HCCS FabricMem、GPU 或未启用 RH2D 的场景。
 2. 调用前需完成 ACL 初始化、设置当前 device，并完成 `HeteroClient.init()`；当前 device 应与后续 MGetH2D 的 `DeviceBlobList` 中的 device id 一致。
 3. 预注册句柄由 Client 管理，并在 `HeteroClient` shutdown 或析构时释放；用户无需在每次 MGetH2D 后手动释放。
 4. 推荐预注册一块或少量大连续 HBM 目标池，再把后续 MGetH2D 的目标 Blob 切分到这些范围内。避免把大量离散小块逐个预注册，以免占满 HIXL MEM_DEVICE 注册预算。
-5. 预注册范围之外的目标 Blob 仍会走临时注册 fallback；长期预注册和临时注册共享同一 HIXL 注册预算，因此混用时应预留足够空间。
+5. buffer-pool中转模式下，预注册范围之外的目标 Blob 仍会走临时注册 fallback；长期预注册和临时注册共享同一 HIXL 注册预算，因此混用时应预留足够空间。RoCE direct 模式要求目标 Blob 命中预注册范围，否则传输会失败。
+6. FabricMem 模式下目标 device 内存不需要 HIXL `MEM_DEVICE` 注册，既不会预注册，也不会在传输热路径中临时注册。调用该接口会直接返回成功但不会产生优化效果。
 
 示例：
 
@@ -485,7 +543,7 @@ python hetero_h2d_d2h_benchmark.py -i 192.168.0.2 -p 31501 --get-only --no-warmu
 > | --get-multiplier | 倍数重复相同的 get 请求。多 client 进程测试 MGetH2D 时建议设置该参数，增加每个进程的 get 请求数量，减少进程启动和同步开销对带宽结果的影响 | 1 |
 > | --show-all-request-times | 展示每个请求的时延信息 | False |
 > | --perf-path | datasystem perf 日志记录输出路径 | `datasystem_perf_<timestamp>.csv` |
-> | --pre-register-device-memory | 在 get/all 模式下为每种 blob 配置预分配一块连续 device 目标内存并预注册，再将 MGetH2D 的目标 Blob 切分到该范围内。仅适用于 RH2D over HIXL HCCS | False |
+> | --pre-register-device-memory | 在 get/all 模式下为每种 blob 配置预分配一块连续 device 目标内存并预注册，再将 MGetH2D 的目标 Blob 切分到该范围内。仅适用于 RH2D over HIXL HCCS buffer-pool 和 RoCE direct 模式，FabricMem 模式无需开启 | False |
 >
 > 入参IP和端口号需要替换为节点1/节点2 Worker组件的IP和端口号。
 >

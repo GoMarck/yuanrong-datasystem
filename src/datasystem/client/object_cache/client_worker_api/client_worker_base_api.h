@@ -52,7 +52,7 @@ public:
 
     bool EnableDecreaseShmRefByShmQueue()
     {
-        return IsShmEnable() && decShmUnit_->fd > 0;
+        return IsShmEnable() && decShmUnit_ != nullptr && decShmUnit_->fd > 0;
     }
 
 protected:

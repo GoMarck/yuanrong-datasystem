@@ -93,6 +93,7 @@ ds_cc_library(
         "//src/datasystem/common/perf:common_perf",
         "//src/datasystem/common/rpc:rpc_constants",
         "//src/datasystem/common/util:format",
+        "//src/datasystem/common/util:memory",
         "//src/datasystem/common/util:raii",
         "//src/datasystem/common/util:uuid_generator",
         "//src/datasystem/common/ak_sk:common_ak_sk",

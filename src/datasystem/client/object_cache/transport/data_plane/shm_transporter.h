@@ -148,8 +148,13 @@ public:
         rc = ValidateShmResponse(response, payloads, inputs.size());
         RETURN_IF_NOT_OK(rc);
 
-        outputs.resize(inputs.size());
         const Status missingStatus = MissingObjectStatus(response);
+        if (missingStatus.GetCode() == K_NOT_SUPPORTED
+            && std::all_of(response.objects().begin(), response.objects().end(),
+                           [](const auto &info) { return info.store_fd() <= 0; })) {
+            return missingStatus;
+        }
+        outputs.resize(inputs.size());
         for (const auto &info : response.objects()) {
             std::shared_ptr<IReceiveBufferOwner> owner;
             if (!info.shm_id().empty()) {

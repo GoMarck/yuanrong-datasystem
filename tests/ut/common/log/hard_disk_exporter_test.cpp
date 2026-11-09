@@ -355,9 +355,9 @@ TEST_F(HardDiskExporterTest, ResourceCollectorWritesKvResourceLogJsonLines)
 
     ResMetricCollector collector;
     DS_ASSERT_OK(collector.Init());
-    // SHARED_MEMORY: 6 slash-separated fields; ods records first 4, drops sc_memory_*.
+    // SHARED_MEMORY: 7 slash-separated fields; ods drops sc_memory_*.
     collector.RegisterCollectHandler(ResMetricName::SHARED_MEMORY,
-                                     [] { return "73814/80000/1073741824/0.069/100/200"; });
+                                     [] { return "73814/80000/1073741824/0.069/100/200/1073741824"; });
     // Single-field group, flattens to a scalar.
     collector.RegisterCollectHandler(ResMetricName::ACTIVE_CLIENT_COUNT, [] { return "3"; });
     collector.Start();
@@ -373,6 +373,7 @@ TEST_F(HardDiskExporterTest, ResourceCollectorWritesKvResourceLogJsonLines)
     EXPECT_TRUE(FileContains(jsonPath, "\"shared_memory\""));
     EXPECT_TRUE(FileContains(jsonPath, "\"memory_usage\":73814"));
     EXPECT_TRUE(FileContains(jsonPath, "\"worker_share_memory_usage\":0.069"));
+    EXPECT_TRUE(FileContains(jsonPath, "\"fabricmem_physical_memory_usage\":1073741824"));
     EXPECT_TRUE(FileContains(jsonPath, "\"active_client_count\":3"));
     // ods-dropped sub-fields must not appear.
     EXPECT_FALSE(FileContains(jsonPath, "sc_memory_usage"));
@@ -410,7 +411,7 @@ TEST_F(HardDiskExporterTest, ResourceCollectorBothMonitorsEnabledSharesOneCollec
     ResMetricCollector collector;
     DS_ASSERT_OK(collector.Init());
     collector.RegisterCollectHandler(ResMetricName::SHARED_MEMORY, [&seq] {
-        return std::to_string(++seq) + "/80000/1073741824/0.100/100/200";
+        return std::to_string(++seq) + "/80000/1073741824/0.100/100/200/1073741824";
     });
     collector.Start();
 

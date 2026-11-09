@@ -98,6 +98,55 @@ namespace object_cache {
 
 static constexpr int DEBUG_LOG_LEVEL = 2;
 static constexpr int32_t GET_LOCATION_ROLLBACK_MAX_RETRY = 3;
+#ifdef USE_NPU
+static constexpr uint32_t K_RH2D_INFO_LOG_EVERY_N = 100;
+#endif
+
+namespace {
+#ifdef USE_NPU
+bool HasRemoteH2DDataInfo(const std::shared_ptr<RemoteH2DHostInfoPb> &hostInfo)
+{
+    return hostInfo != nullptr && hostInfo->has_data_info() && hostInfo->data_info().sizes_size() > 0;
+}
+#endif
+
+Status PrepareLocalGetRemoteH2DHostInfo(const ReadKey &readKey, SafeObjType &safeObj, const std::string &clientCommId,
+                                        const RemoteH2DClientDeviceInfoPb *clientDeviceInfo)
+{
+    (void)readKey;
+    (void)safeObj;
+    (void)clientCommId;
+    (void)clientDeviceInfo;
+#ifdef USE_NPU
+    RETURN_OK_IF_TRUE(!IsRemoteH2DEnabled() || clientCommId.empty());
+    RETURN_RUNTIME_ERROR_IF_NULL(safeObj.Get());
+
+    auto shmUnit = safeObj->GetShmUnit();
+    RETURN_OK_IF_TRUE(shmUnit == nullptr);
+
+    auto remoteHostInfoMap = safeObj->GetRemoteHostInfo();
+    if (remoteHostInfoMap != nullptr) {
+        RemoteH2DHostInfoMap::const_accessor constAccessor;
+        if (remoteHostInfoMap->find(constAccessor, clientCommId) && HasRemoteH2DDataInfo(constAccessor->second)) {
+            return Status::OK();
+        }
+    }
+
+    auto hostInfo = std::make_shared<RemoteH2DHostInfoPb>();
+    auto blobSizes = safeObj->GetBlobSizes();
+    // Local Get serves the directly connected client-worker path. Treat it as same-node for HIXL device selection.
+    RETURN_IF_NOT_OK(FillRemoteH2DHostInfoFromShm(clientCommId, shmUnit, safeObj->GetMetadataSize(),
+                                                  true /* fillDataInfo */, *hostInfo, clientDeviceInfo, &blobSizes,
+                                                  true));
+    safeObj->SetRemoteHostInfo(clientCommId, hostInfo);
+    LOG_FIRST_AND_EVERY_N(INFO, K_RH2D_INFO_LOG_EVERY_N)
+        << "[RH2D] Prepared local Get host_info for HIXL READ, objectKey=" << readKey.objectKey
+        << ", commIdSize=" << clientCommId.size() << ", blobNum=" << hostInfo->data_info().sizes_size()
+        << ", dataOffset=" << hostInfo->data_info().offset();
+#endif
+    return Status::OK();
+}
+}  // namespace
 static constexpr double EXIST_LOCAL_CHECK_TIMEOUT_US = 50.0;
 static constexpr RemoveMetaReqPb::Cause GET_LOCATION_ROLLBACK_CAUSE = RemoveMetaReqPb::ROLLBACK_UNACK;
 static const char *const EXIST_REDIRECTS_FIELD = "exist_redirects";
@@ -125,7 +174,7 @@ void CollectRollbackRetryIds(std::vector<std::string> &failedIds, std::vector<st
 }
 
 Status ValidateRemoteGetResult(bool workerConnected, const Status &status, SafeObjType &entry,
-    const std::string &objectKey, const std::string &address)
+                               const std::string &objectKey, const std::string &address)
 {
     if (workerConnected && status.GetCode() == K_NOT_FOUND && entry->GetShmUnit() == nullptr) {
         RETURN_STATUS(K_RUNTIME_ERROR,
@@ -280,8 +329,7 @@ std::string BuildExistRedirectExtra(const google::protobuf::RepeatedPtrField<Red
     return nlohmann::json{ { EXIST_REDIRECTS_FIELD, std::move(redirects) } }.dump();
 }
 
-WorkerOcServiceGetImpl::WorkerOcServiceGetImpl(WorkerOcServiceCrudParam &initParam,
-                                               EtcdStore *etcdStore,
+WorkerOcServiceGetImpl::WorkerOcServiceGetImpl(WorkerOcServiceCrudParam &initParam, EtcdStore *etcdStore,
                                                std::shared_ptr<ThreadPool> memCpyThreadPool,
                                                std::shared_ptr<ThreadPool> threadPool,
                                                std::shared_ptr<AkSkManager> akSkManager, HostPort localAddress,
@@ -406,7 +454,7 @@ Status WorkerOcServiceGetImpl::Get(std::shared_ptr<ServerUnaryWriterReader<GetRs
                 SLOW_LOG_IF_OR_VLOG(
                     INFO,
                     (config.processSlowerThanUs > 0
-                        && static_cast<uint64_t>(getElapsedMs * US_PER_MS) >= config.processSlowerThanUs)
+                     && static_cast<uint64_t>(getElapsedMs * US_PER_MS) >= config.processSlowerThanUs)
                         || FLAGS_enable_perf_trace_log,
                     1,
                     FormatString("[Get] Done, clientId: %s, objects: %zu, transferPath: %s, totalCost: %.3fms, "
@@ -444,17 +492,16 @@ Status WorkerOcServiceGetImpl::Get(std::shared_ptr<ServerUnaryWriterReader<GetRs
         auto inflightGaugeGet =
             metrics::GetGauge(static_cast<uint16_t>(metrics::KvMetricId::WORKER_INFLIGHT_REMOTE_GET_REQUEST));
         auto config = GetServerLatencyTraceConfig();
-        SLOW_LOG_IF_OR_VLOG(
-            INFO,
-            (config.processSlowerThanUs > 0
-                && static_cast<uint64_t>(getElapsedMs * US_PER_MS) >= config.processSlowerThanUs)
-                || FLAGS_enable_perf_trace_log,
-            1,
-            FormatString("[Get] Done, clientId: %s, objects: %zu, transferPath: %s, totalCost: %.3fms, "
-                         "inflightRemoteGet: %d %s",
-                         clientId, request->GetRawObjectKeys().size(),
-                         IsUrmaEnabled() ? "UB" : (IsUcpEnabled() ? "RDMA" : "TCP"), getElapsedMs, inflightGauge.Get(),
-                         GetWorkerTimeCost().GetInfo()));
+        SLOW_LOG_IF_OR_VLOG(INFO,
+                            (config.processSlowerThanUs > 0
+                             && static_cast<uint64_t>(getElapsedMs * US_PER_MS) >= config.processSlowerThanUs)
+                                || FLAGS_enable_perf_trace_log,
+                            1,
+                            FormatString("[Get] Done, clientId: %s, objects: %zu, transferPath: %s, totalCost: %.3fms, "
+                                         "inflightRemoteGet: %d %s",
+                                         clientId, request->GetRawObjectKeys().size(),
+                                         IsUrmaEnabled() ? "UB" : (IsUcpEnabled() ? "RDMA" : "TCP"), getElapsedMs,
+                                         inflightGauge.Get(), GetWorkerTimeCost().GetInfo()));
     }
     return Status::OK();
 }
@@ -553,10 +600,10 @@ Status WorkerOcServiceGetImpl::ProcessGetObjectRequest(int64_t subTimeout, std::
 {
     int64_t remainingUs = GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTimeUs();
     if (remainingUs <= 0) {
-        return Status(K_RPC_DEADLINE_EXCEEDED,
-                      FormatString("Get deadline exceeded before "
-                                  "ProcessGetObjectRequest, "
-                                  "remaining %ld us.", remainingUs));
+        return Status(K_RPC_DEADLINE_EXCEEDED, FormatString("Get deadline exceeded before "
+                                                            "ProcessGetObjectRequest, "
+                                                            "remaining %ld us.",
+                                                            remainingUs));
     }
     PerfPoint all(PerfKey::WORKER_PROCESS_GET_OBJECT);
     auto config = GetServerLatencyTraceConfig();
@@ -646,7 +693,8 @@ Status WorkerOcServiceGetImpl::TryGetObjectFromLocal(std::shared_ptr<GetRequest>
             objectInfo.rc = Status(K_NOT_FOUND, FormatString("ObjectKey %s in rollback", objectKey));
         } else {
             ReadKey readKey(objectKey, objectInfo.offsetInfo);
-            status = PreProcessGetObject(readKey, objectInfo, remoteObjectKeys);
+            status = PreProcessGetObject(readKey, objectInfo, remoteObjectKeys, request->GetClientCommUuid(),
+                                         request->GetRemoteH2DClientDeviceInfo());
             if (status.IsError()) {
                 objectInfo.rc = status;
                 LOG(ERROR) << "PreProcessGetObject failed:" << status.GetMsg();
@@ -865,13 +913,15 @@ void WorkerOcServiceGetImpl::DeleteObjectsMetaUnacked(
 }
 
 Status WorkerOcServiceGetImpl::PreProcessGetObject(const ReadKey &readKey, GetObjInfo &info,
-                                                   std::set<ReadKey> &remoteObjectKeys)
+                                                   std::set<ReadKey> &remoteObjectKeys, const std::string &clientCommId,
+                                                   const RemoteH2DClientDeviceInfoPb *clientDeviceInfo)
 {
     INJECT_POINT("worker.PreProcessGetObject.begin");
     // use RLock instead of WLock try get from memory.
     bool objIsValidInMem = true;
     auto preSize = remoteObjectKeys.size();
-    Status memGetRes = RLockGetObjectFromMem(readKey, info, remoteObjectKeys, objIsValidInMem);
+    Status memGetRes =
+        RLockGetObjectFromMem(readKey, info, remoteObjectKeys, objIsValidInMem, clientCommId, clientDeviceInfo);
     INJECT_POINT("set.objectIsInvalidInmem", [&objIsValidInMem]() {
         objIsValidInMem = false;
         return Status::OK();
@@ -933,6 +983,7 @@ Status WorkerOcServiceGetImpl::PreProcessGetObject(const ReadKey &readKey, GetOb
                 return Status::OK();
             }
         }
+        RETURN_IF_NOT_OK(PrepareLocalGetRemoteH2DHostInfo(readKey, *entry, clientCommId, clientDeviceInfo));
         info.params = GetObjEntryParams::Create(readKey.objectKey, *entry);
     } else {
         // case 3: object didn't exist in local node, is not published or sealed yet.
@@ -942,7 +993,9 @@ Status WorkerOcServiceGetImpl::PreProcessGetObject(const ReadKey &readKey, GetOb
 }
 
 Status WorkerOcServiceGetImpl::RLockGetObjectFromMem(const ReadKey &readKey, GetObjInfo &info,
-                                                     std::set<ReadKey> &remoteObjectKeys, bool &objIsValidInMem)
+                                                     std::set<ReadKey> &remoteObjectKeys, bool &objIsValidInMem,
+                                                     const std::string &clientCommId,
+                                                     const RemoteH2DClientDeviceInfoPb *clientDeviceInfo)
 {
     std::shared_ptr<SafeObjType> entry;
     // Fetch the object and lock it.
@@ -976,6 +1029,7 @@ Status WorkerOcServiceGetImpl::RLockGetObjectFromMem(const ReadKey &readKey, Get
                 objIsValidInMem = false;
                 RETURN_STATUS(K_NOT_FOUND, FormatString("[ObjectKey %s] not exist in memory.", readKey));
             }
+            RETURN_IF_NOT_OK(PrepareLocalGetRemoteH2DHostInfo(readKey, *entry, clientCommId, clientDeviceInfo));
             info.params = GetObjEntryParams::Create(readKey.objectKey, *entry);
             return Status::OK();
         }
@@ -996,7 +1050,7 @@ Status WorkerOcServiceGetImpl::TryAcquireLocalObject(const std::string &objectKe
     GetObjInfo info;
     std::set<ReadKey> misses;
     bool validInMemory = true;
-    Status rc = RLockGetObjectFromMem(ReadKey(objectKey), info, misses, validInMemory);
+    Status rc = RLockGetObjectFromMem(ReadKey(objectKey), info, misses, validInMemory, "");
     if (rc.GetCode() == K_NOT_FOUND || !validInMemory || !misses.empty()) {
         return Status::OK();
     }
@@ -1283,10 +1337,11 @@ Status WorkerOcServiceGetImpl::TryGetObjectsFromPrimaryWorker(const std::string 
 
 Status WorkerOcServiceGetImpl::GetObjectFromRemoteWorkerWithoutDump(const std::string &address,
                                                                     const std::string &primaryAddress,
-                                                                    uint64_t dataSize, ReadObjectKV &objectKV)
+                                                                    uint64_t dataSize, ReadObjectKV &objectKV,
+                                                                    const RemoteH2DClientDeviceInfoPb *clientDeviceInfo)
 {
     // Pull object from remote worker.
-    Status status = PullObjectDataFromRemoteWorker(address, dataSize, objectKV);
+    Status status = PullObjectDataFromRemoteWorker(address, dataSize, objectKV, clientDeviceInfo);
     // If we meets the error when pull data from other copy via address, we have another chance to pull data from
     // primary copy unless the primary copy address is the same as address (we have try it) or it is ourselves (it's
     // obvious we're empty, we can't get anything)
@@ -1295,7 +1350,7 @@ Status WorkerOcServiceGetImpl::GetObjectFromRemoteWorkerWithoutDump(const std::s
         // Remote get may fail if provider can't acquire read latch too many times.
         LOG(INFO) << FormatString("[ObjectKey %s] Object may not exist in %s, try to get from primary copy %s, %s",
                                   objectKV.GetObjKey(), address, primaryAddress, status.ToString());
-        status = PullObjectDataFromRemoteWorker(primaryAddress, dataSize, objectKV);
+        status = PullObjectDataFromRemoteWorker(primaryAddress, dataSize, objectKV, clientDeviceInfo);
     }
     RETURN_IF_NOT_OK(status);
     const auto &shmUnit = objectKV.GetObjEntry()->GetShmUnit();
@@ -1347,10 +1402,12 @@ Status WorkerOcServiceGetImpl::ProcessObjectEntryAndSyncMetadata(ReadObjectKV &o
 
 Status WorkerOcServiceGetImpl::GetObjectFromRemoteWorkerAndDump(const std::string &address,
                                                                 const std::string &primaryAddress, uint64_t dataSize,
-                                                                ReadObjectKV &objectKV, bool isAsyncBatchGet)
+                                                                ReadObjectKV &objectKV, bool isAsyncBatchGet,
+                                                                const RemoteH2DClientDeviceInfoPb *clientDeviceInfo)
 {
     PerfPoint point(PerfKey::WORKER_PULL_REMOTE_DATA_FROM_WORKER);
-    RETURN_IF_NOT_OK(GetObjectFromRemoteWorkerWithoutDump(address, primaryAddress, dataSize, objectKV));
+    RETURN_IF_NOT_OK(
+        GetObjectFromRemoteWorkerWithoutDump(address, primaryAddress, dataSize, objectKV, clientDeviceInfo));
     if (FLAGS_enable_data_replication) {
         RETURN_IF_NOT_OK(ProcessObjectEntryAndSyncMetadata(objectKV, isAsyncBatchGet));
     }
@@ -1468,14 +1525,15 @@ Status WorkerOcServiceGetImpl::ConstructBatchGetRequest(const std::string &addre
     // Pre-allocate an aggregated chunk of shared memory as ShmOwner, to reduce the number of allocation calls.
     std::vector<std::shared_ptr<ShmOwner>> shmOwners;
     std::vector<uint32_t> shmIndexMapping(infos.size(), std::numeric_limits<uint32_t>::max());
-    // Skip early allocate if the request is both RH2D enabled and supported.
-    if (useFastTransport || IsRemoteH2DEnabled()) {
-        if (!IsRemoteH2DEnabled() || request == nullptr || request->GetClientCommUuid().empty()) {
-            RETURN_IF_NOT_OK(AggregateAllocateHelper(infos, shmOwners, shmIndexMapping));
-        } else {
-            // Assume the client works with only one device id, so only one connection is needed.
-            (*reqPb.mutable_comm_id()) = request->GetClientCommUuid();
+    const bool useRemoteH2D = IsRemoteH2DEnabled() && request != nullptr && !request->GetClientCommUuid().empty();
+    if (useRemoteH2D) {
+        // Assume the client works with only one device id, so only one connection is needed.
+        (*reqPb.mutable_comm_id()) = request->GetClientCommUuid();
+        if (request->GetRemoteH2DClientDeviceInfo() != nullptr) {
+            reqPb.mutable_remote_h2d_client_device_info()->CopyFrom(*request->GetRemoteH2DClientDeviceInfo());
         }
+    } else if (useFastTransport) {
+        RETURN_IF_NOT_OK(AggregateAllocateHelper(infos, shmOwners, shmIndexMapping));
     }
 
     std::string transportInstanceId;
@@ -1518,6 +1576,9 @@ Status WorkerOcServiceGetImpl::ConstructBatchGetRequest(const std::string &addre
         subReq.set_read_offset(objectKV.GetReadOffset());
         subReq.set_read_size(objectKV.GetReadSize());
         subReq.set_data_size(meta.data_size());
+        if (request != nullptr && request->GetRemoteH2DClientDeviceInfo() != nullptr) {
+            subReq.mutable_remote_h2d_client_device_info()->CopyFrom(*request->GetRemoteH2DClientDeviceInfo());
+        }
         // Prepare the protobuf with urma/ucp info for data transfer if applicable.
         // BatchGetObjectHandleIndividualStatus will free ShmUnit upon error, so no need to actually record it here.
         bool shmUnitAllocated = false;
@@ -1556,7 +1617,8 @@ Status WorkerOcServiceGetImpl::ConstructBatchGetRequest(const std::string &addre
 }
 
 Status WorkerOcServiceGetImpl::PullObjectDataFromRemoteWorker(const std::string &address, uint64_t dataSize,
-                                                              ReadObjectKV &objectKV)
+                                                              ReadObjectKV &objectKV,
+                                                              const RemoteH2DClientDeviceInfoPb *clientDeviceInfo)
 {
     auto config = GetServerLatencyTraceConfig();
     const bool traceEnabled = ShouldCollectLatencyTrace(config);
@@ -1595,6 +1657,9 @@ Status WorkerOcServiceGetImpl::PullObjectDataFromRemoteWorker(const std::string 
     }
     if (objectKV.commId_) {
         (*reqPb.mutable_comm_id()) = (*objectKV.commId_);
+    }
+    if (clientDeviceInfo != nullptr) {
+        reqPb.mutable_remote_h2d_client_device_info()->CopyFrom(*clientDeviceInfo);
     }
     std::string transportInstanceId;
     if (useFastTransport && GetLocalTransportInstanceId(transportInstanceId).IsOk()) {
@@ -1670,7 +1735,7 @@ Status WorkerOcServiceGetImpl::PullObjectDataFromRemoteWorker(const std::string 
         // Also the root info for communicator connection, and the offsets for get scattered.
         auto hostInfo = std::make_shared<RemoteH2DHostInfoPb>();
         *hostInfo = std::move(rspPb.host_info());
-#ifdef BUILD_HETERO
+#ifdef USE_NPU
         objectKV.GetObjEntry()->SetRemoteHostInfo(*objectKV.commId_, hostInfo);
 #endif
     }
@@ -1949,7 +2014,7 @@ Status WorkerOcServiceGetImpl::QueryMetaDataFromMasterImpl(const HostPort &destM
                 payloads.clear();
             }
             return s;
-    };
+        };
     std::vector<RpcMessage> tmpPayloads;
     auto queryStatus = RedirectRetryWhenMetasMoving(req, rsp, tmpPayloads, func);
     RETURN_IF_NOT_OK(queryStatus);
@@ -2582,13 +2647,14 @@ Status WorkerOcServiceGetImpl::GetObjectFromRemoteOnLock(const ObjectMetaPb &met
                                          FormatString("Parse object %s address %s failed", objKey, address));
         // Step1: Try to get data from local AZ's worker
         CHECK_FAIL_RETURN_STATUS(endpointPolicy_ != nullptr, K_NOT_READY, "Object endpoint policy is unavailable");
-        checkConnectStatus = endpointPolicy_->CheckEndpoint(
-            hostAddr, ToleranceNotExistNode(singleCopy, meta.config().write_mode()));
+        checkConnectStatus =
+            endpointPolicy_->CheckEndpoint(hostAddr, ToleranceNotExistNode(singleCopy, meta.config().write_mode()));
         if (checkConnectStatus.IsOk()) {
             ifWorkerConnected = true;
             INJECT_POINT("worker.before_GetObjectFromRemoteWorkerAndDump");
-            status =
-                GetObjectFromRemoteWorkerAndDump(address, meta.primary_address(), meta.data_size(), objectKV, false);
+            const auto *clientDeviceInfo = request == nullptr ? nullptr : request->GetRemoteH2DClientDeviceInfo();
+            status = GetObjectFromRemoteWorkerAndDump(address, meta.primary_address(), meta.data_size(), objectKV,
+                                                      false, clientDeviceInfo);
             // Peer may die between CheckEndpoint and this RPC (scale-down);
             // L2-backed objects fall through to the L2 fallback below instead of fast-failing.
             // entry.Get() is non-null here: the caller called SetObjectEntryAccordingToMeta before
@@ -3705,18 +3771,17 @@ Status WorkerOcServiceGetImpl::GetMetaInfo(const GetMetaInfoReqPb &req, GetMetaI
     if (!req.is_dev_key()) {
         QueryMetadataFromMasterResult queryResult;
         auto rc = QueryMetadataFromMaster(objectKeys, 0, queryResult, false);
-        std::vector<master::QueryMetaInfoPb> &queryMetas = queryResult.queryMetas;
-        std::map<std::string, const ::google::protobuf::RepeatedField<::uint64_t>> mp;
+        const std::vector<master::QueryMetaInfoPb> &queryMetas = queryResult.queryMetas;
+        std::map<std::string, ::google::protobuf::RepeatedField<::uint64_t>> blobSizesByKey;
         for (const auto &queryMeta : queryMetas) {
-            auto &meta = queryMeta.meta();
-            mp.insert({ meta.object_key(), std::move(meta.device_info().blob_sizes()) });
+            const auto &meta = queryMeta.meta();
+            blobSizesByKey.emplace(meta.object_key(), meta.device_info().blob_sizes());
         }
         for (const auto &key : objectKeys) {
             auto devMetaInfos = rsp.add_dev_meta_infos();
-            if (mp.find(key) != mp.end()) {
-                devMetaInfos->mutable_blob_sizes()->Add(mp[key].begin(), mp[key].end());
-            } else {
-                *(devMetaInfos->mutable_blob_sizes()) = {};
+            auto iter = blobSizesByKey.find(key);
+            if (iter != blobSizesByKey.end()) {
+                devMetaInfos->mutable_blob_sizes()->Add(iter->second.begin(), iter->second.end());
             }
         }
         return Status::OK();
@@ -3835,10 +3900,9 @@ void WorkerOcServiceGetImpl::PostProcessRemoteGetInNotificationImpl(
     ClearNeedDeleteForMigratedObjects(successIds, lockedEntries, objectIdentities, queryMetas, isSpill);
 }
 
-void WorkerOcServiceGetImpl::CollectUnconfirmedVersions(
-    const std::unordered_set<std::string> &unconfirmedIds,
-    std::map<ReadKey, LockedEntity> &lockedEntries,
-    std::map<std::string, uint64_t> &unconfirmedObjectVersions)
+void WorkerOcServiceGetImpl::CollectUnconfirmedVersions(const std::unordered_set<std::string> &unconfirmedIds,
+                                                        std::map<ReadKey, LockedEntity> &lockedEntries,
+                                                        std::map<std::string, uint64_t> &unconfirmedObjectVersions)
 {
     for (const auto &objectKey : unconfirmedIds) {
         auto entryIt = lockedEntries.find(ReadKey(objectKey));
@@ -3885,9 +3949,9 @@ void WorkerOcServiceGetImpl::ConfirmCopyMetaForNotifyRemoteGet(
             elem->set_data_format(meta.config().data_format());
         }
         std::function<Status(const std::shared_ptr<WorkerMasterOCApi> &, master::CreateMultiCopyMetaReqPb &,
-                             master::CreateMultiCopyMetaRspPb &)> func =
-            [](const std::shared_ptr<WorkerMasterOCApi> &targetApi, master::CreateMultiCopyMetaReqPb &request,
-               master::CreateMultiCopyMetaRspPb &response) {
+                             master::CreateMultiCopyMetaRspPb &)>
+            func = [](const std::shared_ptr<WorkerMasterOCApi> &targetApi, master::CreateMultiCopyMetaReqPb &request,
+                      master::CreateMultiCopyMetaRspPb &response) {
                 return targetApi->CreateMultiCopyMeta(request, response);
             };
         const auto remainingMs = GetRequestContext()->reqTimeoutDuration.CalcRealRemainingTime();
@@ -4002,8 +4066,8 @@ void WorkerOcServiceGetImpl::ReplacePrimaryAndPruneFailed(std::vector<std::strin
         }
     }
     successIds.erase(std::remove_if(successIds.begin(), successIds.end(),
-        [&](const std::string &key) { return failedSet.count(key) > 0; }),
-        successIds.end());
+                                    [&](const std::string &key) { return failedSet.count(key) > 0; }),
+                     successIds.end());
 }
 
 master::ReplacePrimaryReqPb WorkerOcServiceGetImpl::BuildReplacePrimaryReq(
@@ -4096,9 +4160,11 @@ void WorkerOcServiceGetImpl::ReplacePrimaryForMasterGroup(const HostPort &master
             << " objects for master " << masterKey;
 }
 
-bool WorkerOcServiceGetImpl::ClassifyCopyMetaConfirmationResult(
-    const master::CreateMultiCopyMetaRspPb &rsp, const Status &status, const std::vector<std::string> &objectKeys,
-    std::vector<std::string> &confirmedIds, std::unordered_set<std::string> &failedIds)
+bool WorkerOcServiceGetImpl::ClassifyCopyMetaConfirmationResult(const master::CreateMultiCopyMetaRspPb &rsp,
+                                                                const Status &status,
+                                                                const std::vector<std::string> &objectKeys,
+                                                                std::vector<std::string> &confirmedIds,
+                                                                std::unordered_set<std::string> &failedIds)
 {
     if (status.IsError() || !rsp.info().empty() || rsp.meta_is_moving()) {
         failedIds.insert(objectKeys.begin(), objectKeys.end());
@@ -4129,9 +4195,8 @@ void WorkerOcServiceGetImpl::FreeAndUnlockUnconfirmedNotifyRemoteGetObjects(
     BatchUnlockForGet(objectVersions, lockedEntries);
 }
 
-void WorkerOcServiceGetImpl::CleanupFailedRemoteGetMetas(
-    const std::vector<std::list<GetObjectInfo>> &failedMetas,
-    std::unordered_map<std::string, uint64_t> &failedKeyVersions)
+void WorkerOcServiceGetImpl::CleanupFailedRemoteGetMetas(const std::vector<std::list<GetObjectInfo>> &failedMetas,
+                                                         std::unordered_map<std::string, uint64_t> &failedKeyVersions)
 {
     for (const auto &failedMetaGroup : failedMetas) {
         for (const auto &failedMeta : failedMetaGroup) {
@@ -4265,16 +4330,15 @@ void WorkerOcServiceGetImpl::CopyFirstNotifyRemoteGetUbFailure(
 }
 
 std::unordered_map<std::string, uint64_t> WorkerOcServiceGetImpl::CaptureRemoteUbEpochs(
-    const std::unordered_map<std::string, std::list<std::pair<std::list<GetObjectInfo>, uint64_t>>>
-        &groupedQueryMetas) const
+    const std::unordered_map<std::string, std::list<std::pair<std::list<GetObjectInfo>, uint64_t>>> &groupedQueryMetas)
+    const
 {
     std::unordered_map<std::string, uint64_t> epochs;
     for (const auto &[address, groups] : groupedQueryMetas) {
         (void)groups;
         HostPort peer;
-        auto state = peer.ParseString(address).IsOk() && ubAdmission_ != nullptr
-                         ? ubAdmission_->GetState(peer)
-                         : std::nullopt;
+        auto state =
+            peer.ParseString(address).IsOk() && ubAdmission_ != nullptr ? ubAdmission_->GetState(peer) : std::nullopt;
         epochs.emplace(address, state.has_value() ? state->epoch : 0);
     }
     return epochs;
@@ -4309,8 +4373,7 @@ void WorkerOcServiceGetImpl::AttachNotifyRemoteGetUbFailure(
             continue;
         }
         FillProviderUbFailureDetail(state->lastStatus, localAddress_.ToString(), provider.ToString(),
-                                    state->providerStatus, state->cqeStatus,
-                                    *rsp.mutable_provider_ub_failure_detail());
+                                    state->providerStatus, state->cqeStatus, *rsp.mutable_provider_ub_failure_detail());
         return;
     }
 }

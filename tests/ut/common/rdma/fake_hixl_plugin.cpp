@@ -86,6 +86,8 @@ const DsHixlApi VALID_API = {
     RegisterMemory,
     DeregisterMemory,
     TransferSync,
+    nullptr,
+    nullptr,
 };
 
 DsHixlApi MakeApi(uint32_t mode)

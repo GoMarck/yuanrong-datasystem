@@ -314,4 +314,7 @@ endif()
 
 target_link_libraries(ds_device_llt PRIVATE ${DS_DEVICE_LLT_DEPEND_LIB} cluster_topology_protos)
 target_compile_definitions(ds_device_llt PRIVATE ${BIN_PATH_LIST})
+if (ASCEND_HIXL_HCCS_SUPPORTED)
+    target_compile_definitions(ds_device_llt PRIVATE ASCEND_HIXL_AVAILABLE)
+endif()
 add_datasystem_test(ds_device_llt TEST_ENVIRONMENTS ${TEST_ENVIRONMENT})

@@ -39,6 +39,10 @@ namespace datasystem {
 namespace client {
 
 namespace {
+constexpr int TRANSPORT_FALLBACK_LOG_RATE = 100;
+constexpr int32_t ROUTE_DEGRADATION_INNER_RETRIES = 2;
+constexpr int64_t ROUTE_DEGRADATION_RETRY_BACKOFF_MS = 100;
+
 // Confirmed owner migration: the route is known stale, wrap immediately so the outer retry reroutes.
 bool IsConfirmedMetadataOwnerRouteFailure(StatusCode code)
 {
@@ -56,9 +60,6 @@ bool IsMetadataOwnerRouteFailure(StatusCode code)
 {
     return IsConfirmedMetadataOwnerRouteFailure(code) || IsAmbiguousMetadataOwnerRouteFailure(code);
 }
-
-constexpr int32_t ROUTE_DEGRADATION_INNER_RETRIES = 2;
-constexpr int64_t ROUTE_DEGRADATION_RETRY_BACKOFF_MS = 100;
 
 Status MakeStaleMetadataRouteStatus(const Status &rc)
 {
@@ -460,6 +461,7 @@ Status ObjectMetadataClient::PrepareQueryRetry(const HostPort &address, const Ob
         return HandleMetadataRouteFailure(address, items, rc, rpcDispatched, quarantineUbBuffers, context,
                                           routeDegradationRetries, recorder);
     }
+    RETURN_OK_IF_TRUE(TryFallbackUnsupportedShmToTcp(address, rc, rpcDispatched, context));
     if (rpcDispatched && context.mode == InlineTransportMode::SHM) {
         VLOG(1) << "[TransportGet][Metadata] Do not replay an ambiguous SHM QueryAndGet: " << rc.ToString();
         return rc;
@@ -502,6 +504,20 @@ Status ObjectMetadataClient::HandleMetadataRouteFailure(
     VLOG(1) << "[TransportGet][Metadata] Return stale route for outer retry, meta owner: "
             << address.ToString() << ", dispatched: " << rpcDispatched << ", status: " << rc.ToString();
     return MakeStaleMetadataRouteStatus(rc);
+}
+
+bool ObjectMetadataClient::TryFallbackUnsupportedShmToTcp(const HostPort &address, const Status &rc,
+                                                          bool rpcDispatched, InlineRequestContext &context) const
+{
+    if (!(rpcDispatched && context.mode == InlineTransportMode::SHM && rc.GetCode() == K_NOT_SUPPORTED)) {
+        return false;
+    }
+    LOG_EVERY_N(WARNING, TRANSPORT_FALLBACK_LOG_RATE)
+        << "[TransportGet][Metadata] QueryAndGet SHM unsupported by worker " << address.ToString()
+        << ", fallback to TCP: " << rc.ToString();
+    context.DisableInlineData();
+    context.mode = InlineTransportMode::TCP;
+    return true;
 }
 
 void ObjectMetadataClient::DelayReleaseUbBuffers(InlineRequestContext &context, const Status &reason,

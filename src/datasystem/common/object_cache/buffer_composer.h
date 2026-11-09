@@ -138,6 +138,27 @@ Status PrepareDataSizeList(std::vector<size_t> &sizeList, const std::vector<Devi
 Status ComposeBufferDataRefs(const std::vector<const DeviceBlobList *> &deviceBlobRefs,
                              const std::vector<std::shared_ptr<Buffer>> &bufferList, uint32_t memoryAlignment);
 
+/**
+ * @brief Build payload offsets for a DeviceBlobList.
+ * @param[in] blobs The device blob list for one object.
+ * @param[in] bufferSize The full object payload size, including the offset prefix.
+ * @param[in] memoryAlignment The payload alignment.
+ * @param[out] offsets The blob offset array. offsets[0] is the first data offset, and offsets[i + 1] is blob i end.
+ * @return K_OK on success; the error code otherwise.
+ */
+Status BuildBlobOffsets(const std::vector<Blob> &blobs, uint64_t bufferSize, uint32_t memoryAlignment,
+                        std::vector<uint64_t> &offsets);
+
+/**
+ * @brief Compose buffer list by user data list
+ * @param[out] bufferList Compose the user data to bufferList
+ * @param[in] devBlobList The user data list
+ * @param[in] memoryAlignment The payload alignment.
+ * @return K_OK on success; the error code otherwise.
+ */
+Status ComposeBufferData(std::vector<std::shared_ptr<Buffer>> &bufferList,
+                         const std::vector<DeviceBlobList> &devBlobList, uint32_t memoryAlignment);
+
 }  // namespace object_cache
 }  // namespace datasystem
 

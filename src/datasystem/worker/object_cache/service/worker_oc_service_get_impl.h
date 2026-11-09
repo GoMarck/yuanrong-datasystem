@@ -409,7 +409,9 @@ private:
      * @param[out] localExistKeys vector of keys which exists in local mem.
      * @return Status of the call
      */
-    Status PreProcessGetObject(const ReadKey &readKey, GetObjInfo &info, std::set<ReadKey> &remoteObjectKeys);
+    Status PreProcessGetObject(const ReadKey &readKey, GetObjInfo &info, std::set<ReadKey> &remoteObjectKeys,
+                               const std::string &clientCommId,
+                               const RemoteH2DClientDeviceInfoPb *clientDeviceInfo = nullptr);
 
     /**
      * @brief Preprocess for get one object from memory, in this case, we only hold RLock instead of WLock, because the
@@ -423,7 +425,8 @@ private:
      * @return Status of the call
      */
     Status RLockGetObjectFromMem(const ReadKey &readKey, GetObjInfo &info, std::set<ReadKey> &remoteObjectKeys,
-                                 bool &objIsValidInMem);
+                                 bool &objIsValidInMem, const std::string &clientCommId,
+                                 const RemoteH2DClientDeviceInfoPb *clientDeviceInfo = nullptr);
 
     /**
      * @brief Try to get object from primary copy worker.
@@ -445,7 +448,8 @@ private:
      * @return Status of the call.
      */
     Status GetObjectFromRemoteWorkerWithoutDump(const std::string &address, const std::string &primaryAddress,
-                                                uint64_t dataSize, ReadObjectKV &objectKV);
+                                                uint64_t dataSize, ReadObjectKV &objectKV,
+                                                const RemoteH2DClientDeviceInfoPb *clientDeviceInfo = nullptr);
 
     /**
      * @brief Get object data from remote worker based on object meta.
@@ -457,7 +461,8 @@ private:
      * @return Status of the call.
      */
     Status GetObjectFromRemoteWorkerAndDump(const std::string &address, const std::string &primaryAddress,
-                                            uint64_t dataSize, ReadObjectKV &objectKV, bool isAsyncBatchGet);
+                                            uint64_t dataSize, ReadObjectKV &objectKV, bool isAsyncBatchGet,
+                                            const RemoteH2DClientDeviceInfoPb *clientDeviceInfo = nullptr);
 
     /**
      * @brief Helper function to process entry and sync metadata after successful pull.
@@ -506,7 +511,8 @@ private:
      * @param[out] kv The reserved and locked safe object and its corresponding objectKey.
      * @return Status of the call.
      */
-    Status PullObjectDataFromRemoteWorker(const std::string &address, uint64_t dataSize, ReadObjectKV &kv);
+    Status PullObjectDataFromRemoteWorker(const std::string &address, uint64_t dataSize, ReadObjectKV &kv,
+                                          const RemoteH2DClientDeviceInfoPb *clientDeviceInfo = nullptr);
 
     /**
      * @brief Part two of bypassing memory copy and put remote payload directly into shared memory or private memory

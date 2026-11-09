@@ -458,6 +458,12 @@ Status ClientWorkerBaseApi::PreGet(const GetParam &getParam, int64_t subTimeoutM
     // Add and fill the request with client communicator root info, if RH2D is both supported and enabled.
     if (getParam.isRH2DSupported) {
         RETURN_IF_NOT_OK(GetClientCommUuid(*req.mutable_comm_id()));
+        RemoteH2DClientDeviceInfoPb remoteH2DClientDeviceInfo;
+        bool hasRemoteH2DClientDeviceInfo = false;
+        RETURN_IF_NOT_OK(FillClientRemoteH2DDeviceInfo(&remoteH2DClientDeviceInfo, &hasRemoteH2DClientDeviceInfo));
+        if (hasRemoteH2DClientDeviceInfo) {
+            req.mutable_remote_h2d_client_device_info()->CopyFrom(remoteH2DClientDeviceInfo);
+        }
     }
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(SetTokenAndTenantId(req), "Fail to set token when get data.");
     return Status::OK();
@@ -524,6 +530,11 @@ bool ClientWorkerBaseApi::CheckUseTransferForMultiCreateRsp(const MultiCreateRsp
             }
         }
     }
+    for (const auto &res : rsp.results()) {
+        if (res.has_host_info()) {
+            return true;
+        }
+    }
 #ifdef USE_URMA
     if (IsUrmaEnabled()) {
         for (const auto &res : rsp.results()) {
@@ -551,6 +562,10 @@ void ClientWorkerBaseApi::FillCreateParamsFromMultiCreateRsp(const MultiCreateRs
         shmBuf->offset = static_cast<ptrdiff_t>(subRsp.offset());
         shmBuf->id = ShmKey::Intern(subRsp.shm_id());
         createParams[i].metadataSize = subRsp.metadata_size();
+        if (subRsp.has_host_info()) {
+            createParams[i].remoteHostInfo = std::make_shared<RemoteH2DHostInfoPb>();
+            createParams[i].remoteHostInfo->CopyFrom(subRsp.host_info());
+        }
 #ifdef USE_URMA
         if (IsUrmaEnabled() && subRsp.has_urma_info()) {
             createParams[i].urmaDataInfo = std::make_shared<UrmaRemoteAddrPb>();

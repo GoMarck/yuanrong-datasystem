@@ -22,15 +22,22 @@
 #include <algorithm>
 #include <limits>
 
+#include "datasystem/common/util/format.h"
 #include "datasystem/common/util/status_helper.h"
 
 namespace datasystem {
 namespace object_cache {
+namespace {
+
+constexpr uint64_t kComposedBufferHeaderFieldCount = 2;  // Blob count field plus the initial data offset.
+constexpr uint64_t kComposedBufferHeaderFieldSize = sizeof(uint64_t);
+
+}  // namespace
 
 uint64_t GetComposedBufferHeaderSize(size_t blobCount, uint32_t memoryAlignment)
 {
     const auto alignment = static_cast<uint64_t>(memoryAlignment);
-    const auto headerSize = sizeof(uint64_t) * (blobCount + 2);
+    const auto headerSize = kComposedBufferHeaderFieldSize * (blobCount + kComposedBufferHeaderFieldCount);
     return (headerSize + alignment - 1) & ~(alignment - 1);
 }
 
@@ -103,12 +110,38 @@ Status PrepareDataSizeList(std::vector<size_t> &sizeList, const std::vector<Devi
     return Status::OK();
 }
 
+Status BuildBlobOffsets(const std::vector<Blob> &blobs, uint64_t bufferSize, uint32_t memoryAlignment,
+                        std::vector<uint64_t> &offsets)
+{
+    CHECK_FAIL_RETURN_STATUS(!blobs.empty(), K_INVALID, "The blob list is empty.");
+    CHECK_FAIL_RETURN_STATUS(blobs.size() <= (std::numeric_limits<uint64_t>::max() / kComposedBufferHeaderFieldSize)
+                                                 - kComposedBufferHeaderFieldCount,
+                             K_INVALID, "The blob count is too large.");
+    uint64_t offset = GetComposedBufferHeaderSize(blobs.size(), memoryAlignment);
+    CHECK_FAIL_RETURN_STATUS(
+        offset <= bufferSize, K_RUNTIME_ERROR,
+        FormatString("The blob offset prefix size %zu exceeds buffer size %zu.", offset, bufferSize));
+
+    offsets.clear();
+    offsets.reserve(blobs.size() + 1);
+    offsets.emplace_back(offset);
+    for (size_t i = 0; i < blobs.size(); ++i) {
+        CHECK_FAIL_RETURN_STATUS(blobs[i].size <= std::numeric_limits<uint64_t>::max() - offset, K_RUNTIME_ERROR,
+                                 FormatString("The blob offset overflows, index: %zu.", i));
+        offset += blobs[i].size;
+        CHECK_FAIL_RETURN_STATUS(
+            offset <= bufferSize, K_RUNTIME_ERROR,
+            FormatString("The blob end offset %zu exceeds buffer size %zu, blob index: %zu.", offset, bufferSize, i));
+        offsets.emplace_back(offset);
+    }
+    return Status::OK();
+}
+
 Status ComposeBufferDataRefs(const std::vector<const DeviceBlobList *> &deviceBlobRefs,
                              const std::vector<std::shared_ptr<Buffer>> &bufferList, uint32_t memoryAlignment)
 {
     // Record MetaData of SubBuffers.
     // | NumOfBuffers (n) | Off0 | Off1 | Offn | Padding | Buf1 | Buf2 | ... Bufn |
-    constexpr uint64_t preOccupySize = 2;
     CHECK_FAIL_RETURN_STATUS(!deviceBlobRefs.empty(), K_INVALID, "The deviceBlobRefs is empty.");
     CHECK_FAIL_RETURN_STATUS(!bufferList.empty(), K_INVALID, "The bufferList is empty.");
     CHECK_FAIL_RETURN_STATUS(deviceBlobRefs.size() == bufferList.size(), K_INVALID,
@@ -120,33 +153,33 @@ Status ComposeBufferDataRefs(const std::vector<const DeviceBlobList *> &deviceBl
         const auto &blobs = deviceBlobRefs[i]->blobs;
         auto &buf = bufferList[i];
         CHECK_FAIL_RETURN_STATUS(buf != nullptr, K_INVALID, FormatString("bufferList[%zu] is null", i));
-        CHECK_FAIL_RETURN_STATUS(blobs.size() > 0, K_INVALID, FormatString("The blobs list is empty, index: %zu", i));
         auto *bufferData = buf->MutableData();
         CHECK_FAIL_RETURN_STATUS(bufferData != nullptr, K_INVALID, FormatString("bufferList[%zu] data is null", i));
         auto prefixSumArr = reinterpret_cast<uint64_t *>(bufferData);
-        uint64_t descSz = 0;
-        RETURN_IF_NOT_OK(GetComposedBufferHeaderSizeChecked(blobs.size(), memoryAlignment, descSz));
-        // Validate that the composed object (header + all blob payloads) fits in the allocated buffer.
-        uint64_t composedSize = descSz;
-        constexpr uint64_t kUint64Max = std::numeric_limits<uint64_t>::max();
-        for (const auto &blob : blobs) {
-            CHECK_FAIL_RETURN_STATUS(composedSize <= kUint64Max - blob.size, K_INVALID,
-                                     "Composed buffer size overflows uint64_t");
-            composedSize += blob.size;
-        }
         const auto bufferSize = static_cast<uint64_t>(buf->GetSize());
-        CHECK_FAIL_RETURN_STATUS(composedSize <= bufferSize, K_INVALID,
-                                 FormatString("Composed size %zu exceeds allocated buffer size %zu, index %zu",
-                                              composedSize, bufferSize, i));
+        std::vector<uint64_t> offsets;
+        RETURN_IF_NOT_OK(BuildBlobOffsets(blobs, bufferSize, memoryAlignment, offsets));
 
         prefixSumArr[0] = blobs.size();
-        prefixSumArr[1] = descSz;
-        for (uint64_t j = 0; j < blobs.size(); j++) {
-            // Running prefix-sum offset; overflow already guarded by the composed-size check above.
-            prefixSumArr[j + preOccupySize] = prefixSumArr[j + 1] + blobs[j].size;
+        for (uint64_t j = 0; j < offsets.size(); j++) {
+            prefixSumArr[j + 1] = offsets[j];
         }
     }
     return Status::OK();
+}
+
+Status ComposeBufferData(std::vector<std::shared_ptr<Buffer>> &bufferList,
+                         const std::vector<DeviceBlobList> &devBlobList, uint32_t memoryAlignment)
+{
+    CHECK_FAIL_RETURN_STATUS(bufferList.size() == devBlobList.size(), K_INVALID,
+                             FormatString("The buffer list size %zu does not match device blob list size %zu.",
+                                          bufferList.size(), devBlobList.size()));
+    std::vector<const DeviceBlobList *> deviceBlobRefs;
+    deviceBlobRefs.reserve(devBlobList.size());
+    for (const auto &blobList : devBlobList) {
+        deviceBlobRefs.emplace_back(&blobList);
+    }
+    return ComposeBufferDataRefs(deviceBlobRefs, bufferList, memoryAlignment);
 }
 }  // namespace object_cache
 }  // namespace datasystem

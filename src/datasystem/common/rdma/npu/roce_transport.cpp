@@ -89,8 +89,9 @@ Status RoCETransport::Init(const std::vector<int32_t> &deviceIds)
     return Status::OK();
 }
 
-Status RoCETransport::GetConnectionIdentity(std::string *identity)
+Status RoCETransport::GetConnectionIdentity(std::string *identity, int32_t devId)
 {
+    (void)devId;
     HcclRootInfo rootInfo;
     RETURN_IF_NOT_OK(acl::AclDeviceManager::Instance()->DSP2PGetRootInfo(&rootInfo));
     std::string rootInfoStr(std::begin(rootInfo.internal), std::end(rootInfo.internal));
@@ -282,6 +283,23 @@ Status RoCETransport::DisconnectAll()
 Status RoCETransport::RegisterMemory(void *addr, uint64_t size, P2pSegmentInfo *segInfo)
 {
     return acl::AclDeviceManager::Instance()->DSP2PRegisterHostMem(addr, size, segInfo, P2P_SEGMENT_READ_WRITE);
+}
+
+Status RoCETransport::UnregisterMemory(void *addr)
+{
+    (void)addr;
+    // The current DSP2P API does not expose a matching host-memory deregistration call.
+    return Status::OK();
+}
+
+Status RoCETransport::PrepareRemoteMemory(void *addr, uint64_t offset, uint64_t size, uint64_t *remoteAddr)
+{
+    CHECK_FAIL_RETURN_STATUS(addr != nullptr && remoteAddr != nullptr, StatusCode::K_INVALID,
+                             "Invalid RoCE remote memory arguments");
+    (void)offset;
+    (void)size;
+    *remoteAddr = reinterpret_cast<uint64_t>(addr);
+    return Status::OK();
 }
 
 Status RoCETransport::ImportRemoteAddressInfo(const std::string &remoteEndpoint, const RemoteHostSegmentPb &seg)

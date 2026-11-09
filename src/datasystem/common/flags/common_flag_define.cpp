@@ -99,8 +99,12 @@ DS_DEFINE_string(remote_h2d_link_type, "ROCE", "Link type for Remote H2D: ROCE o
 DS_DEFINE_string(remote_h2d_hccs_buffer_pool, "0:0",
                  "HIXL buffer-pool spec for RH2D, format \"<count>:<size>\" (both positive), or \"0:0\" to "
                  "disable the buffer pool. "
-                 "Only consumed when remote_h2d_link_type=HCCS.");
+                 "Only consumed when remote_h2d_link_type=HCCS and FabricMem mode is disabled.");
 DS_DEFINE_bool(hixl_cs_enable, false, "Enable HIXL CS with LocalCommRes version 1.3 for Remote H2D.");
+DS_DEFINE_bool(remote_h2d_hccs_enable_fabric_mem, false,
+               "Enable HIXL FabricMem mode for HCCS RH2D. In this mode workers allocate physical-backed shared-memory "
+               "arenas and transfer data through HIXL host_info. This option is mutually exclusive with HIXL "
+               "buffer-pool mode.");
 DS_DEFINE_string(urma_mode, "UB", "[DEPRECATED] This flag is no longer used and will be removed in a future version.");
 DS_DEFINE_bool(enable_urma, false, "Option to turn on urma for OC worker to worker data transfer, default false.");
 DS_DEFINE_bool(enable_ub_fault_isolation, GetBoolFromEnv("DATASYSTEM_ENABLE_UB_FAULT_ISOLATION", true),
@@ -295,6 +299,9 @@ DS_DEFINE_int32(sc_worker_worker_direct_port, 0,
                 "Direct tcp/ip port for WorkerWorkerSCService. 0 -- disable this direction connection."
                 "Valid range is [0, 65535].");
 DS_DEFINE_bool(enable_pipeline_h2d, false, "Enable pipeline H2D. Default is false");
+DS_DEFINE_bool(enable_shm_decrease_ref_queue, true,
+               "Enable shared memory queue for client object-cache shm reference release. If false, clients fall back "
+               "to DecreaseReference RPC.");
 DS_DEFINE_int32(pipeline_h2d_thread_num, 64, "Pipeline H2D worker thread number. Default value 64");
 DS_DEFINE_uint64_dynamic(slow_log_process_slower_than, 2000,
                  "In-process processing latency threshold (microseconds) for slow-log and latency summary. "

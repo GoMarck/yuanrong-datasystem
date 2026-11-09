@@ -120,22 +120,25 @@ protected:
     Status SetupFileMapping(size_t size, int flags, bool isSeal);
 
     // Shared memory fd.
-    int fd_;
+    int fd_ = -1;
 
     // Head pointer.
-    void *pointer_;
+    void *pointer_ = nullptr;
 
     // Mmap size.
-    uint64_t mmapSize_;
+    uint64_t mmapSize_ = 0;
 
     // Current pointer.
-    std::atomic<uintptr_t> curr_;
+    std::atomic<uintptr_t> curr_{ 0 };
 
     // Tail pointer.
-    uintptr_t tail_;
+    uintptr_t tail_ = 0;
 
     // The mmap type.
     std::string type_;
+
+    // Whether pointer_ is owned by POSIX mmap/munmap.
+    bool posixMapped_ = true;
 };
 }  // namespace memory
 }  // namespace datasystem

@@ -72,7 +72,9 @@ private:
     void ReleaseReservations(const std::vector<ShmKey> &reservations);
 
     Status FillCreateResponse(const ClientKey &clientId, const std::shared_ptr<ShmUnit> &shmUnit,
-                              size_t metadataSize, CreateRspPb &resp, bool hixlWrite = false);
+                              size_t metadataSize, CreateRspPb &resp, bool hixlWrite = false,
+                              const std::string &commId = "",
+                              const RemoteH2DClientDeviceInfoPb *clientDeviceInfo = nullptr);
 
     Status PrepareHixlWrite(MultiCreateReqPb &req, MultiCreateRspPb &resp);
     Status FillHixlTarget(const MultiCreateReqPb &req, int index, const std::shared_ptr<ShmUnit> &unit,
@@ -95,7 +97,8 @@ private:
                                    const std::vector<ShmKey> &requestShmIds,
                                    std::vector<std::shared_ptr<ShmUnit>> &shmUnits,
                                    std::vector<CreateRspPb> &subRsp, std::vector<Status> &results,
-                                   MultiCreateRspPb &resp);
+                                   MultiCreateRspPb &resp, const std::string &commId = "",
+                                   const RemoteH2DClientDeviceInfoPb *clientDeviceInfo = nullptr);
 
     /**
      * @brief The implementation of Create.
@@ -105,14 +108,17 @@ private:
      * @param[in] dataSize Requested object size.
      * @param[in] requestTimeoutMs Remaining request timeout in milliseconds.
      * @param[in] allocationId Optional client-generated shared-memory allocation UUID.
+     * @param[in] commId Communication ID for RemoteH2D operations.
      * @param[out] resp The rpc response protobuf
      * @param[in] cacheType The type of cache.
+     * @param[in] clientDeviceInfo Optional RemoteH2D client device information.
      * @return K_OK on success; the error code otherwise.
      * K_DUPLICATED: the object already exists, no need to create.
      */
     Status CreateImpl(const std::string &tenantId, const ClientKey &clientId, const std::string &rawObjectKey,
-                       size_t dataSize, int64_t requestTimeoutMs, const std::string &allocationId, CreateRspPb &resp,
-                       CacheType cacheType = CacheType::MEMORY);
+                     size_t dataSize, int64_t requestTimeoutMs, const std::string &allocationId,
+                     const std::string &commId, CreateRspPb &resp, CacheType cacheType = CacheType::MEMORY,
+                     const RemoteH2DClientDeviceInfoPb *clientDeviceInfo = nullptr);
 
     /**
      * @brief Helper function to allocate aggregated memory for objects creation.

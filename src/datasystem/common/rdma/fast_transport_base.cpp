@@ -16,10 +16,19 @@
 
 #include "datasystem/utils/status.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
+#include <cstddef>
+#include <sstream>
+#include <stdexcept>
+#include <string>
 #include <utility>
 
 #include "datasystem/common/flags/common_flags.h"
+#include "datasystem/common/log/log.h"
+#include "datasystem/common/util/format.h"
+#include "datasystem/common/util/status_helper.h"
 #include "datasystem/common/rdma/fast_transport_base.h"
 
 #ifdef USE_URMA
@@ -31,9 +40,41 @@
 #ifdef USE_NPU
 #include "datasystem/common/rdma/npu/remote_h2d_manager.h"
 #endif
+#ifdef ASCEND_HIXL_AVAILABLE
+#include "datasystem/common/device/ascend/acl_device_manager.h"
+#include "datasystem/common/rdma/npu/hixl_plugin_loader.h"
+#endif
 
 namespace datasystem {
 constexpr int FAILURE_LOG_RATE = 100;
+namespace {
+#ifdef ASCEND_HIXL_AVAILABLE
+Status HixlApiResultToStatus(DsHixlResult result, uint32_t vendorStatus, const std::string &operation)
+{
+    if (result == DS_HIXL_OK) {
+        return Status::OK();
+    }
+    const std::string message =
+        FormatString("HIXL plugin %s failed, result=%d, vendor_status=%u", operation, result, vendorStatus);
+    if (result == DS_HIXL_INVALID_ARGUMENT) {
+        return Status(StatusCode::K_INVALID, message);
+    }
+    if (result == DS_HIXL_NOT_SUPPORTED) {
+        return Status(StatusCode::K_NOT_SUPPORTED, message);
+    }
+    return Status(StatusCode::K_RUNTIME_ERROR, message);
+}
+
+bool HasFabricMemoryApi(const DsHixlApi *api)
+{
+    constexpr size_t requiredSize =
+        offsetof(DsHixlApi, free_memory) + sizeof(((DsHixlApi *)nullptr)->free_memory);
+    return api != nullptr && api->structSize >= requiredSize && api->malloc_memory != nullptr
+           && api->free_memory != nullptr;
+}
+#endif
+}  // namespace
+
 Status RegisterFastTransportMemory(void *segAddress, const uint64_t &segSize)
 {
     (void)segAddress;
@@ -54,13 +95,112 @@ Status RegisterFastTransportMemory(void *segAddress, const uint64_t &segSize)
     return Status::OK();
 }
 
+Status InitializeHostMemoryContext()
+{
+#ifdef USE_NPU
+    if (IsRemoteH2DEnabled() && FLAGS_remote_h2d_link_type == "HCCS") {
+        (void)RemoteH2DManager::Instance();
+    }
+#endif
+    return Status::OK();
+}
+
+Status GetFabricMemoryArenaDeviceIds(std::vector<int32_t> &deviceIds)
+{
+    deviceIds.clear();
+#ifdef USE_NPU
+    std::string devIdStr = FLAGS_remote_h2d_device_ids;
+    std::stringstream ss(devIdStr);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        token.erase(std::remove_if(token.begin(), token.end(),
+                                   [](unsigned char ch) { return std::isspace(ch) != 0; }),
+                    token.end());
+        if (token.empty()) {
+            RETURN_STATUS(K_INVALID, "remote_h2d_device_ids flag has invalid empty item: " + devIdStr);
+        }
+        try {
+            deviceIds.emplace_back(std::stoi(token));
+        } catch (const std::invalid_argument &) {
+            RETURN_STATUS(K_INVALID, "remote_h2d_device_ids flag has invalid form: " + devIdStr);
+        } catch (const std::out_of_range &) {
+            RETURN_STATUS(K_INVALID, "remote_h2d_device_ids flag contains out of range number: " + devIdStr);
+        }
+    }
+    CHECK_FAIL_RETURN_STATUS(!deviceIds.empty(), K_INVALID,
+                             "remote_h2d_device_ids must be set when HCCS FabricMem is enabled");
+#else
+    (void)deviceIds;
+#endif
+    return Status::OK();
+}
+
+Status AllocateFabricMemory(uint64_t size, int32_t deviceId, void **ptr)
+{
+    CHECK_FAIL_RETURN_STATUS(ptr != nullptr, StatusCode::K_INVALID, "FabricMem allocation output pointer is null");
+    *ptr = nullptr;
+#ifdef ASCEND_HIXL_AVAILABLE
+    RETURN_IF_NOT_OK(acl::AclDeviceManager::Instance()->SetDeviceIdx(deviceId));
+    const DsHixlApi *api = nullptr;
+    RETURN_IF_NOT_OK(HixlPluginLoader::Instance().GetApi(api));
+    CHECK_FAIL_RETURN_STATUS(HasFabricMemoryApi(api), StatusCode::K_NOT_SUPPORTED,
+                             "HIXL plugin does not provide FabricMem allocation APIs");
+    uint32_t vendorStatus = 0;
+    DsHixlResult result = api->malloc_memory(DS_HIXL_MEMORY_HOST, size, ptr, &vendorStatus);
+    RETURN_IF_NOT_OK(HixlApiResultToStatus(result, vendorStatus, "malloc_memory(MEM_HOST)"));
+    CHECK_FAIL_RETURN_STATUS(*ptr != nullptr, StatusCode::K_RUNTIME_ERROR,
+                             "HIXL plugin returned a null FabricMem allocation");
+    LOG(INFO) << "Allocated FabricMem host arena through HIXL MallocMem, devId=" << deviceId << ", addr=" << *ptr
+              << ", size=" << size;
+    return Status::OK();
+#else
+    (void)size;
+    (void)deviceId;
+    RETURN_STATUS(StatusCode::K_NOT_SUPPORTED, "HIXL FabricMem allocation APIs are unavailable");
+#endif
+}
+
+Status FreeFabricMemory(void *ptr)
+{
+    if (ptr == nullptr) {
+        return Status::OK();
+    }
+#ifdef ASCEND_HIXL_AVAILABLE
+    const DsHixlApi *api = nullptr;
+    RETURN_IF_NOT_OK(HixlPluginLoader::Instance().GetApi(api));
+    CHECK_FAIL_RETURN_STATUS(HasFabricMemoryApi(api), StatusCode::K_NOT_SUPPORTED,
+                             "HIXL plugin does not provide FabricMem free APIs");
+    uint32_t vendorStatus = 0;
+    DsHixlResult result = api->free_memory(ptr, &vendorStatus);
+    RETURN_IF_NOT_OK(HixlApiResultToStatus(result, vendorStatus, "free_memory"));
+    return Status::OK();
+#else
+    RETURN_STATUS(StatusCode::K_NOT_SUPPORTED, "HIXL FabricMem free APIs are unavailable");
+#endif
+}
+
 Status RegisterHostMemory(void *segAddress, const uint64_t &segSize)
 {
     (void)segAddress;
     (void)segSize;
 #ifdef USE_NPU
-    if (IsRemoteH2DEnabled() && FLAGS_urma_register_whole_arena && segAddress != nullptr) {
+    const bool requireWholeArenaRegistration =
+        FLAGS_urma_register_whole_arena || FLAGS_remote_h2d_link_type == "HCCS";
+    if (IsRemoteH2DEnabled() && requireWholeArenaRegistration && segAddress != nullptr) {
         RETURN_IF_NOT_OK(RemoteH2DManager::Instance().RegisterHostMemory(segAddress, segSize));
+    }
+#endif
+    return Status::OK();
+}
+
+Status UnregisterHostMemory(void *segAddress)
+{
+    (void)segAddress;
+#ifdef USE_NPU
+    const bool hasWholeArenaRegistration =
+        FLAGS_urma_register_whole_arena || FLAGS_remote_h2d_link_type == "HCCS";
+    if (IsRemoteH2DEnabled() && hasWholeArenaRegistration && segAddress != nullptr) {
+        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().UnregisterHostMemory(segAddress));
     }
 #endif
     return Status::OK();
@@ -101,6 +241,12 @@ std::atomic<bool> &ClientUrmaRuntimeReady()
     return ready;
 }
 }  // namespace
+
+bool UsePhysicalFabricArena()
+{
+    return IsRemoteH2DEnabled() && FLAGS_remote_h2d_link_type == "HCCS"
+           && FLAGS_remote_h2d_hccs_enable_fabric_mem;
+}
 
 bool IsUrmaEnabled()
 {

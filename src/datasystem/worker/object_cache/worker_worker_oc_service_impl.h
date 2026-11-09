@@ -209,6 +209,19 @@ private:
         {
             return urmaTransportMode == UrmaTransportMode::TCP_FALLBACK;
         }
+        bool hasClientDeviceInfo = false;
+        RemoteH2DClientDeviceInfoPb clientDeviceInfo;
+    };
+
+    struct RemoteH2DConnectionInfo {
+        uint64_t localSegAddress = 0;
+        uint64_t localSegSize = 0;
+        std::shared_ptr<ShmUnit> shmUnit;
+        uint64_t metadataSize = 0;
+        std::vector<uint64_t> blobSizes;
+        RemoteH2DRootInfoPb *batchRootInfo = nullptr;
+        BatchRh2dContext *batchRh2dContext = nullptr;
+        const RemoteH2DClientDeviceInfoPb *clientDeviceInfo = nullptr;
     };
 
     Status ProcessSingleGetObjectRemote(GetObjectRemoteReqPb &req, GetObjectRemoteRspPb &rsp,
@@ -436,18 +449,15 @@ private:
     /**
      * @brief Establish P2P Communicator connection and also fill in the segment info.
      * @param[in] commId The client communicator uuid for unique connection.
-     * @param[in] localSegAddress The local segment address.
-     * @param[in] localSegSize The local segment size.
-     * @param[in] shmUnit The object shared memory unit.
-     * @param[in] metadataSize The metadata size of the object.
+     * @param[in] connInfo Remote H2D connection and segment context.
      * @param[out] rsp The remote get response.
-     * @param[in] batchRootInfo The common root info for batched requests.
      */
-    Status EstablishConnAndFillSeg(const std::string &commId, const uint64_t &localSegAddress,
-                                   const uint64_t &localSegSize, std::shared_ptr<ShmUnit> shmUnit,
-                                   uint64_t metadataSize, GetObjectRemoteRspPb &rsp,
-                                   RemoteH2DRootInfoPb *batchRootInfo = nullptr,
-                                   BatchRh2dContext *batchRh2dContext = nullptr);
+    Status EstablishConnAndFillSeg(const std::string &commId, const RemoteH2DConnectionInfo &connInfo,
+                                   GetObjectRemoteRspPb &rsp);
+#ifdef USE_NPU
+    Status PrepareRemoteH2DConnection(const std::string &commId, const RemoteH2DConnectionInfo &connInfo,
+                                      GetObjectRemoteRspPb &rsp, RemoteH2DRootInfoPb *&rootInfo, int32_t &devId);
+#endif
 
     Status PrepareBatchRh2dContext(const GetObjectRemoteReqPb &req, BatchRh2dContext &batchRh2dContext);
 

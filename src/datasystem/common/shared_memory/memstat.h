@@ -40,6 +40,9 @@ struct ShmMemStat {
     // Allocate size already binding to physical memory.
     uint64_t physicalMemoryUsage = 0;
 
+    // FabricMem physical memory pre-allocated during arena initialization.
+    uint64_t fabricMemPhysicalMemoryUsage = 0;
+
     // Number of the memory block allocated by allocator.
     uint64_t numOfAllocated = 0;
 

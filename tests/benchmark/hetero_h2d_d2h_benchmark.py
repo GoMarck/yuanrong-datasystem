@@ -65,6 +65,14 @@ config_map = {
     '1process_1thread_32key_1024KB': {'num_processes': 1, 'key_num': 32, 'blob_nums': [28], 'blob_sizes': [1024 * 1024],
                                 'iterations': 13, 'thread_number': 1},
 
+    # Single process, single thread, real-shape HIXL small blob tests
+    '1process_1thread_79key_237blob_16KB': {'num_processes': 1, 'key_num': 79, 'blob_nums': [237],
+                                            'blob_sizes': [16 * 1024], 'iterations': 32, 'thread_number': 1},
+    '1process_1thread_79key_237blob_32KB': {'num_processes': 1, 'key_num': 79, 'blob_nums': [237],
+                                            'blob_sizes': [32 * 1024], 'iterations': 16, 'thread_number': 1},
+    '1process_1thread_79key_237blob_128KB': {'num_processes': 1, 'key_num': 79, 'blob_nums': [237],
+                                             'blob_sizes': [128 * 1024], 'iterations': 4, 'thread_number': 1},
+
     # Single process, multiple thread, 32 key tests
     '1process_8thread_32key_72KB': {'num_processes': 1, 'key_num': 32, 'blob_nums': [61], 'blob_sizes': [72 * 1024],
                                'iterations': 10, 'thread_number': 8},
@@ -212,9 +220,14 @@ def batch_data_check(out_data_blob_list, test_value):
             check_ptr_content(info.dev_ptr, test_value)
 
 
-def should_pre_register_device_memory() -> bool:
+def should_pre_register_set_device_memory() -> bool:
+    """Whether this benchmark run should pre-register set-side device memory."""
+    return (args.pre_register_set_device_memory or args.pre_register_all_device_memory) and mode in ["set", "all"]
+
+
+def should_pre_register_get_device_memory() -> bool:
     """Whether this benchmark run should pre-register get-side device memory."""
-    return args.pre_register_device_memory and mode in ["get", "all"]
+    return (args.pre_register_get_device_memory or args.pre_register_all_device_memory) and mode in ["get", "all"]
 
 
 def prepare_multi_buffer_lists(all_data_blob_lists):
@@ -233,6 +246,13 @@ def acl_malloc_device(size: int) -> int:
     if ret != 0:
         raise RuntimeError(f"acl.rt.malloc failed, size={size}, ret={ret}")
     return dev_ptr
+
+
+def ensure_status_ok(status, action: str):
+    """Raise when a pybind status-like return value reports an error."""
+    if hasattr(status, "is_error") and status.is_error():
+        msg = status.to_string() if hasattr(status, "to_string") else str(status)
+        raise RuntimeError(f"{action} failed: {msg}")
 
 
 def mset_thread(client, device_id: int, key_num: int, iterations: int, thread_id: int, list_random_suffix: list,
@@ -265,30 +285,63 @@ def mget_thread(client, device_id: int, key_num: int, iterations: int, thread_id
 
 
 def prepare_hbm_data(test_value, thread_number, key_num, blob_nums_per_key, blob_size, device_id, client,
-                     all_in_data_blob_list, all_out_data_blob_list, pre_registered_get_buffers):
+                     all_in_data_blob_list, all_out_data_blob_list, pre_registered_set_buffers,
+                     pre_registered_get_buffers):
     """prepare HBM data for set and get"""
     # Keep datasystem extension loading on the worker side of the multiprocessing fork boundary.
     from yr.datasystem.hetero_client import Blob, DeviceBlobList
 
     logging.info(f"[Dev {device_id}]Start prepare data")
-    for _ in range(thread_number):
-        in_data_blob_list = []
-        for _ in range(key_num):
-            tmp_batch_list = []
-            for _ in range(blob_nums_per_key):
-                dev_ptr = acl_malloc_device(blob_size)
-                acl.rt.memcpy(dev_ptr, blob_size, acl.util.bytes_to_ptr(test_value.encode()), blob_size, 1)
-                blob = Blob(dev_ptr, blob_size)
-                tmp_batch_list.append(blob)
-            blob_list = DeviceBlobList(device_id, tmp_batch_list)
-            in_data_blob_list.append(blob_list)
-        all_in_data_blob_list.append(in_data_blob_list)
-
-    # prepare HBM data and get from datasystem
-    if should_pre_register_device_memory():
+    if should_pre_register_set_device_memory():
         total_size = thread_number * key_num * blob_nums_per_key * blob_size
         base_ptr = acl_malloc_device(total_size)
-        client.pre_register_device_memory([base_ptr], [total_size])
+        ensure_status_ok(client.pre_register_device_memory([base_ptr], [total_size]),
+                         "pre-register set-side device memory")
+        pre_registered_set_buffers.append((base_ptr, total_size))
+        logging.info(
+            f"[Dev {device_id}]Pre-registered set buffer base={base_ptr}, size={total_size}, "
+            f"thread_number={thread_number}, key_num={key_num}, blob_nums_per_key={blob_nums_per_key}, "
+            f"blob_size={blob_size}")
+        offset = 0
+        test_value_bytes = test_value.encode()
+        test_value_ptr = acl.util.bytes_to_ptr(test_value_bytes)
+        for _ in range(thread_number):
+            in_data_blob_list = []
+            for _ in range(key_num):
+                tmp_batch_list = []
+                for _ in range(blob_nums_per_key):
+                    dev_ptr = base_ptr + offset
+                    ret = acl.rt.memcpy(dev_ptr, blob_size, test_value_ptr, blob_size, 1)
+                    if ret != 0:
+                        raise RuntimeError(f"acl.rt.memcpy for set buffer failed, ret={ret}")
+                    blob = Blob(dev_ptr, blob_size)
+                    tmp_batch_list.append(blob)
+                    offset += blob_size
+                blob_list = DeviceBlobList(device_id, tmp_batch_list)
+                in_data_blob_list.append(blob_list)
+            all_in_data_blob_list.append(in_data_blob_list)
+    else:
+        for _ in range(thread_number):
+            in_data_blob_list = []
+            for _ in range(key_num):
+                tmp_batch_list = []
+                for _ in range(blob_nums_per_key):
+                    dev_ptr = acl_malloc_device(blob_size)
+                    ret = acl.rt.memcpy(dev_ptr, blob_size, acl.util.bytes_to_ptr(test_value.encode()), blob_size, 1)
+                    if ret != 0:
+                        raise RuntimeError(f"acl.rt.memcpy for set buffer failed, ret={ret}")
+                    blob = Blob(dev_ptr, blob_size)
+                    tmp_batch_list.append(blob)
+                blob_list = DeviceBlobList(device_id, tmp_batch_list)
+                in_data_blob_list.append(blob_list)
+            all_in_data_blob_list.append(in_data_blob_list)
+
+    # prepare HBM data and get from datasystem
+    if should_pre_register_get_device_memory():
+        total_size = thread_number * key_num * blob_nums_per_key * blob_size
+        base_ptr = acl_malloc_device(total_size)
+        ensure_status_ok(client.pre_register_device_memory([base_ptr], [total_size]),
+                         "pre-register get-side device memory")
         pre_registered_get_buffers.append((base_ptr, total_size))
         logging.info(
             f"[Dev {device_id}]Pre-registered get buffer base={base_ptr}, size={total_size}, "
@@ -404,16 +457,23 @@ def run_worker_benchmark(
     test_value = random_str(blob_sizes[0])
     all_in_data_blob_list, all_out_data_blob_list = [], []
     pre_registered_get_buffers = []
+    pre_registered_set_buffers = []
 
     for i, blob_num in enumerate(blob_nums_per_key):
         in_data_blob_list, out_data_blob_list = [], []
         prepare_hbm_data(test_value, thread_number, key_num, blob_num, blob_sizes[i], device_id, client,
-                         in_data_blob_list, out_data_blob_list, pre_registered_get_buffers)
+                         in_data_blob_list, out_data_blob_list, pre_registered_set_buffers,
+                         pre_registered_get_buffers)
 
         all_in_data_blob_list.extend(in_data_blob_list)
         all_out_data_blob_list.extend(out_data_blob_list)
+    metrics_data["pre_registered_set_memory_bytes"] = sum(size for _, size in pre_registered_set_buffers)
     metrics_data["pre_registered_get_memory_bytes"] = sum(size for _, size in pre_registered_get_buffers)
-    if should_pre_register_device_memory():
+    if should_pre_register_set_device_memory():
+        logging.info(
+            f"[Dev {device_id}]Prepared {len(pre_registered_set_buffers)} pre-registered set buffer(s), "
+            f"total size={metrics_data['pre_registered_set_memory_bytes']}")
+    if should_pre_register_get_device_memory():
         logging.info(
             f"[Dev {device_id}]Prepared {len(pre_registered_get_buffers)} pre-registered get buffer(s), "
             f"total size={metrics_data['pre_registered_get_memory_bytes']}")
@@ -705,6 +765,10 @@ def run_benchmark(
         if not workers_completed:
             terminate_worker_processes(processes)
 
+    failed_processes = [(p.pid, p.exitcode) for p in processes if p.exitcode != 0]
+    if failed_processes:
+        raise RuntimeError(f"Benchmark worker process failed: {failed_processes}. Check process traceback above.")
+
     # Calculate individual request size for metrics
     request_size_mb = 0
     for i, blob_num in enumerate(blob_nums):
@@ -801,10 +865,14 @@ def handle_metrics(results, iterations, key_num, num_processes, request_size_mb)
 
     # Calculate throughput (MB/s) and average latency per request.
     if mode in ["set", "all"]:
+        if not all_mset_times:
+            raise RuntimeError("No successful MSetD2H requests were recorded. Check worker process/thread errors above.")
         mset_per_req = ((sum(all_mset_times) - (all_mset_times[0] if len(all_mset_times) > 1 else 0)) \
                        / (len(all_mset_times) - (1 if len(all_mset_times) > 1 else 0))) / 1000
         mset_throughput_mb_s = (request_size_mb / mset_per_req) * num_processes
     if mode in ["get", "all"]:
+        if not all_mget_times:
+            raise RuntimeError("No successful MGetH2D requests were recorded. Check worker process/thread errors above.")
         mget_per_req = ((sum(all_mget_times) - (all_mget_times[0] if len(all_mget_times) > 1 else 0)) \
                        / (len(all_mget_times) - (1 if len(all_mget_times) > 1 else 0))) / 1000
         mget_throughput_mb_s = (request_size_mb / mget_per_req) * num_processes
@@ -849,9 +917,47 @@ if __name__ == "__main__":
     parser.add_argument("--perf-path", type=str, default=PERF_RESULT_FILENAME,
                         help=f"Output path for datasystem perf log records (Default {PERF_RESULT_FILENAME})")
     parser.add_argument("--pre-register-device-memory", action="store_true", dest="pre_register_device_memory",
+                        help="Deprecated alias of --pre-register-get-device-memory.")
+    parser.add_argument("--pre-register-get-device-memory", action="store_true", dest="pre_register_get_device_memory",
                         help="Pre-allocate one large get-side device memory range per blob config, pre-register it "
                              "with datasystem client, and use slices of that range as MGetH2D destination blobs.")
+    parser.add_argument("--pre-register-set-device-memory", action="store_true", dest="pre_register_set_device_memory",
+                        help="Pre-allocate one large set-side device memory range per blob config, pre-register it "
+                             "with datasystem client, and use slices of that range as MSetD2H source blobs.")
+    parser.add_argument("--pre-register-all-device-memory", action="store_true", dest="pre_register_all_device_memory",
+                        help="Pre-register both set-side and get-side device memory.")
+    parser.add_argument("--hixl-direct-roce", action="store_true", dest="hixl_direct_roce",
+                        help="Configure child client processes for HIXL direct RoCE transfer. This sets "
+                             "DS_RH2D_LINK_TYPE=HCCS and HCCL_INTRA_ROCE_ENABLE=1, and implies "
+                             "--pre-register-all-device-memory.")
+    parser.add_argument("--hixl-buffer-pool", action="store_true", dest="hixl_buffer_pool",
+                        help="Configure child client processes for HIXL HCCS buffer-pool transfer. This sets "
+                             "DS_RH2D_LINK_TYPE=HCCS and DS_RH2D_HCCS_BUFFER_POOL, clears "
+                             "HCCL_INTRA_ROCE_ENABLE, and implies "
+                             "--pre-register-all-device-memory.")
+    parser.add_argument("--hixl-buffer-pool-config", type=str, default="4:8", dest="hixl_buffer_pool_config",
+                        help="HIXL BufferPool config used with --hixl-buffer-pool, format <count>:<sizeMB> "
+                             "(Default 4:8).")
     args = parser.parse_args()
+    if args.hixl_direct_roce and args.hixl_buffer_pool:
+        parser.error("--hixl-direct-roce and --hixl-buffer-pool are mutually exclusive.")
+    if args.pre_register_device_memory:
+        args.pre_register_get_device_memory = True
+    if args.hixl_direct_roce:
+        os.environ["DS_RH2D_LINK_TYPE"] = "HCCS"
+        os.environ["HCCL_INTRA_ROCE_ENABLE"] = "1"
+        os.environ["DS_RH2D_HCCS_BUFFER_POOL"] = "0:0"
+        args.pre_register_all_device_memory = True
+        logging.info("Configured HIXL direct RoCE client env: DS_RH2D_LINK_TYPE=HCCS, "
+                     "HCCL_INTRA_ROCE_ENABLE=1, DS_RH2D_HCCS_BUFFER_POOL=0:0")
+    if args.hixl_buffer_pool:
+        os.environ["DS_RH2D_LINK_TYPE"] = "HCCS"
+        os.environ["DS_RH2D_HCCS_BUFFER_POOL"] = args.hixl_buffer_pool_config
+        os.environ.pop("HCCL_INTRA_ROCE_ENABLE", None)
+        args.pre_register_all_device_memory = True
+        logging.info("Configured HIXL buffer-pool client env: DS_RH2D_LINK_TYPE=HCCS, "
+                     f"DS_RH2D_HCCS_BUFFER_POOL={args.hixl_buffer_pool_config}, "
+                     "HCCL_INTRA_ROCE_ENABLE=<unset>")
     init_file(args.perf_path)
 
     if args.set_only and not args.get_only:
@@ -886,6 +992,10 @@ if __name__ == "__main__":
                 f"Perf conf : num_processes: {CONFIG['num_processes']} | thread_num: {CONFIG['thread_number']} | "
                 f"key_num: {CONFIG['key_num']} | blob_nums: {CONFIG['blob_nums']} | blob_sizes: {CONFIG['blob_sizes']}"
                 f" | iterations: {CONFIG['iterations']} | total_size: {total_size} MB"
-                f" | pre_register_device_memory: {should_pre_register_device_memory()}")
+                f" | pre_register_set_device_memory: {should_pre_register_set_device_memory()}"
+                f" | pre_register_get_device_memory: {should_pre_register_get_device_memory()}"
+                f" | hixl_direct_roce: {args.hixl_direct_roce}"
+                f" | hixl_buffer_pool: {args.hixl_buffer_pool}"
+                f" | hixl_buffer_pool_config: {args.hixl_buffer_pool_config}")
 
             run_benchmark(**CONFIG)

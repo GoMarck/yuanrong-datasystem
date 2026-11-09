@@ -75,6 +75,7 @@ struct MultiCreateParam {
     size_t dataSize;
     size_t metadataSize;
     std::shared_ptr<ShmUnitInfo> shmBuf;
+    std::shared_ptr<RemoteH2DHostInfoPb> remoteHostInfo = nullptr;
 #ifdef USE_URMA
     std::shared_ptr<UrmaRemoteAddrPb> urmaDataInfo = nullptr;  // For SendBufferViaUb in MSet MultiCreate path
 #endif
@@ -463,6 +464,11 @@ public:
      */
     virtual Status ReconcileShmRef(const std::unordered_set<ShmKey> &confirmedExpiredShmIds,
                                    std::vector<ShmKey> &maybeExpiredShmIds) = 0;
+
+    bool EnableDecreaseShmRefByShmQueue()
+    {
+        return IsShmEnable() && decShmUnit_ != nullptr && decShmUnit_->fd > 0;
+    }
 
     virtual Status SendBufferViaUb(const std::shared_ptr<ObjectBufferInfo> &bufferInfo, const void *data,
                                    uint64_t length, bool traceEnabled) = 0;

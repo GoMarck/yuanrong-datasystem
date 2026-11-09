@@ -5,7 +5,7 @@ def cann_dependency_audit(name, core_srcs, plugin_srcs, visibility = None):
     for core in core_srcs:
         commands.append("""
 for core_file in $(locations {core}); do
-  if readelf -d "$$core_file" | grep -Eq 'Shared library: [[]lib(ascendcl|cann_hixl|metadef)[.]so'; then
+  if readelf -d "$$core_file" | grep -Eq 'Shared library: [[]lib(ascendcl|cann_hixl|metadef|llm_datadist)[.]so'; then
     echo "Core artifact directly depends on a CANN library: $$core_file" >&2
     exit 1
   fi

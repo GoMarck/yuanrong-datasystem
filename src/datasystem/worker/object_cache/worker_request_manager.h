@@ -61,6 +61,7 @@ struct GetObjEntryParams {
         params->shmUnit = safeObj->GetShmUnit();
         params->isSealed = safeObj->IsSealed();
         params->version = safeObj->GetCreateTime();
+        params->blobSizes = safeObj->GetBlobSizes();
 #ifdef BUILD_HETERO
         params->remoteH2DHostInfo = safeObj->GetRemoteHostInfo();
 #endif
@@ -81,6 +82,7 @@ struct GetObjEntryParams {
         params->shmUnit = shmUnit;
         params->isSealed = isSealed;
         params->version = version;
+        params->blobSizes = blobSizes;
         params->remoteH2DHostInfo = remoteH2DHostInfo;
         return params;
     }
@@ -94,6 +96,7 @@ struct GetObjEntryParams {
     std::shared_ptr<ShmUnit> shmUnit;
     bool isSealed;
     uint64_t version;
+    std::vector<uint64_t> blobSizes;
     std::shared_ptr<RemoteH2DHostInfoMap> remoteH2DHostInfo;
 };
 
@@ -202,6 +205,7 @@ public:
     const std::string &GetClientId() const;
     bool NoQueryL2Cache() const;
     const std::string &GetClientCommUuid() const;
+    const RemoteH2DClientDeviceInfoPb *GetRemoteH2DClientDeviceInfo() const;
     H2DChunkManager &GetH2DChunkManager();
 
     std::vector<ObjectKey> GetUniqueObjectkeys() const;
@@ -265,6 +269,8 @@ private:
     bool enableReturnObjectIndex_ = false;
     std::shared_ptr<ThreadPool> threadPool_;
     std::string clientCommId_;
+    bool hasRemoteH2DClientDeviceInfo_ = false;
+    RemoteH2DClientDeviceInfoPb remoteH2DClientDeviceInfo_;
     bool hasUbGetInfo_ = false;
     UrmaRemoteAddrPb ubUrmaInfo_;
     uint64_t ubBufferSize_ = 0;

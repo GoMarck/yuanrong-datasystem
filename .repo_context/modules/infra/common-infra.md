@@ -98,6 +98,16 @@ Detailed follow-up docs now exist for:
 ## Transport And Memory Notes
 
 - Verified:
+  - HIXL FabricMem is opt-in through `remote_h2d_hccs_enable_fabric_mem` on workers and
+    `DS_RH2D_HCCS_ENABLE_FABRIC_MEM` on clients, with HCCS selected on both sides.
+    `MemMmap` allocates Host backing through the HIXL plugin's ADXL malloc/free APIs; arenas register as
+    `MEM_HOST`, while local/remote H2D and local D2H use HIXL READ/WRITE with payload-only blob metadata.
+    Worker startup rejects legacy SHM queues, metadata headers, and pipeline H2D in this mode.
+    Multiple FabricMem arenas divide the configured total capacity and require 1 GiB alignment per arena.
+    `fabricmem_physical_memory_usage` records eager backing separately from allocation/eviction accounting.
+    See `docs/source_zh_cn/best_practices/best_practices_for_rh2d.md` for dependencies and configuration.
+    Hardware ST cases in `tests/st/device/dev_object_hetero_rh2d_test.cpp` are explicitly disabled by default;
+    compilation alone does not verify FabricMem transfers or runtime arena reclamation.
   - `memory/jemalloc_stats_bvar` reads process-level jemalloc stats through `mallctl` and exposes cached bvars. It does
     not use the prefixed allocator owned by `shared_memory`, does not create a collection thread or write files, and
     remains inactive unless an owning process explicitly constructs it.

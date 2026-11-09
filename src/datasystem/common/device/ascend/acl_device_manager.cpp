@@ -54,7 +54,6 @@ constexpr int ACLPLUGIN_SO_MAX_LIMIT = 10 * 1024 * 1024;
 constexpr size_t MAX_DEVICE_MALLOC_SIZE = 12UL * 1024 * 1024 * 1024;
 // AscendCL defines ACL_ERROR_RT_MEMORY_ALLOCATION as 207001.
 constexpr int ACL_RT_MEMORY_ALLOCATION_ERROR = 207001;
-
 std::once_flag AclDeviceManager::init_;
 std::once_flag AclDeviceManager::hasLoadPlugin_;
 std::unique_ptr<AclDeviceManager> AclDeviceManager::instance_ = nullptr;
@@ -141,6 +140,7 @@ void AclDeviceManager::DlsymFuncObj()
     DLSYM_FUNC_OBJ(MemCopyD2D, pluginHandle_);
 
     DLSYM_FUNC_OBJ(GetDeviceIdx, pluginHandle_);
+    DLSYM_FUNC_OBJ(GetPhysicalDeviceId, pluginHandle_);
     DLSYM_FUNC_OBJ(SetDeviceIdx, pluginHandle_);
     DLSYM_FUNC_OBJ(RtCreateStream, pluginHandle_);
     DLSYM_FUNC_OBJ(RtSynchronizeStream, pluginHandle_);
@@ -172,7 +172,6 @@ void AclDeviceManager::DlsymFuncObj()
     DLSYM_FUNC_OBJ(DSAclrtQueryDeviceStatus, pluginHandle_);
     DLSYM_FUNC_OBJ(DSAclrtMallocHost, pluginHandle_);
     DLSYM_FUNC_OBJ(DSAclrtFreeHost, pluginHandle_);
-
     DLSYM_FUNC_OBJ(DSP2PGetRootInfo, pluginHandle_);
     DLSYM_FUNC_OBJ(DSP2PCommInitRootInfo, pluginHandle_);
     DLSYM_FUNC_OBJ(DSP2PCommDestroy, pluginHandle_);
@@ -284,6 +283,13 @@ Status AclDeviceManager::GetDeviceIdx(int32_t &deviceIdx)
                 aclRet));
     }
     return Status::OK();
+}
+
+Status AclDeviceManager::GetPhysicalDeviceId(int32_t logicDeviceIdx, int32_t &physicalDeviceIdx)
+{
+    RETURN_IF_NOT_OK(CheckPluginOk());
+    RETURN_RUNTIME_ERROR_IF_NULL(GetPhysicalDeviceIdFunc_);
+    RETURN_ACL_RESULT(GetPhysicalDeviceIdFunc_(logicDeviceIdx, physicalDeviceIdx));
 }
 
 Status AclDeviceManager::SetDeviceIdx(int32_t deviceId)

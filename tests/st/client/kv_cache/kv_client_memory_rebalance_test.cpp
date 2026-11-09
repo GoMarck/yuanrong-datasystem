@@ -421,7 +421,8 @@ protected:
        if (tokens.size() <= ignoreCount) {
            return -1.0;  // partial line -- worker may be mid-write; caller retries
        }
-       // tokens[ignoreCount] is SHARED_MEMORY = "memUsage/physUsage/totalLimit/rate/streamUsage/streamLimit";
+       // tokens[ignoreCount] is SHARED_MEMORY =
+       // "memUsage/physUsage/totalLimit/rate/streamUsage/streamLimit/fabricMemPhysUsage".
        // field [3] is the usage rate as a fraction (memoryUsage / FootprintLimit).
        auto memFields = Split(tokens[ignoreCount], "/");
        if (memFields.size() < 4) {

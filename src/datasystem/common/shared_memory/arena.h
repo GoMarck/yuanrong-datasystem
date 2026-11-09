@@ -315,6 +315,12 @@ public:
     }
 
     /**
+     * @brief Get FabricMem physical memory pre-allocated by all live arenas.
+     * @return FabricMem physical memory size in bytes.
+     */
+    uint64_t GetFabricMemPhysicalMemoryUsage();
+
+    /**
      * @brief pre allocate virtual memory for each arena.
      * @param[in] arenaInds arena index
      * @param[in] maxSize maxSize of shared memory.
@@ -612,6 +618,15 @@ public:
     uint64_t GetMmapSize()
     {
         return mmapSize_;
+    }
+
+    /**
+     * @brief Get FabricMem physical memory pre-allocated by this arena.
+     * @return FabricMem physical memory size in bytes.
+     */
+    uint64_t GetFabricMemPhysicalMemoryUsage() const
+    {
+        return mmap_ == nullptr ? 0 : mmap_->GetPhysicalBackingSize();
     }
 
 private:

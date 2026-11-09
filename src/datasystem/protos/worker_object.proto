@@ -38,6 +38,7 @@ message GetObjectRemoteReqPb {
   UcpRemoteInfoPb ucp_info = 9;
   string comm_id = 10;
   string urma_instance_id = 11;
+  RemoteH2DClientDeviceInfoPb remote_h2d_client_device_info = 12;
 
   // put to the end, the previous data is used to generate AK and SK signatures.
   uint64 timestamp = 100;
@@ -68,6 +69,7 @@ message BatchGetObjectRemoteReqPb {
   bool allow_aggregate_gather = 4;
   // Metadata headroom included by the attesting producer. Zero is a valid attested size.
   uint64 aggregate_gather_metadata_size = 5;
+  RemoteH2DClientDeviceInfoPb remote_h2d_client_device_info = 6;
 
   // put to the end, the previous data is used to generate AK and SK signatures.
   uint64 timestamp = 100;

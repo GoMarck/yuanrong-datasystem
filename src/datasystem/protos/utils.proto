@@ -47,6 +47,13 @@ message RemoteHostSegmentPb {
 
 message RemoteH2DRootInfoPb {
   bytes internal = 1;
+  int32 worker_logic_device_id = 2;
+  int32 worker_physical_device_id = 3;
+}
+
+message RemoteH2DClientDeviceInfoPb {
+  int32 logic_device_id = 1;
+  int32 physical_device_id = 2;
 }
 
 message RemoteH2DDataInfoPb {

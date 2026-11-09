@@ -72,7 +72,15 @@ Status Buffer::Init()
         latch_ = std::make_shared<object_cache::CommonLock>();
         return latch_->Init();
     }
-    if (bufferInfo_->remoteHostInfo != nullptr || bufferInfo_->ubUrmaDataInfo != nullptr) {
+    // Special check for Remote H2D or client UB.
+    // If the remote host info exists, the transfer path owns visibility and latch semantics.
+    // If the URMA info exists, data is sent through UB later and the local fallback buffer must be allocated lazily.
+    if (bufferInfo_->remoteHostInfo != nullptr) {
+        isShm_ = false;
+        latch_ = std::make_shared<object_cache::CommonLock>();
+        return latch_->Init();
+    }
+    if (bufferInfo_->ubUrmaDataInfo != nullptr) {
         bufferInfo_->pointer = nullptr;
         isShm_ = false;
         latch_ = std::make_shared<object_cache::CommonLock>();
@@ -176,8 +184,11 @@ void Buffer::Release(object_cache::ObjectClientImpl *clientPtr)
             bufferInfo_->receiveBufferOwner->Release();
             ownerManagesWorkerReference = bufferInfo_->receiveBufferOwner->ManagesWorkerReference();
         }
-        if (!isShm_ && bufferInfo_->payloadPointer == nullptr && bufferInfo_->pointer
-            && bufferInfo_->ubGetBufferHandle == nullptr) {
+        const bool ownsMallocBuffer = !isShm_ && bufferInfo_->payloadPointer == nullptr
+                                       && bufferInfo_->mmapEntry == nullptr && bufferInfo_->remoteHostInfo == nullptr
+                                       && bufferInfo_->ubGetBufferHandle == nullptr
+                                       && bufferInfo_->pointer != nullptr;
+        if (ownsMallocBuffer) {
             free(bufferInfo_->pointer);
             bufferInfo_->pointer = nullptr;
         }
@@ -418,12 +429,16 @@ Status Buffer::CopyDataWithRLatch(const std::function<Status()> &copyFn)
 
 void *Buffer::MutableData()
 {
-    if (bufferInfo_->pointer == nullptr && bufferInfo_->ubUrmaDataInfo != nullptr) {
-        bufferInfo_->ubDataSentByMemoryCopy = false;
-        Status status = MallocBufferHelper();
-        if (status.IsError()) {
-            LOG(ERROR) << FormatString("Malloc buffer for object %s failed, err: %s", bufferInfo_->objectKey,
-                                       status.ToString());
+    if (bufferInfo_->pointer == nullptr) {
+        if (bufferInfo_->ubUrmaDataInfo != nullptr) {
+            bufferInfo_->ubDataSentByMemoryCopy = false;
+            Status status = MallocBufferHelper();
+            if (status.IsError()) {
+                LOG(ERROR) << FormatString("Malloc buffer for object %s failed, err: %s", bufferInfo_->objectKey,
+                                           status.ToString());
+                return nullptr;
+            }
+        } else {
             return nullptr;
         }
     }

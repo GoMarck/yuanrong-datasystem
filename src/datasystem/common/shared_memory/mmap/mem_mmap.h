@@ -30,7 +30,7 @@ class MemMmap : public BaseMmap {
 public:
     MemMmap() = default;
 
-    ~MemMmap() = default;
+    ~MemMmap() override;
 
     /**
      * @brief Initialize mmap instance.
@@ -40,6 +40,8 @@ public:
      * @return K_OK on success; the error code otherwise.
      */
     Status Initialize(uint64_t size, bool populate = false, bool hugepage = false) override;
+
+    void Destroy() override;
 
     /**
      * @brief Commits any physical resources to back pages at given addr and size at offset bytes,
@@ -64,8 +66,18 @@ public:
      */
     bool Decommit(void *addr, size_t offset, size_t length) override;
 
+    uint64_t GetPhysicalBackingSize() const override;
+
 private:
     bool InRange(void *pointer, ptrdiff_t &offset);
+    Status InitializeFabricMemory(uint64_t size);
+#ifdef ASCEND_SUPPORT_FABRIC_MEM
+    Status GetFabricMemoryDeviceIds(int32_t &logicDevId, int32_t &physicalDevId);
+#endif
+
+    bool fabricMemoryInitialized_ = false;
+    bool fabricUnregistered_ = false;
+    int32_t fabricMemoryDeviceId_ = -1;
 };
 }  // namespace memory
 }  // namespace datasystem

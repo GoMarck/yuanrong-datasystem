@@ -408,6 +408,28 @@ Status WorkerOcServiceCrudCommonApi::UpdateRequestForSuccess(ReadObjectKV &objec
     const auto dataFormat = objectKV.GetObjEntry()->stateInfo.GetDataFormat();
     if (dataFormat == DataFormat::BINARY) {
         if (request != nullptr) {
+            // trigger local pipeline h2d if data is fetched from other point
+            // ignore failure now, this will be treated in fillinresponse
+            if (OsXprtPipln::IsPiplnH2DRequest(request->GetH2DChunkManager())) {
+                OsXprtPipln::MaybeTriggerLocalPipelineRH2D(
+                    request->GetH2DChunkManager(), objectKV.GetObjKey(), objectKV.GetObjEntry()->GetShmUnit(),
+                    objectKV.GetReadOffset() + objectKV.GetObjEntry()->GetMetadataSize(), objectKV.GetReadSize());
+            }
+
+#ifdef USE_NPU
+            if (IsRemoteH2DEnabled() && !request->GetClientCommUuid().empty()
+                && objectKV.GetObjEntry()->GetShmUnit() != nullptr) {
+                auto hostInfo = std::make_shared<RemoteH2DHostInfoPb>();
+                auto blobSizes = objectKV.GetObjEntry()->GetBlobSizes();
+                // This local-hit response goes directly back to the client. Treat it as same-node for HIXL device
+                // selection.
+                RETURN_IF_NOT_OK(FillRemoteH2DHostInfoFromShm(
+                    request->GetClientCommUuid(), objectKV.GetObjEntry()->GetShmUnit(),
+                    objectKV.GetObjEntry()->GetMetadataSize(), true, *hostInfo,
+                    request->GetRemoteH2DClientDeviceInfo(), &blobSizes, true));
+                objectKV.GetObjEntry()->SetRemoteHostInfo(request->GetClientCommUuid(), hostInfo);
+            }
+#endif
             return request->MarkSuccess(objectKV.GetObjKey(), objectKV.GetObjEntry());
         }
         return workerRequestManager_.NotifyPendingGetRequest(objectKV);

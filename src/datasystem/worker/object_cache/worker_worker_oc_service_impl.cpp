@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <thread>
 #include <type_traits>
 #include <utility>
@@ -31,6 +32,7 @@
 
 #include "datasystem/common/inject/inject_point.h"
 #include "datasystem/common/log/access_recorder.h"
+#include "datasystem/common/flags/common_flags.h"
 #include "datasystem/common/log/latency_phase.h"
 #include "datasystem/common/log/log.h"
 #include "datasystem/common/log/trace.h"
@@ -41,6 +43,7 @@
 #include "datasystem/common/object_cache/shm_guard.h"
 #include "datasystem/common/os_transport_pipeline/os_transport_pipeline_worker_api.h"
 #include "datasystem/common/rdma/fast_transport_manager_wrapper.h"
+#include "datasystem/common/shared_memory/allocator.h"
 #ifdef USE_NPU
 #include "datasystem/common/rdma/npu/remote_h2d_manager.h"
 #endif
@@ -561,7 +564,16 @@ Status WorkerWorkerOCServiceImpl::PrepareBatchRh2dContext(const GetObjectRemoteR
         return Status::OK();
     }
 
-    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().GetDevIdForComm(req.comm_id(), batchRh2dContext.devId));
+    if (req.has_remote_h2d_client_device_info()) {
+        batchRh2dContext.hasClientDeviceInfo = true;
+        batchRh2dContext.clientDeviceInfo = req.remote_h2d_client_device_info();
+    }
+    const auto *clientDeviceInfo =
+        batchRh2dContext.hasClientDeviceInfo ? &batchRh2dContext.clientDeviceInfo : nullptr;
+    // Worker-worker remote get is treated as cross-node by flow semantics. A deployment with multiple workers on the
+    // same physical node is not expected here, so do not avoid the original client's device id.
+    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().GetDevIdForComm(req.comm_id(), batchRh2dContext.devId,
+                                                                  clientDeviceInfo));
     RETURN_IF_NOT_OK(RemoteH2DManager::Instance().SetDeviceIdx(batchRh2dContext.devId));
     batchRh2dContext.prepared = true;
 #else
@@ -622,50 +634,77 @@ Status WorkerWorkerOCServiceImpl::GetSafeObjectEntry(const std::string &objectKe
     return Status::OK();
 }
 
-Status WorkerWorkerOCServiceImpl::EstablishConnAndFillSeg(const std::string &commId, const uint64_t &localSegAddress,
-                                                          const uint64_t &localSegSize,
-                                                          std::shared_ptr<ShmUnit> shmUnit, uint64_t metadataSize,
-                                                          GetObjectRemoteRspPb &rsp, RemoteH2DRootInfoPb *batchRootInfo,
-                                                          BatchRh2dContext *batchRh2dContext)
+#ifdef USE_NPU
+Status WorkerWorkerOCServiceImpl::PrepareRemoteH2DConnection(const std::string &commId,
+                                                             const RemoteH2DConnectionInfo &connInfo,
+                                                             GetObjectRemoteRspPb &rsp,
+                                                             RemoteH2DRootInfoPb *&rootInfo, int32_t &devId)
+{
+    const auto *effectiveClientDeviceInfo = connInfo.clientDeviceInfo;
+    if (effectiveClientDeviceInfo == nullptr && connInfo.batchRh2dContext != nullptr
+        && connInfo.batchRh2dContext->hasClientDeviceInfo) {
+        effectiveClientDeviceInfo = &connInfo.batchRh2dContext->clientDeviceInfo;
+    }
+
+    if (connInfo.batchRh2dContext != nullptr && connInfo.batchRh2dContext->prepared) {
+        devId = connInfo.batchRh2dContext->devId;
+    } else {
+        // Worker-worker remote get is treated as cross-node by flow semantics. A deployment with multiple workers on
+        // the same physical node is not expected here, so do not avoid the original client's device id.
+        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().GetDevIdForComm(commId, devId, effectiveClientDeviceInfo));
+        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().SetDeviceIdx(devId));
+    }
+
+    rootInfo = connInfo.batchRootInfo ? connInfo.batchRootInfo : rsp.mutable_host_info()->mutable_root_info();
+    if (rootInfo->internal().empty()) {
+        // Keep worker-worker selection cross-node for the same reason as GetDevIdForComm above.
+        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().P2PGetRootInfo(commId, rootInfo, effectiveClientDeviceInfo));
+    }
+    return Status::OK();
+}
+#endif
+
+Status WorkerWorkerOCServiceImpl::EstablishConnAndFillSeg(const std::string &commId,
+                                                          const RemoteH2DConnectionInfo &connInfo,
+                                                          GetObjectRemoteRspPb &rsp)
 {
     (void)commId;
-    (void)localSegAddress;
-    (void)localSegSize;
-    (void)shmUnit;
-    (void)metadataSize;
+    (void)connInfo;
     (void)rsp;
-    (void)batchRootInfo;
-    (void)batchRh2dContext;
 #ifdef USE_NPU
     PerfPoint point(PerfKey::WORKER_REMOTE_GET_PREPARE_RH2D_HOST_INFO);
 
     int32_t devId = -1;
-    if (batchRh2dContext != nullptr && batchRh2dContext->prepared) {
-        devId = batchRh2dContext->devId;
-    } else {
-        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().GetDevIdForComm(commId, devId));
-        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().SetDeviceIdx(devId));
-    }
-
-    // Send root info to client
-    auto *rootInfo = batchRootInfo ? batchRootInfo : rsp.mutable_host_info()->mutable_root_info();
-    if (rootInfo->internal().empty()) {
-        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().P2PGetRootInfo(commId, rootInfo));
-    }
+    RemoteH2DRootInfoPb *rootInfo = nullptr;
+    RETURN_IF_NOT_OK(PrepareRemoteH2DConnection(commId, connInfo, rsp, rootInfo, devId));
 
     // Initialize communicator connection (accept client).
     std::shared_ptr<RemoteH2DContext> p2pComm;
     RETURN_IF_NOT_OK(RemoteH2DManager::Instance().P2PCommInitRootInfo(commId, *rootInfo, P2P_SENDER, p2pComm, devId,
                                                                       communicatorThreadPool_));
-    // Send segment info to client
-    auto *segmentPb = rsp.mutable_host_info()->mutable_remote_host_segment();
-    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().FillSegmentInfo(localSegSize, shmUnit->GetOffset() + metadataSize,
-                                                                  localSegAddress, *segmentPb, devId));
-
     // Send offset info to client
-    uint64_t *dataPtr = reinterpret_cast<uint64_t *>(static_cast<uint8_t *>(shmUnit->GetPointer()) + metadataSize);
     auto *dataInfoPb = rsp.mutable_host_info()->mutable_data_info();
-    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().FillDataInfo(dataPtr, *dataInfoPb));
+    const auto *blobSizesForDataInfo = connInfo.blobSizes.empty() ? nullptr : &connInfo.blobSizes;
+    if (blobSizesForDataInfo != nullptr) {
+        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().FillDataInfo(*blobSizesForDataInfo, *dataInfoPb));
+    } else {
+        uint64_t *dataPtr = reinterpret_cast<uint64_t *>(
+            static_cast<uint8_t *>(connInfo.shmUnit->GetPointer()) + connInfo.metadataSize);
+        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().FillDataInfo(dataPtr, *dataInfoPb));
+    }
+
+    uint64_t dataSize = 0;
+    for (const auto size : dataInfoPb->sizes()) {
+        CHECK_FAIL_RETURN_STATUS(size <= std::numeric_limits<uint64_t>::max() - dataSize, K_INVALID,
+                                 "Remote H2D data size overflow");
+        dataSize += size;
+    }
+
+    // Send segment info to client. FabricMem synchronizes only this object's data into its physical-backed arena.
+    auto *segmentPb = rsp.mutable_host_info()->mutable_remote_host_segment();
+    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().FillSegmentInfo(
+        connInfo.localSegSize, connInfo.shmUnit->GetOffset() + connInfo.metadataSize, dataInfoPb->offset(), dataSize,
+        connInfo.localSegAddress, *segmentPb, devId));
     point.Record();
 #endif
     return Status::OK();
@@ -951,10 +990,12 @@ Status WorkerWorkerOCServiceImpl::HandlePayloadFallback(
     uint64_t localSegAddress, uint64_t localSegSize)
 {
     if (!isPipelineH2DRequest && IsRemoteH2DEnabled() && !req.comm_id().empty()) {
+        const auto *clientDeviceInfo =
+            req.has_remote_h2d_client_device_info() ? &req.remote_h2d_client_device_info() : nullptr;
+        RemoteH2DConnectionInfo connInfo{ localSegAddress, localSegSize, shmUnit, entry->GetMetadataSize(),
+                                          entry->GetBlobSizes(), batchRootInfo, batchRh2dContext, clientDeviceInfo };
         RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
-            EstablishConnAndFillSeg(req.comm_id(), localSegAddress, localSegSize, shmUnit, entry->GetMetadataSize(),
-                                    rsp, batchRootInfo, batchRh2dContext),
-            "");
+            EstablishConnAndFillSeg(req.comm_id(), connInfo, rsp), "");
         rsp.set_data_source(datasystem::DataTransferSource::DATA_DELAY_TRANSFER);
     }
 
@@ -1215,6 +1256,9 @@ Status WorkerWorkerOCServiceImpl::PrepareBatchGetObjectRemoteReq(BatchGetObjectR
     CHECK_FAIL_RETURN_STATUS(req.requests_size() > 0, K_INVALID, "BatchGetObjectRemote request is empty");
     auto *singleReq = req.mutable_requests(0);
     *(singleReq->mutable_urma_instance_id()) = req.urma_instance_id();
+    if (req.has_remote_h2d_client_device_info()) {
+        singleReq->mutable_remote_h2d_client_device_info()->CopyFrom(req.remote_h2d_client_device_info());
+    }
     if (IsUrmaEnabled()) {
         for (const auto &subReq : req.requests()) {
             if (!subReq.has_urma_info()) {
@@ -1293,11 +1337,17 @@ Status WorkerWorkerOCServiceImpl::BatchGetObjectRemoteImpl(BatchGetObjectRemoteR
         if (req.requests_size() > 0) {
             auto *firstReq = req.mutable_requests(0);
             *(firstReq->mutable_comm_id()) = req.comm_id();
+            if (req.has_remote_h2d_client_device_info()) {
+                firstReq->mutable_remote_h2d_client_device_info()->CopyFrom(req.remote_h2d_client_device_info());
+            }
             RETURN_IF_NOT_OK(PrepareBatchRh2dContext(*firstReq, batchRh2dContext));
         }
         for (int i = 0; i < req.requests_size(); i++) {
             auto *subReq = req.mutable_requests(i);
             *(subReq->mutable_comm_id()) = req.comm_id();
+            if (req.has_remote_h2d_client_device_info()) {
+                subReq->mutable_remote_h2d_client_device_info()->CopyFrom(req.remote_h2d_client_device_info());
+            }
             (void)GetObjectRemoteBatchWrite(parallelSize - 1, *subReq, rsp, parallelRes, nullptr, &batchRh2dContext);
         }
         loopPoint.Record();
@@ -1492,11 +1542,17 @@ Status WorkerWorkerOCServiceImpl::ParallelBatchGetObject(
                 BatchRh2dContext batchRh2dContext = batchTransportContext;
                 auto *firstReq = req.mutable_requests(startPos);
                 *(firstReq->mutable_comm_id()) = req.comm_id();
+                if (req.has_remote_h2d_client_device_info()) {
+                    firstReq->mutable_remote_h2d_client_device_info()->CopyFrom(req.remote_h2d_client_device_info());
+                }
                 LOG_IF_ERROR(PrepareBatchRh2dContext(*firstReq, batchRh2dContext), "PrepareBatchRh2dContext failed");
                 PerfPoint loopPoint(PerfKey::WORKER_SERVER_BATCH_GET_REMOTE_IMPL_LOOP_PARALLEL);
                 for (uint64_t j = startPos; j < endPos; ++j) {
                     auto *subReq = req.mutable_requests(j);
                     *(subReq->mutable_comm_id()) = req.comm_id();
+                    if (req.has_remote_h2d_client_device_info()) {
+                        subReq->mutable_remote_h2d_client_device_info()->CopyFrom(req.remote_h2d_client_device_info());
+                    }
                     GetObjectRemoteBatchWrite(i, *subReq, rsp, parallelRes, batchPtr, &batchRh2dContext);
                 }
                 loopPoint.Record();

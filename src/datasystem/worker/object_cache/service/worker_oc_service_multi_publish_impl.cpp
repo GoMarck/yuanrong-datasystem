@@ -292,6 +292,9 @@ Status WorkerOcServiceMultiPublishImpl::MultiPublishObjectNtx(const MultiPublish
                               static_cast<CacheType>(req.cache_type()), req.object_info(i).data_size(),
                               GetMetadataSize(), *entries[i]);
         }
+        (*entries[i])
+            ->SetBlobSizes(std::vector<uint64_t>(req.object_info(i).blob_sizes().begin(),
+                                                req.object_info(i).blob_sizes().end()));
 
         pointIn.RecordAndReset(PerfKey::WORKER_MULTI_PUBLISH_NTX_ATTACH_TO_ENTRY);
         lastRc = AttachShmUnitToObject(clientId, objectKeys[i], ShmKey::Intern(req.object_info(i).shm_id()),

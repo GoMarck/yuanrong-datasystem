@@ -66,6 +66,9 @@
 #include "datasystem/common/util/uuid_generator.h"
 #include "datasystem/common/rdma/fast_transport_manager_wrapper.h"
 #include "datasystem/common/rpc/brpc_factory.h"
+#ifdef USE_NPU
+#include "datasystem/common/rdma/npu/remote_h2d_manager.h"
+#endif
 #include "datasystem/common/rpc/brpc_stream_close_helper.h"
 #include "datasystem/common/rpc/rpc_stub_cache_mgr.h"
 #include "datasystem/common/rpc/unix_sock_fd.h"
@@ -153,6 +156,7 @@ DS_DEFINE_validator(sc_local_cache_memory_size_mb, &Validator::ValidateLocalCach
 DS_DEFINE_validator(page_size, &Validator::ValidatePageSize);
 DS_DECLARE_int32(sc_regular_socket_num);
 DS_DECLARE_int32(sc_stream_socket_num);
+DS_DECLARE_bool(oc_metadata_header);
 DS_DECLARE_string(unix_domain_socket_dir);
 DS_DECLARE_string(etcd_address);
 DS_DECLARE_string(monitor_config_file);
@@ -253,6 +257,44 @@ constexpr auto WORKER_PROBE_POLL_INTERVAL = std::chrono::milliseconds(1);
 constexpr auto WORKER_PROBE_REPORT_BUDGET = std::chrono::seconds(3);
 constexpr auto WORKER_PROBE_REPORT_RETRY_DELAY = std::chrono::milliseconds(100);
 constexpr int32_t WORKER_PROBE_REPORT_ATTEMPT_TIMEOUT_MS = 1'000;
+
+#ifdef USE_NPU
+Status ValidateHccsFabricMemWorkerConfig()
+{
+    RETURN_OK_IF_TRUE(!RemoteH2DManager::IsRemoteH2DEnabled());
+    RETURN_OK_IF_TRUE(FLAGS_remote_h2d_link_type != "HCCS" || !FLAGS_remote_h2d_hccs_enable_fabric_mem);
+
+    std::vector<std::string> requiredOptions;
+    if (FLAGS_sc_regular_socket_num != 0) {
+        requiredOptions.emplace_back("--sc_regular_socket_num=0");
+    }
+    if (FLAGS_sc_stream_socket_num != 0) {
+        requiredOptions.emplace_back("--sc_stream_socket_num=0");
+    }
+    if (FLAGS_oc_metadata_header) {
+        requiredOptions.emplace_back("--oc_metadata_header=false");
+    }
+    if (FLAGS_enable_shm_decrease_ref_queue) {
+        requiredOptions.emplace_back("--enable_shm_decrease_ref_queue=false");
+    }
+    if (FLAGS_enable_pipeline_h2d) {
+        requiredOptions.emplace_back("--enable_pipeline_h2d=false");
+    }
+    RETURN_OK_IF_TRUE(requiredOptions.empty());
+
+    std::string requiredOptionsStr;
+    for (size_t i = 0; i < requiredOptions.size(); ++i) {
+        if (i > 0) {
+            requiredOptionsStr += ", ";
+        }
+        requiredOptionsStr += requiredOptions[i];
+    }
+    RETURN_STATUS_LOG_ERROR(K_INVALID,
+                            FormatString("[RH2D] HCCS FabricMem requires legacy shm queues to be disabled. "
+                                         "Please set: %s",
+                                         requiredOptionsStr));
+}
+#endif
 
 struct PendingControlBackendProbe {
     cluster::MemberIdentity peer;
@@ -604,6 +646,16 @@ static bool ValidateEtcdOrMetastoreAddress()
     return true;
 }
 
+void ShutdownHccsTransportBeforeAllocator()
+{
+#ifdef USE_NPU
+    if (RemoteH2DManager::IsRemoteH2DEnabled() && FLAGS_remote_h2d_link_type == "HCCS") {
+        LOG_IF_ERROR(RemoteH2DManager::Instance().ShutdownTransport(),
+                     "Shutdown HCCS transport before releasing physical-backed arenas failed");
+    }
+#endif
+}
+
 WorkerOCServer::WorkerOCServer(HostPort workerAddr, HostPort bindAddr, HostPort masterAddr,
                                std::shared_ptr<ICoordinatorDiscovery> coordinatorDiscovery)
     : CommonServer(std::move(workerAddr), std::move(bindAddr)),
@@ -685,6 +737,7 @@ WorkerOCServer::~WorkerOCServer()
     // All Engine threads and business borrowers are stopped. Destroy Engine while Store/Proxy and callback owners are
     // still alive, and before the process allocator is shut down.
     topologyEngine_.reset();
+    ShutdownHccsTransportBeforeAllocator();
     datasystem::memory::Allocator::Instance()->Shutdown();
 }
 
@@ -2448,6 +2501,9 @@ Status WorkerOCServer::InitRpcAndMemoryRuntime()
                              "jemalloc_stats requires brpc_enable_builtin_services=true");
     // Configure HCCS worker IP before any allocator/mmap path can trigger RemoteH2DManager::Instance()
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(SetRH2DLocalEndpointIp(hostPort_.Host()), "Failed to configure HCCS worker IP");
+#ifdef USE_NPU
+    RETURN_IF_NOT_OK(ValidateHccsFabricMemWorkerConfig());
+#endif
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(InitializeRemoteH2DManager(), "Remote H2D transport init failed");
 
     int brpcPort = bindHostPort_.Port();
@@ -2466,6 +2522,17 @@ Status WorkerOCServer::InitRpcAndMemoryRuntime()
                                          sharedMemoryBytes, sharedDiskBytes, FLAGS_shared_memory_populate, true,
                                          decayMs, FLAGS_oc_shm_threshold_percentage, FLAGS_sc_shm_threshold_percentage),
                                      "Init allocator failed");
+    if (!FLAGS_enable_shm_decrease_ref_queue) {
+        auto *allocator = datasystem::memory::Allocator::Instance();
+        std::shared_ptr<memory::ArenaGroup> arenaGroup;
+        RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
+            allocator->GetArenaManager()->GetOrCreateArenaGroup(
+                { DEFAULT_TENANT_ID, memory::CacheType::MEMORY },
+                allocator->GetMaxMemoryLimit(memory::CacheType::MEMORY), arenaGroup),
+            "Pre-create shared memory arena failed");
+        LOG(INFO) << "Shared memory arena initialized during worker startup because the decrease-reference queue is "
+                     "disabled";
+    }
     // Call base class to init common service
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(CommonServer::Init(), "CommonServer init failed");
     return Status::OK();
@@ -3660,6 +3727,8 @@ Status WorkerOCServer::Shutdown()
     }
     // Stop metastore service if it was started
     RETURN_IF_NOT_OK(StopMetaStoreService());
+    // Stop HIXL channels before allocator teardown can unregister/free FabricMem arenas.
+    ShutdownHccsTransportBeforeAllocator();
     // Notify the pre-stop script to stop.
     errno = 0;
     std::ofstream ofs(checkFilePath_);

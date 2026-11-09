@@ -17,6 +17,7 @@
 #define DATASYSTEM_COMMON_RPC_REMOTE_H2D_MANAGER_H
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -81,7 +82,7 @@ struct RemoteH2DContext {
     std::shared_ptr<aclrtStream> stream{ nullptr };
 
     std::mutex mutex;
-    int32_t devId;
+    int32_t devId{ -1 };
 };
 
 using CommunicatorMap = LockMap<std::string, std::shared_ptr<RemoteH2DContext>>;
@@ -124,6 +125,14 @@ public:
     Status GetClientDeviceId(int32_t &devId);
 
     /**
+     * @brief Get the client's RemoteH2D device information used by workers to avoid same-card HIXL connection when the
+     *        active transport requires that constraint.
+     * @param[out] deviceInfo The logical and physical device id.
+     * @return Status of the call
+     */
+    Status GetClientRemoteH2DDeviceInfo(RemoteH2DClientDeviceInfoPb &deviceInfo);
+
+    /**
      * @brief Get a vector of device ids the worker is allowed to use, as specified by the flag remote_h2d_device_ids.
      * @param[out] devIds The vector of device ids.
      * @return Status of the call.
@@ -137,29 +146,44 @@ public:
      * @brief Get the root info for communicator connection.
      * @param[in] key The client uuid for the connection.
      * @param[out] p2pRootInfo The p2p root info for communicator connection.
+     * @param[in] clientDeviceInfo Optional client device information.
+     * @param[in] avoidClientDeviceForSameNode Whether to avoid selecting the client's physical device. Set it only for
+     *            direct same-node client-worker HIXL transfer.
      * @return Status of the call.
      */
-    Status P2PGetRootInfo(const std::string &key, RemoteH2DRootInfoPb *p2pRootInfo);
+    Status P2PGetRootInfo(const std::string &key, RemoteH2DRootInfoPb *p2pRootInfo,
+                          const RemoteH2DClientDeviceInfoPb *clientDeviceInfo = nullptr,
+                          bool avoidClientDeviceForSameNode = false);
 
     /**
      * @brief Fill the segment info for device side import purposes.
      * @param[in] segLen The segment size.
      * @param[in] segDataOffset The actual data starting offset.
+     * @param[in] dataOffset The object data offset relative to segDataOffset.
+     * @param[in] dataSize The object data size to prepare for transfer.
      * @param[in] key The segment address as the key.
      * @param[out] segmentPb The segment protobuf to be filled.
      * @param[in] devId Specify the device id to execute on.
      * @return Status of the call.
      */
-    Status FillSegmentInfo(uint64_t segLen, uint64_t segDataOffset, uint64_t key, RemoteHostSegmentPb &segmentPb,
-                           int32_t devId);
+    Status FillSegmentInfo(uint64_t segLen, uint64_t segDataOffset, uint64_t dataOffset, uint64_t dataSize,
+                           uint64_t key, RemoteHostSegmentPb &segmentPb, int32_t devId);
 
     /**
      * @brief Fill the data info for device side import purposes.
      * @param[in] dataPtr data info starting address
-     * @param[out] dataIntoPb The data info protobuf to be filled.
+     * @param[out] dataInfoPb The data info protobuf to be filled.
      * @return Status of the call.
      */
     Status FillDataInfo(uint64_t *dataPtr, RemoteH2DDataInfoPb &dataInfoPb);
+
+    /**
+     * @brief Fill data info from external blob metadata for a payload-only HIXL object.
+     * @param[in] blobSizes Blob sizes in payload order.
+     * @param[out] dataInfoPb The data info protobuf to be filled.
+     * @return Status of the call.
+     */
+    Status FillDataInfo(const std::vector<uint64_t> &blobSizes, RemoteH2DDataInfoPb &dataInfoPb);
 
     /**
      * @brief Establish communicator connection, in blocking manner.
@@ -200,6 +224,13 @@ public:
     Status UnregisterDeviceMemory(const std::vector<void *> &data);
 
     /**
+     * @brief Unregister host memory before its backing allocation is released.
+     * @param[in] data The registered memory base address.
+     * @return Status of the call.
+     */
+    Status UnregisterHostMemory(void *data);
+
+    /**
      * @brief Initialization helper.
      * @return Status of the call.
      */
@@ -218,6 +249,12 @@ public:
     Status Uninit();
 
     /**
+     * @brief Disconnect and finalize the transport while keeping ACL available for arena release.
+     * @return Status of the call.
+     */
+    Status ShutdownTransport();
+
+    /**
      * @brief Helper function to import the segment.
      * @param[in] remoteEndpoint Remote identity string (base64 for RoCE, IP:port for HCCS)
      * @param[in] seg The memory address segment info.
@@ -234,11 +271,26 @@ public:
     Status ScatterBatch(P2pScatterEntry *entries, uint32_t size, std::shared_ptr<RemoteH2DContext> p2pComm);
 
     /**
+     * @brief Batch one-sided HIXL transfer.
+     * @param[in] op READ: remote host to local device; WRITE: local device to remote host.
+     * @param[in] descs Transfer descriptors.
+     * @param[in] p2pComm The p2p communicator context.
+     * @return Status of the call.
+     */
+    Status TransferBatch(HixlTransferOp op, const std::vector<HixlTransferDesc> &descs,
+                         std::shared_ptr<RemoteH2DContext> p2pComm);
+
+    /**
      * @brief Gets the assigned device id for the passed commId. If there is no assigned devId, it is assigned one.
      * @param[in] commId The commId to get the device id of
      * @param[out] devId The retrieved devId
+     * @param[in] clientDeviceInfo Optional client device information.
+     * @param[in] avoidClientDeviceForSameNode Whether to avoid selecting the client's physical device. Set it only for
+     *            direct same-node client-worker HIXL transfer.
      */
-    Status GetDevIdForComm(const std::string &commId, int32_t &devId);
+    Status GetDevIdForComm(const std::string &commId, int32_t &devId,
+                           const RemoteH2DClientDeviceInfoPb *clientDeviceInfo = nullptr,
+                           bool avoidClientDeviceForSameNode = false);
 
     /**
      * @brief Configure the local H2D endpoint IP for HCCS.
@@ -254,12 +306,13 @@ public:
      *        When localIp is provided, SetRH2DLocalEndpointIp is called internally
      *        so callers do not have to make the second call separately. Worker processes call
      *        SetRH2DLocalEndpointIp directly and do not call this function.
-     * @param[in] enableRemoteH2D Whether to enable remote host to device data transfer.
+     * @param[in] enableHeteroTransport Whether to enable hetero device transport.
      * @param[in] devId The NPU device id.
      * @param[in] localIp Optional. Local IP address for HCCS endpoint.
      * @return Status of the call.
      */
-    static Status SetClientRemoteH2DConfig(bool enableRemoteH2D, uint32_t devId, const std::string &localIp = "");
+    static Status UpdateClientHeteroTransportConfig(bool enableHeteroTransport, uint32_t devId,
+                                                    const std::string &localIp = "");
 
     void AfterFork();
 
@@ -275,10 +328,35 @@ private:
     void CleanupDisconnectedClients(const std::vector<std::string> &disconnected);
     void EnsureStateMaps();
     Status GetConnectionIdentityForComm(const std::string &commId, std::string &identity);
+    Status InitAclRuntime();
+    Status PrepareTransportDeviceIds(std::vector<int32_t> &workerDevIdsForInit);
+    Status StartHeartbeatThread();
     static std::unique_ptr<RH2DTransportStrategy> CreateTransport();
+    Status EnsureTransportForCurrentConfig();
+    Status ResolvePhysicalDeviceId(int32_t logicDeviceId, int32_t &physicalDeviceId);
+    Status GetWorkerPhysicalDeviceId(int32_t logicDeviceId, int32_t &physicalDeviceId);
+    Status RegisterHostMemoryOnDevice(int32_t devId, void *data, uint64_t dataSize);
+    Status SelectWorkerDeviceId(const std::vector<int32_t> &devIds,
+                                const RemoteH2DClientDeviceInfoPb *clientDeviceInfo,
+                                bool avoidClientDeviceForSameNode, int32_t &devId);
+    void FillRootInfoDeviceFields(int32_t devId, RemoteH2DRootInfoPb *p2pRootInfo);
+
+    struct ClientHeteroTransportConfig {
+        bool enableHeteroTransport = false;
+        int32_t devId = -1;
+        std::string localIp;
+    };
+
+    static bool IsSameClientHeteroTransportConfig(bool enableHeteroTransport, uint32_t devId,
+                                                  const std::string &localIp);
+    static Status CheckClientHeteroTransportConfig(bool enableHeteroTransport, uint32_t devId,
+                                                   const std::string &localIp);
+    static void CommitClientHeteroTransportConfig(bool enableHeteroTransport, uint32_t devId,
+                                                  const std::string &localIp);
 
     static std::string hccsLocalEndpointIp_;
     static bool isClient_;
+    static std::mutex configMutex_;
 
     // Root info string to p2p communicator mapping.
     mutable std::shared_timed_mutex communicatorMutex_;
@@ -289,11 +367,12 @@ private:
     std::unique_ptr<HostSegmentMap> hostSegmentMap_;
     // Segment info to imported remote segment mapping (RoCE only).
     std::unique_ptr<RemoteSegmentMap> remoteSegmentMap_;
-    // List of all device ids the worker is allowed to use
+    // Effective worker device ids used by the current transport mode.
     std::vector<int32_t> workerDeviceIds_;
-    // Whether or not RemoteH2D is enabled
-    static bool enableRemoteH2D_;
-    static int32_t clientDeviceId_;
+    // Worker logical device id to physical device id. Filled during worker RemoteH2D initialization.
+    std::unordered_map<int32_t, int32_t> workerPhysicalDeviceIds_;
+    // Worker processes are enabled by remote_h2d_device_ids.
+    static ClientHeteroTransportConfig clientConfig_;
     // CommId to device id mapping
     tbb::concurrent_hash_map<std::string, int32_t> commDevIdMap_;
     // Index for the next Worker device used by RoCE communicators.
@@ -304,11 +383,15 @@ private:
     std::mutex heartbeatMutex_;
     std::unordered_map<std::string, std::shared_ptr<std::function<int()>>> clientDisconnectChecks_;
     std::unordered_map<std::string, std::shared_ptr<std::function<int()>>> clientPingFunctions_;
+    std::mutex interruptMutex_;
+    std::condition_variable interruptCv_;
     std::atomic<bool> interrupted_{ false };
     int64_t heartbeatIntervalS_{ 30 };
     int64_t heartbeatTimeoutS_{ 60 };
 
     // Transport strategy
+    std::mutex initMutex_;
+    bool initialized_ = false;
     std::shared_ptr<RH2DTransportStrategy> transport_;
     Status initStatus_;
     bool aclInitialized_{ false };

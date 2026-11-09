@@ -533,6 +533,7 @@ Status Allocator::GetMemStat(ShmMemStat &shmMemStat)
     shmMemStat.realMemoryUsage = objectMemoryStats_->RealUsage() + streamMemoryStats_->RealUsage();
     shmMemStat.objectMemoryUsage = objectMemoryStats_->Usage();
     shmMemStat.physicalMemoryUsage = GetTotalPhysicalMemoryUsage();
+    shmMemStat.fabricMemPhysicalMemoryUsage = arenaManager_->GetFabricMemPhysicalMemoryUsage();
     shmMemStat.numOfFds = arenaManager_->GetArenaCounts();
     shmMemStat.numOfAllocated = totalNumOfAllocated_;
     shmMemStat.refPageCount = refPageCount_.load(std::memory_order_relaxed);

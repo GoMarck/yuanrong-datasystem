@@ -95,6 +95,10 @@ std::string Rh2dWorkerFlags()
     if (linkType && strlen(linkType) > 0) {
         flags += std::string(" -remote_h2d_link_type=") + linkType + " ";
     }
+    const char *enableFabricMem = std::getenv("DS_RH2D_HCCS_ENABLE_FABRIC_MEM");
+    if (enableFabricMem && strlen(enableFabricMem) > 0) {
+        flags += std::string(" -remote_h2d_hccs_enable_fabric_mem=") + enableFabricMem + " ";
+    }
     const char *bufferPool = std::getenv("DS_RH2D_HCCS_BUFFER_POOL");
     if (bufferPool && strlen(bufferPool) > 0) {
         flags += std::string(" -remote_h2d_hccs_buffer_pool=") + bufferPool + " ";
@@ -106,6 +110,12 @@ std::string Rh2dWorkerFlags()
     return flags;
 }
 
+std::string HccsBufferPoolFlag()
+{
+    const char *bufferPool = std::getenv("DS_RH2D_HCCS_BUFFER_POOL");
+    return bufferPool != nullptr && strlen(bufferPool) > 0 ? bufferPool : "4:8";
+}
+
 bool IsHccsLinkType()
 {
     const char *linkType = std::getenv("DS_RH2D_LINK_TYPE");
@@ -113,6 +123,26 @@ bool IsHccsLinkType()
         return false;
     }
     return std::string(linkType) == "HCCS" || std::string(linkType) == "hccs";
+}
+
+void SetEnvIfUnset(const char *name, const char *value)
+{
+    const char *current = std::getenv(name);
+    if (current == nullptr || strlen(current) == 0) {
+        setenv(name, value, 1);
+    }
+}
+
+uint64_t GetPerfCount(const std::string &key)
+{
+    std::vector<std::pair<std::string, PerfInfo>> infos;
+    PerfManager::Instance()->GetPerfInfoList(infos);
+    for (const auto &info : infos) {
+        if (info.first == key) {
+            return info.second.count.load();
+        }
+    }
+    return 0;
 }
 }  // namespace
 
@@ -166,6 +196,17 @@ public:
 public:
     std::mt19937 gen_;
     int32_t deviceId_ = BASE_DEV_ID;
+};
+
+class DevObjectHeteroRH2DNoShmQueueTest : public DevObjectHeteroRH2DTest {
+public:
+    void SetClusterSetupOptions(ExternalClusterOptions &opts) override
+    {
+        DevObjectHeteroRH2DTest::SetClusterSetupOptions(opts);
+        opts.workerGflagParams +=
+            " -sc_regular_socket_num=0 -sc_stream_socket_num=0 -oc_metadata_header=false "
+            "-enable_shm_decrease_ref_queue=false ";
+    }
 };
 
 class DevObjectHeteroRH2DMismatchTest : public DevObjectHeteroRH2DTest {
@@ -262,6 +303,185 @@ class DevObjectHeteroRH2DMultiDevTest : public DevObjectHeteroRH2DTest {
         opts.numEtcd = 1;
         FLAGS_v = 0;
     }
+};
+
+class DevObjectHeteroRH2DPhysicalShmTest : public DevTestHelper {
+protected:
+    virtual std::string HccsFabricMemFlag() const
+    {
+        return "false";
+    }
+
+    void SetClusterSetupOptions(ExternalClusterOptions &opts) override
+    {
+        opts.numWorkers = 1;
+        opts.workerGflagParams =
+            " -v=1 -authorization_enable=true -shared_memory_size_mb=4096 -enable_fallocate=false "
+            "-arena_per_tenant=2 -ipc_through_shared_memory=true -oc_shm_transfer_threshold_kb=1 "
+            "-sc_regular_socket_num=0 -sc_stream_socket_num=0 -oc_metadata_header=false "
+            "-enable_shm_decrease_ref_queue=false "
+            "-enable_remote_h2d=true -remote_h2d_link_type=HCCS -remote_h2d_hccs_enable_fabric_mem="
+            + HccsFabricMemFlag() + " -remote_h2d_hccs_buffer_pool=" + HccsBufferPoolFlag()
+            + " -remote_h2d_device_ids=3 ";
+        opts.enableDistributedMaster = "false";
+        opts.numEtcd = 1;
+        FLAGS_v = 1;
+    }
+
+    void SetUp() override
+    {
+        UseAclMockIfNoDeviceBackend();
+        SaveEnv("DS_RH2D_LINK_TYPE");
+        SaveEnv("DS_RH2D_HCCS_ENABLE_FABRIC_MEM");
+        SaveEnv("DS_RH2D_HCCS_BUFFER_POOL");
+        SaveEnv("HCCL_INTRA_ROCE_ENABLE");
+        setenv("DS_RH2D_LINK_TYPE", "HCCS", 1);
+        setenv("DS_RH2D_HCCS_ENABLE_FABRIC_MEM", HccsFabricMemFlag().c_str(), 1);
+        SetEnvIfUnset("DS_RH2D_HCCS_BUFFER_POOL", "4:8");
+        unsetenv("HCCL_INTRA_ROCE_ENABLE");
+        ExternalClusterTest::SetUp();
+    }
+
+    void TearDown() override
+    {
+        ExternalClusterTest::TearDown();
+        RestoreEnv();
+    }
+
+    void InitTestDsClientForHccs(uint32_t workerIndex, std::shared_ptr<DsClient> &client)
+    {
+        ConnectOptions connectOptions;
+        constexpr int32_t timeoutMs = 60000;
+        InitConnectOpt(workerIndex, connectOptions, timeoutMs);
+        connectOptions.enableRemoteH2D = true;
+        client = std::make_shared<DsClient>(connectOptions);
+        DS_ASSERT_OK(client->Init());
+    }
+
+    void RunPhysicalLocalMGetH2D()
+    {
+        constexpr size_t numOfObjs = 2;
+        constexpr size_t blksPerObj = 4;
+        constexpr size_t blkSz = 1024;
+        std::vector<std::string> objectKeys;
+        std::vector<std::string> failedKeys;
+        std::vector<DeviceBlobList> devGetBlobList;
+        std::vector<DeviceBlobList> devSetBlobList;
+
+        InitAcl(0);
+        for (auto i = 0ul; i < numOfObjs; i++) {
+            objectKeys.emplace_back(FormatString("hccs_physical_h2d_shm_key_%zu", i));
+        }
+        PrePareDevData(numOfObjs, blksPerObj, blkSz, devGetBlobList, devSetBlobList, 0);
+
+        std::shared_ptr<DsClient> setClient;
+        InitTestDsClientForHccs(0, setClient);
+        PerfManager::Instance()->ResetPerfLog();
+        DS_ASSERT_OK(setClient->Hetero()->MSetD2H(objectKeys, devSetBlobList));
+        EXPECT_GT(GetPerfCount("HCCS_HIXL_TRANSFER_SYNC_WRITE"), 0ul)
+            << "MSetD2H did not record HIXL WRITE transfer; it may have fallen back to host memcpy.";
+        setClient->ShutDown();
+
+        std::shared_ptr<DsClient> getClient;
+        InitTestDsClientForHccs(0, getClient);
+        DS_ASSERT_OK(getClient->Hetero()->MGetH2D(objectKeys, devGetBlobList, failedKeys, DEFAULT_GET_TIMEOUT));
+        ASSERT_TRUE(failedKeys.empty());
+        EXPECT_GT(GetPerfCount("HCCS_HIXL_TRANSFER_SYNC_READ"), 0ul)
+            << "MGetH2D did not record HIXL READ transfer; it may have fallen back to payload/shm copy.";
+        DS_ASSERT_OK(IsSameContent(devGetBlobList, devSetBlobList, 'b'));
+        getClient->ShutDown();
+    }
+
+private:
+    void SaveEnv(const char *name)
+    {
+        const char *value = std::getenv(name);
+        if (value == nullptr) {
+            unsetEnvNames_.emplace_back(name);
+        } else {
+            savedEnvValues_.emplace_back(name, value);
+        }
+    }
+
+    void RestoreEnv()
+    {
+        for (const auto &name : unsetEnvNames_) {
+            unsetenv(name.c_str());
+        }
+        for (const auto &item : savedEnvValues_) {
+            setenv(item.first.c_str(), item.second.c_str(), 1);
+        }
+        unsetEnvNames_.clear();
+        savedEnvValues_.clear();
+    }
+
+    std::vector<std::string> unsetEnvNames_;
+    std::vector<std::pair<std::string, std::string>> savedEnvValues_;
+};
+
+class DevObjectHeteroRH2DPhysicalShmWithFabricMemTest : public DevObjectHeteroRH2DPhysicalShmTest {
+protected:
+    std::string HccsFabricMemFlag() const override
+    {
+        return "true";
+    }
+};
+
+class DevObjectHeteroHixlLocalH2DD2HTest : public DevObjectHeteroRH2DTest {
+public:
+    void SetUp() override
+    {
+#ifndef ASCEND_HIXL_AVAILABLE
+        GTEST_SKIP() << "HIXL local H2D/D2H ST requires Ascend HIXL HCCS support in the build.";
+#endif
+        if (DeviceManagerFactory::ProbePhysicalBackend() != DeviceBackend::NPU) {
+            GTEST_SKIP() << "HIXL local H2D/D2H ST requires a real Ascend NPU backend.";
+        }
+        SaveEnv("DS_RH2D_LINK_TYPE");
+        SaveEnv("DS_RH2D_HCCS_BUFFER_POOL");
+        SaveEnv("HCCL_INTRA_ROCE_ENABLE");
+        setenv("DS_RH2D_LINK_TYPE", "HCCS", 1);
+        SetEnvIfUnset("DS_RH2D_HCCS_BUFFER_POOL", "4:8");
+        unsetenv("HCCL_INTRA_ROCE_ENABLE");
+        DevObjectHeteroRH2DTest::SetUp();
+        clusterStarted_ = true;
+    }
+
+    void TearDown() override
+    {
+        if (clusterStarted_) {
+            DevObjectHeteroRH2DTest::TearDown();
+            clusterStarted_ = false;
+        }
+        RestoreEnv();
+    }
+
+private:
+    void SaveEnv(const char *name)
+    {
+        const char *value = std::getenv(name);
+        if (value == nullptr) {
+            unsetEnvNames_.emplace_back(name);
+        } else {
+            savedEnvValues_.emplace_back(name, value);
+        }
+    }
+
+    void RestoreEnv()
+    {
+        for (const auto &name : unsetEnvNames_) {
+            unsetenv(name.c_str());
+        }
+        for (const auto &item : savedEnvValues_) {
+            setenv(item.first.c_str(), item.second.c_str(), 1);
+        }
+        unsetEnvNames_.clear();
+        savedEnvValues_.clear();
+    }
+
+    bool clusterStarted_ = false;
+    std::vector<std::string> unsetEnvNames_;
+    std::vector<std::pair<std::string, std::string>> savedEnvValues_;
 };
 
 void DevObjectHeteroRH2DTest::InitTestDsClientForRemoteH2D(uint32_t workerIndex, std::shared_ptr<DsClient> &client)
@@ -450,9 +670,35 @@ void DevObjectHeteroRH2DTest::RunMGetMultiProcessH2DTest(int setWorkerIndex, int
     }
 }
 
+TEST_F(DevObjectHeteroRH2DPhysicalShmTest, DISABLED_HccsPhysicalLocalMGetH2D)
+{
+    RunPhysicalLocalMGetH2D();
+}
+
+TEST_F(DevObjectHeteroRH2DPhysicalShmWithFabricMemTest, DISABLED_HccsFabricMemPhysicalLocalMGetH2D)
+{
+    RunPhysicalLocalMGetH2D();
+}
+
 TEST_F(DevObjectHeteroRH2DTest, DISABLED_RemoteH2DTest1)
 {
     // Test that Remote H2D works for clients and workers on the same node.
+    InitAcl(deviceId_);
+
+    std::vector<size_t> numObjChoices = { 1, 5, 20u, 50u };
+    std::vector<size_t> blkSzChoices = { 73 * 1024, 73 * 1024, 73 * 1024, 73 * 1024 };
+
+    std::shared_ptr<DsClient> client1;
+    std::shared_ptr<DsClient> client2;
+    InitTestDsClientForRemoteH2D(0, client1);
+    InitTestDsClientForRemoteH2D(1, client2);
+
+    RunMGetH2DTest(client1, client2, numObjChoices, blkSzChoices, deviceId_);
+}
+
+TEST_F(DevObjectHeteroRH2DNoShmQueueTest, DISABLED_RemoteH2DPhysicalShmNoQueue)
+{
+    // Test Remote H2D with futex-dependent shm queues disabled for physical-backed arenas.
     InitAcl(deviceId_);
 
     std::vector<size_t> numObjChoices = { 1, 5, 20u, 50u };
@@ -531,6 +777,71 @@ TEST_F(DevObjectHeteroRH2DTest, DISABLED_RemoteH2DPreRegisterDeviceMemory)
         DS_ASSERT_OK(setClient->Hetero()->Delete(objectKeys, failedList));
         ASSERT_TRUE(failedList.empty());
     }
+}
+
+TEST_F(DevObjectHeteroHixlLocalH2DD2HTest, DISABLED_LocalMSetD2HAndMGetH2DUseHixl)
+{
+    ASSERT_TRUE(IsHccsLinkType()) << "Set DS_RH2D_LINK_TYPE=HCCS or use the fixture defaults.";
+    InitAcl(deviceId_);
+
+    constexpr uint32_t workerIndex = 0;
+    constexpr size_t numOfObjs = 3;
+    constexpr size_t blksPerObj = 4;
+    constexpr size_t blkSz = 4096;
+
+    std::shared_ptr<DsClient> client;
+    InitTestDsClientForRemoteH2D(workerIndex, client);
+
+    std::vector<std::string> objectKeys;
+    objectKeys.reserve(numOfObjs);
+    for (size_t i = 0; i < numOfObjs; i++) {
+        objectKeys.emplace_back(GetStringUuid());
+    }
+
+    std::vector<DeviceBlobList> setBlobList;
+    std::vector<std::vector<std::string>> verifyList;
+    PrePareRandomData(numOfObjs, blksPerObj, blkSz, deviceId_, setBlobList, verifyList);
+
+    std::vector<DeviceBlobList> unusedSetBlobList;
+    std::vector<DeviceBlobList> getBlobList;
+    PrePareDevData(numOfObjs, blksPerObj, blkSz, unusedSetBlobList, getBlobList, deviceId_);
+
+    std::vector<void *> preRegisterPtrs;
+    std::vector<uint64_t> preRegisterSizes;
+    auto collectBlobRanges = [&preRegisterPtrs, &preRegisterSizes](const std::vector<DeviceBlobList> &blobLists) {
+        for (const auto &blobList : blobLists) {
+            for (const auto &blob : blobList.blobs) {
+                preRegisterPtrs.emplace_back(blob.pointer);
+                preRegisterSizes.emplace_back(blob.size);
+            }
+        }
+    };
+    collectBlobRanges(setBlobList);
+    collectBlobRanges(getBlobList);
+    DS_ASSERT_OK(client->Hetero()->PreRegisterDeviceMemory(preRegisterPtrs, preRegisterSizes));
+
+    PerfManager::Instance()->ResetPerfLog();
+
+    DS_ASSERT_OK(client->Hetero()->MSetD2H(objectKeys, setBlobList));
+    EXPECT_GT(GetPerfCount("HCCS_HIXL_TRANSFER_SYNC_WRITE"), 0ul)
+        << "MSetD2H did not record HIXL WRITE transfer; it may have fallen back to host memcpy.";
+
+    std::vector<std::string> failedList;
+    DS_ASSERT_OK(client->Hetero()->MGetH2D(objectKeys, getBlobList, failedList, DEFAULT_GET_TIMEOUT));
+    ASSERT_TRUE(failedList.empty());
+    EXPECT_GT(GetPerfCount("HCCS_HIXL_TRANSFER_SYNC_READ"), 0ul)
+        << "MGetH2D did not record HIXL READ transfer; it may have fallen back to payload/shm copy.";
+
+    for (size_t i = 0; i < numOfObjs; i++) {
+        for (size_t j = 0; j < blksPerObj; j++) {
+            CheckDevPtrContent(getBlobList[i].blobs[j].pointer, getBlobList[i].blobs[j].size, verifyList[i][j]);
+        }
+    }
+
+    failedList.clear();
+    DS_ASSERT_OK(client->Hetero()->Delete(objectKeys, failedList));
+    ASSERT_TRUE(failedList.empty());
+    PerfManager::Instance()->PrintPerfLog();
 }
 
 TEST_F(DevObjectHeteroRH2DTest, DISABLED_RemoteH2DTestFFTSContextLimit)
@@ -630,40 +941,44 @@ TEST_F(DevObjectHeteroRH2DMultiDevTest, DISABLED_RemoteH2DTestMultiProcess3)
 
 TEST_F(DevObjectHeteroRH2DMismatchTest, DISABLED_RemoteH2DTestDirection1)
 {
-    // Test that MGetH2D still works with mismatching RH2D configurations.
-    // This testcases tests that the set worker enables RH2D,
+    // Test that HIXL payload-only get fails fast when the set worker enables RH2D,
     // while the get worker disables RH2D.
-    // And also the client enables RH2D.
     InitAcl(deviceId_);
-
-    std::vector<size_t> numObjChoices = { 1, 5, 20u, 50u };
-    std::vector<size_t> blkSzChoices = { 73 * 1024, 73 * 1024, 73 * 1024, 73 * 1024 };
 
     std::shared_ptr<DsClient> client1;
     std::shared_ptr<DsClient> client2;
     InitTestDsClientForRemoteH2D(0, client1);
     InitTestDsClientForRemoteH2D(1, client2);
 
-    RunMGetH2DTest(client1, client2, numObjChoices, blkSzChoices, deviceId_);
+    std::vector<DeviceBlobList> setBlobList;
+    std::vector<DeviceBlobList> getBlobList;
+    std::vector<std::vector<std::string>> verifyList;
+    std::vector<DeviceBlobList> unusedSetBlobList;
+    std::vector<std::string> objectKeys = { GetStringUuid() };
+    PrePareRandomData(1, 31, 73 * 1024, deviceId_, setBlobList, verifyList);
+    PrePareDevData(1, 31, 73 * 1024, unusedSetBlobList, getBlobList, deviceId_);
+
+    DS_ASSERT_OK(client1->Hetero()->MSetD2H(objectKeys, setBlobList));
+    std::vector<std::string> failedList;
+    DS_ASSERT_NOT_OK(client2->Hetero()->MGetH2D(objectKeys, getBlobList, failedList, DEFAULT_GET_TIMEOUT));
+    std::vector<std::string> deleteFailedList;
+    DS_ASSERT_OK(client1->Hetero()->Delete(objectKeys, deleteFailedList));
 }
 
 TEST_F(DevObjectHeteroRH2DMismatchTest, DISABLED_RemoteH2DTestDirection2)
 {
-    // Test that MGetH2D still works with mismatching RH2D configurations.
-    // This testcases tests that the get worker enables RH2D,
-    // while the set worker disables RH2D.
-    // And also the client enables RH2D.
+    // Test that HIXL payload-only create fails fast when the set worker disables RH2D.
     InitAcl(deviceId_);
 
-    std::vector<size_t> numObjChoices = { 1, 5, 20u, 50u };
-    std::vector<size_t> blkSzChoices = { 73 * 1024, 73 * 1024, 73 * 1024, 73 * 1024 };
-
-    std::shared_ptr<DsClient> client1;
     std::shared_ptr<DsClient> client2;
-    InitTestDsClientForRemoteH2D(0, client1);
     InitTestDsClientForRemoteH2D(1, client2);
 
-    RunMGetH2DTest(client2, client1, numObjChoices, blkSzChoices, deviceId_);
+    std::vector<DeviceBlobList> setBlobList;
+    std::vector<std::vector<std::string>> verifyList;
+    std::vector<std::string> objectKeys = { GetStringUuid() };
+    PrePareRandomData(1, 31, 73 * 1024, deviceId_, setBlobList, verifyList);
+
+    DS_ASSERT_NOT_OK(client2->Hetero()->MSetD2H(objectKeys, setBlobList));
 }
 
 TEST_F(DevObjectHeteroRH2DDistributedTest, DISABLED_RemoteH2DTest2)

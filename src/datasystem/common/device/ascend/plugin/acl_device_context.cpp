@@ -44,6 +44,11 @@ int GetDeviceIdx(int32_t &deviceIdx)
     return aclrtGetDevice(&deviceIdx);
 }
 
+int GetPhysicalDeviceId(int32_t logicDeviceIdx, int32_t &physicalDeviceIdx)
+{
+    return aclrtGetPhyDevIdByLogicDevId(logicDeviceIdx, &physicalDeviceIdx);
+}
+
 int SetDeviceIdx(int32_t deviceIdx)
 {
     return aclrtSetDevice(deviceIdx);
@@ -253,24 +258,24 @@ int DSP2PGetCommAsyncError(P2PComm comm, HcclResult *asyncError)
     return 0;
 }
 
-int DSRtNotifyCreate(int32_t deviceId, void **notify)
+int DSRtNotifyCreate(int32_t, void **notify)
 {
-    return rtNotifyCreate(deviceId, notify);
+    return aclrtCreateNotify(reinterpret_cast<aclrtNotify *>(notify), ACL_NOTIFY_DEFAULT);
 }
 
 int DSRtNotifyDestroy(void *notify)
 {
-    return rtNotifyDestroy(notify);
+    return aclrtDestroyNotify(static_cast<aclrtNotify>(notify));
 }
 
 int DSRtNotifyRecord(void *notify, void *stream)
 {
-    return rtNotifyRecord(notify, stream);
+    return aclrtRecordNotify(static_cast<aclrtNotify>(notify), static_cast<aclrtStream>(stream));
 }
 
 int DSRtNotifyWait(void *notify, void *stream)
 {
-    return rtNotifyWait(notify, stream);
+    return aclrtWaitAndResetNotify(static_cast<aclrtNotify>(notify), static_cast<aclrtStream>(stream), 0);
 }
 
 int DSRtGeneralCtrl(uintptr_t *ctrl, uint32_t num, uint32_t type)

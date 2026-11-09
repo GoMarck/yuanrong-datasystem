@@ -22,6 +22,7 @@
 #include <memory>
 #include <mutex>
 
+#include "datasystem/common/flags/common_flags.h"
 #include "datasystem/common/iam/tenant_auth_manager.h"
 #include "datasystem/common/log/latency_phase.h"
 #include "datasystem/common/log/trace.h"
@@ -32,6 +33,7 @@
 #include "datasystem/common/os_transport_pipeline/os_transport_pipeline_worker_api.h"
 #include "datasystem/common/perf/perf_manager.h"
 #include "datasystem/common/rdma/fast_transport_manager_wrapper.h"
+#include "datasystem/common/shared_memory/allocator.h"
 #include "datasystem/common/util/raii.h"
 #include "datasystem/common/object_cache/ub_health_summary_codec.h"
 #include "datasystem/common/util/status_helper.h"
@@ -46,6 +48,25 @@
 namespace datasystem {
 namespace object_cache {
 std::function<Status(const std::string &, uint64_t)> WorkerRequestManager::deleteFunc_ = nullptr;
+
+namespace {
+constexpr uint32_t K_RH2D_WARNING_LOG_EVERY_N = 100;
+
+bool HasRemoteH2DDataInfo(const std::shared_ptr<RemoteH2DHostInfoPb> &hostInfo)
+{
+    return hostInfo != nullptr && hostInfo->has_data_info() && hostInfo->data_info().sizes_size() > 0;
+}
+
+bool HasRemoteH2DDataInfoForComm(const std::shared_ptr<RemoteH2DHostInfoMap> &hostInfoMap,
+                                 const std::string &commId)
+{
+    if (!IsRemoteH2DEnabled() || commId.empty() || hostInfoMap == nullptr) {
+        return false;
+    }
+    RemoteH2DHostInfoMap::const_accessor accessor;
+    return hostInfoMap->find(accessor, commId) && HasRemoteH2DDataInfo(accessor->second);
+}
+}  // namespace
 
 Status GetRequest::Init(const std::string &tenantId, const GetReqPb &req,
                         std::shared_ptr<SharedMemoryRefTable> shmRefTable,
@@ -82,6 +103,10 @@ Status GetRequest::Init(const std::string &tenantId, const GetReqPb &req,
     noQueryL2Cache_ = req.no_query_l2cache();
     enableReturnObjectIndex_ = req.return_object_index();
     clientCommId_ = req.comm_id();
+    hasRemoteH2DClientDeviceInfo_ = req.has_remote_h2d_client_device_info();
+    if (hasRemoteH2DClientDeviceInfo_) {
+        remoteH2DClientDeviceInfo_ = req.remote_h2d_client_device_info();
+    }
     const bool isPipelineH2D = OsXprtPipln::IsPiplnH2DRequest(req);
     const bool needResponseObjectKeys = !enableReturnObjectIndex_ && !isPipelineH2D;
     hasUbGetInfo_ = req.has_urma_info();
@@ -256,6 +281,11 @@ bool GetRequest::NoQueryL2Cache() const
 const std::string &GetRequest::GetClientCommUuid() const
 {
     return clientCommId_;
+}
+
+const RemoteH2DClientDeviceInfoPb *GetRequest::GetRemoteH2DClientDeviceInfo() const
+{
+    return hasRemoteH2DClientDeviceInfo_ ? &remoteH2DClientDeviceInfo_ : nullptr;
 }
 
 H2DChunkManager &GetRequest::GetH2DChunkManager()
@@ -511,7 +541,7 @@ Status GetRequest::ConstructResponse(uint64_t &totalSize, GetRspPb &resp, std::v
         totalSize += params->dataSize;
         rc = AddObjectToResponse(objectKeyUri, *objectInfo, objectIndex, shmEnabled, useUbGet, ubWriteOffset, resp,
                                  payloads, shmBytes);
-        if (shmEnabled
+        if (rc.IsOk() && shmEnabled
             && !(IsRemoteH2DEnabled() && params->shmUnit == nullptr && params->remoteH2DHostInfo
                  && !params->remoteH2DHostInfo->empty())) {
             // If object is shm, we increase the refCnt for client.
@@ -644,6 +674,9 @@ Status GetRequest::AddObjectToResponse(const ObjectKey &objectKeyUri, GetObjInfo
         || (IsRemoteH2DEnabled() && objectInfo.params->remoteH2DHostInfo
             && !objectInfo.params->remoteH2DHostInfo->empty())) {
         GetRspPb::ObjectInfoPb *object = resp.add_objects();
+        bool hasRemoteH2DDataInfo = HasRemoteH2DDataInfoForComm(params->remoteH2DHostInfo, clientCommId_);
+        CHECK_FAIL_RETURN_STATUS(hasRemoteH2DDataInfo || !UsePhysicalFabricArena(), K_NOT_SUPPORTED,
+                                 "FabricMem Get requires HIXL/RH2D host_info support from client.");
         SetShmObjectInfoPb(objectKeyUri, objectIndex, *params, *object);
         if (!object->has_host_info()) {
             objectInfo.offsetInfo.AdjustReadSize(params->dataSize);
@@ -691,7 +724,7 @@ Status GetRequest::AddObjectToResponse(const ObjectKey &objectKeyUri, GetObjInfo
     return Status::OK();
 }
 
-void GetRequest::SetShmObjectInfoPb(const ObjectKey &, size_t objectIndex, GetObjEntryParams &safeEntry,
+void GetRequest::SetShmObjectInfoPb(const ObjectKey &objectKey, size_t objectIndex, GetObjEntryParams &safeEntry,
                                     GetRspPb::ObjectInfoPb &info)
 {
     if (enableReturnObjectIndex_) {
@@ -703,10 +736,20 @@ void GetRequest::SetShmObjectInfoPb(const ObjectKey &, size_t objectIndex, GetOb
         OsXprtPipln::StopPipelineRH2D(chunkManager_, info, objectKey, true /* isOk */);
     }
     // The existence should have been checked at MarkSuccessImpl.
-    RemoteH2DHostInfoMap::const_accessor constAccessor;
-    if (IsRemoteH2DEnabled() && safeEntry.remoteH2DHostInfo
-        && safeEntry.remoteH2DHostInfo->find(constAccessor, clientCommId_)) {
-        *(info.mutable_host_info()) = *(constAccessor->second);
+    bool useRemoteH2DHostInfo = false;
+    if (IsRemoteH2DEnabled() && !clientCommId_.empty() && safeEntry.remoteH2DHostInfo) {
+        RemoteH2DHostInfoMap::const_accessor constAccessor;
+        if (safeEntry.remoteH2DHostInfo->find(constAccessor, clientCommId_)
+            && HasRemoteH2DDataInfo(constAccessor->second)) {
+            *(info.mutable_host_info()) = *(constAccessor->second);
+            useRemoteH2DHostInfo = true;
+        } else {
+            LOG_FIRST_AND_EVERY_N(WARNING, K_RH2D_WARNING_LOG_EVERY_N)
+                << "[RH2D] Local Get response falls back to shm because host_info with data_info is unavailable, "
+                << "objectKey=" << objectKey << ", commIdSize=" << clientCommId_.size();
+        }
+    }
+    if (useRemoteH2DHostInfo) {
         // Leave the shm unit stuff empty to be clearer.
         info.set_store_fd(0);
         info.set_offset(0);
@@ -718,6 +761,9 @@ void GetRequest::SetShmObjectInfoPb(const ObjectKey &, size_t objectIndex, GetOb
         info.set_offset(static_cast<int64_t>(shmUnit->GetOffset()));
         info.set_mmap_size(static_cast<int64_t>(shmUnit->GetMmapSize()));
         info.set_shm_id(shmUnit->id);
+    }
+    if (!safeEntry.blobSizes.empty() && (useRemoteH2DHostInfo || FLAGS_remote_h2d_hccs_enable_fabric_mem)) {
+        info.mutable_blob_sizes()->Add(safeEntry.blobSizes.begin(), safeEntry.blobSizes.end());
     }
     info.set_data_size(static_cast<int64_t>(safeEntry.dataSize));
     info.set_metadata_size(static_cast<int64_t>(safeEntry.metaSize));

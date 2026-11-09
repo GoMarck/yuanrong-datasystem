@@ -50,13 +50,31 @@ Status GetClientCommUuid(std::string &commId)
     return Status::OK();
 }
 
-Status SetClientRemoteH2DConfig(bool enableRemoteH2D, uint32_t devId, const std::string &localIp)
+Status FillClientRemoteH2DDeviceInfo(RemoteH2DClientDeviceInfoPb *deviceInfo, bool *filled)
 {
-    (void)enableRemoteH2D;
+    if (filled != nullptr) {
+        *filled = false;
+    }
+    (void)deviceInfo;
+#ifdef USE_NPU
+    if (IsRemoteH2DEnabled()) {
+        RETURN_RUNTIME_ERROR_IF_NULL(deviceInfo);
+        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().GetClientRemoteH2DDeviceInfo(*deviceInfo));
+        if (filled != nullptr) {
+            *filled = true;
+        }
+    }
+#endif
+    return Status::OK();
+}
+
+Status UpdateClientHeteroTransportConfig(bool enableHeteroTransport, uint32_t devId, const std::string &localIp)
+{
+    (void)enableHeteroTransport;
     (void)devId;
     (void)localIp;
 #ifdef USE_NPU
-    RETURN_IF_NOT_OK(RemoteH2DManager::SetClientRemoteH2DConfig(enableRemoteH2D, devId, localIp));
+    RETURN_IF_NOT_OK(RemoteH2DManager::UpdateClientHeteroTransportConfig(enableHeteroTransport, devId, localIp));
 #endif
     return Status::OK();
 }
@@ -258,6 +276,11 @@ void GetSegmentInfoFromShmUnit(std::shared_ptr<ShmUnit> shmUnit, uint64_t memory
 #elif defined(USE_RDMA)
     is_register_whole_arena = UcpManager::IsRegisterWholeArenaEnabled();
 #endif
+#ifdef USE_NPU
+    if (IsRemoteH2DEnabled() && FLAGS_remote_h2d_link_type == "HCCS") {
+        is_register_whole_arena = true;
+    }
+#endif
     if (is_register_whole_arena) {
         segAddress = memoryAddress - shmUnit->GetOffset();
         segSize = shmUnit->GetMmapSize();
@@ -265,6 +288,66 @@ void GetSegmentInfoFromShmUnit(std::shared_ptr<ShmUnit> shmUnit, uint64_t memory
         segAddress = memoryAddress;
         segSize = shmUnit->GetSize();
     }
+}
+
+Status FillRemoteH2DHostInfoFromShm(const std::string &commId, const std::shared_ptr<ShmUnit> &shmUnit,
+                                    uint64_t metadataSize, bool fillDataInfo, RemoteH2DHostInfoPb &hostInfo,
+                                    const RemoteH2DClientDeviceInfoPb *clientDeviceInfo,
+                                    const std::vector<uint64_t> *blobSizes, bool avoidClientDeviceForSameNode)
+{
+    (void)commId;
+    (void)shmUnit;
+    (void)metadataSize;
+    (void)fillDataInfo;
+    (void)hostInfo;
+    (void)clientDeviceInfo;
+    (void)blobSizes;
+    (void)avoidClientDeviceForSameNode;
+#ifdef USE_NPU
+    RETURN_OK_IF_TRUE(commId.empty() || !IsRemoteH2DEnabled());
+    RETURN_RUNTIME_ERROR_IF_NULL(shmUnit);
+
+    int32_t devId = -1;
+    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().GetDevIdForComm(commId, devId, clientDeviceInfo,
+                                                                  avoidClientDeviceForSameNode));
+    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().SetDeviceIdx(devId));
+
+    auto *rootInfo = hostInfo.mutable_root_info();
+    if (rootInfo->internal().empty()) {
+        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().P2PGetRootInfo(commId, rootInfo, clientDeviceInfo,
+                                                                     avoidClientDeviceForSameNode));
+    }
+
+    std::shared_ptr<RemoteH2DContext> p2pComm;
+    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().P2PCommInitRootInfo(commId, *rootInfo, P2P_SENDER, p2pComm, devId));
+
+    const uint64_t localObjectAddress = reinterpret_cast<uint64_t>(shmUnit->GetPointer());
+    uint64_t localSegAddress = 0;
+    uint64_t localSegSize = 0;
+    GetSegmentInfoFromShmUnit(shmUnit, localObjectAddress, localSegAddress, localSegSize);
+    const uint64_t objectOffsetInSegment = localObjectAddress - localSegAddress;
+    const uint64_t segDataOffset = objectOffsetInSegment + metadataSize;
+    uint64_t dataOffset = 0;
+    uint64_t dataSize = shmUnit->GetSize() - metadataSize;
+    if (fillDataInfo) {
+        auto *dataInfoPb = hostInfo.mutable_data_info();
+        if (blobSizes != nullptr && !blobSizes->empty()) {
+            RETURN_IF_NOT_OK(RemoteH2DManager::Instance().FillDataInfo(*blobSizes, *dataInfoPb));
+        } else {
+            auto *dataPtr = reinterpret_cast<uint64_t *>(static_cast<uint8_t *>(shmUnit->GetPointer()) + metadataSize);
+            RETURN_IF_NOT_OK(RemoteH2DManager::Instance().FillDataInfo(dataPtr, *dataInfoPb));
+        }
+        dataOffset = hostInfo.data_info().offset();
+        dataSize = 0;
+        for (const auto size : hostInfo.data_info().sizes()) {
+            dataSize += size;
+        }
+    }
+    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().FillSegmentInfo(
+        localSegSize, segDataOffset, dataOffset, dataSize, localSegAddress, *hostInfo.mutable_remote_host_segment(),
+        devId));
+#endif
+    return Status::OK();
 }
 
 Status UrmaWritePayload(const UrmaRemoteAddrPb &urmaInfo, const uint64_t &localSegAddress, const uint64_t &localSegSize,

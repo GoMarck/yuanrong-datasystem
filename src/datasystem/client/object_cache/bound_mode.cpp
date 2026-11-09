@@ -1852,14 +1852,21 @@ Status BoundMode::CreateBufferForMultiCreateParamAtIndex(size_t index, bool skip
     }
     auto &shmBuf = createParam.shmBuf;
     std::shared_ptr<ObjectBufferInfo> bufferInfo = nullptr;
+#ifdef BUILD_HETERO
+    if (createParam.remoteHostInfo != nullptr) {
+        bufferInfo = MakeObjectBufferInfo(createParam.objectKey, nullptr, createParam.dataSize,
+                                          createParam.metadataSize, param, false, version, shmBuf->id,
+                                          nullptr, nullptr, std::move(createParam.remoteHostInfo));
+    }
+#endif
 #ifdef USE_URMA
-    if (createParam.urmaDataInfo) {
+    if (bufferInfo == nullptr && createParam.urmaDataInfo) {
         bufferInfo = MakeObjectBufferInfo(createParam.objectKey, nullptr, createParam.dataSize, 0, param, false,
                                           version, shmBuf->id);
         bufferInfo->ubUrmaDataInfo = createParam.urmaDataInfo;
-    } else
+    }
 #endif
-    {
+    if (bufferInfo == nullptr) {
         PerfPoint mmapPoint(PerfKey::CLIENT_MULTI_CREATE_GET_MMAP);
         RETURN_IF_NOT_OK(mmapManager_->LookupUnitsAndMmapFd("", shmBuf));
         auto mmapEntry = mmapManager_->GetMmapEntryByFd(shmBuf->fd);

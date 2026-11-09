@@ -44,7 +44,7 @@ TEST(HixlPluginApiTest, V1LayoutIsStable)
     EXPECT_EQ(sizeof(DsHixlRegisterMemoryRequest), 24U);
     EXPECT_EQ(sizeof(DsHixlTransferRequest), 40U);
     EXPECT_EQ(offsetof(DsHixlApi, create_engine), 8U);
-    EXPECT_EQ(sizeof(DsHixlApi), 80U);
+    EXPECT_EQ(sizeof(DsHixlApi), 96U);
 }
 
 TEST(HixlPluginApiTest, ConsumerDispatchesThroughOpaqueFunctionTable)

@@ -137,7 +137,7 @@ Branch 仅写入普通运行日志，不写入 operation 日志。构建系统�
 
 | JSON 组名 | 子字段 | 对应 resource.log 语义 |
 |-----------|--------|------------------------|
-| `shared_memory` | `memory_usage`、`physical_memory_usage`、`total_limit`、`worker_share_memory_usage` | 共享内存使用 |
+| `shared_memory` | `memory_usage`、`physical_memory_usage`、`total_limit`、`worker_share_memory_usage`、`fabricmem_physical_memory_usage` | 共享内存使用；`fabricmem_physical_memory_usage` 表示 FabricMem arena 初始化阶段已预申请的物理内存，不计入配额与驱逐判断 |
 | `spill_hard_disk` | `space_usage`、`physical_space_usage`、`total_limit`、`worker_spill_hard_disk_usage` | Spill 磁盘使用 |
 | `active_client_count` / `object_count` / `object_size` | （标量） | Client 数 / 对象数 / 对象总大小 |
 | `worker_oc_service_thread_pool` 等 OC 线程池组 | 线程池五元组 | 线程池状态 |

@@ -253,7 +253,7 @@ bool WaitForDerivedState(TopologyRepository &repository, const ExpectedDerivedSt
     while (std::chrono::steady_clock::now() < deadline) {
         bool complete = true;
         for (const auto &task : expected.tasks) {
-            const auto &id = std::visit([](const auto &value) -> const std::string & { return value.taskId; }, task);
+            const std::string id = std::visit([](const auto &value) { return value.taskId; }, task);
             const auto kind = std::holds_alternative<TopologyMigrateTask>(task) ? TopologyTaskKind::MIGRATE
                                                                                 : TopologyTaskKind::DELETE_MEMBER;
             TopologyTask observed;

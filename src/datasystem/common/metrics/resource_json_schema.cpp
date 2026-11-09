@@ -40,8 +40,8 @@ static_assert(RES_METRIC_GROUP_COUNT == DESC_COUNT + 1, "DESC_TABLE out of sync 
 // so the sub-field names would be dead data. Only ods-recorded groups carry their field list.
 const std::array<ResourceFieldDesc, DESC_COUNT> DESC_TABLE = {
     ResourceFieldDesc{ { "memory_usage", "physical_memory_usage", "total_limit", "worker_share_memory_usage",
-        "sc_memory_usage", "sc_memory_limit" },
-        { true, true, true, true, false, false }, '/', true, "shared_memory" },
+        "sc_memory_usage", "sc_memory_limit", "fabricmem_physical_memory_usage" },
+        { true, true, true, true, false, false, true }, '/', true, "shared_memory" },
     ResourceFieldDesc{ { "space_usage", "physical_space_usage", "total_limit", "worker_spill_hard_disk_usage" },
         { true, true, true, true }, '/', true, "spill_hard_disk" },
     ResourceFieldDesc{ { "active_client_count" }, { true }, '/', true, "active_client_count" },

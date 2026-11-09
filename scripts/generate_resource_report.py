@@ -13,7 +13,8 @@ Resource.log Format (pipe-separated, 7 header fields + 22 metric groups):
   $6  trace_id                     UUID
   $7  record_type                  model_kvcache_record
   --- metric fields (enum order, res_metrics.def) ---
-  $8  SHARED_MEMORY                memoryUsage/physicalUsage/totalLimit/shareMemRatio/scMemUsage/scMemLimit
+  $8  SHARED_MEMORY                memoryUsage/physicalUsage/totalLimit/shareMemRatio/scMemUsage/
+                                     scMemLimit/fabricMemPhysicalUsage
   $9  SPILL_HARD_DISK              spaceUsage/physicalSpaceUsage/totalLimit/workerSpillHdUsage
   $10 ACTIVE_CLIENT_COUNT          integer
   $11 OBJECT_COUNT                 integer
@@ -104,7 +105,7 @@ _RE_IP = re.compile(r"\d+\.\d+\.\d+\.\d+")
 # All gauge metric keys collected per time bin
 _GAUGE_KEYS = [
     "mem_usage", "mem_physical", "mem_total_limit", "mem_ratio",
-    "sc_mem_usage", "sc_mem_limit", "object_count", "object_size",
+    "sc_mem_usage", "sc_mem_limit", "fabricmem_physical_memory_usage", "object_count", "object_size",
     "active_clients", "stream_count",
     "etcd_queue_size", "etcd_queue_usage", "etcd_queue_limit",
     "disk_usage", "disk_rate", "sc_cache_usage", "sc_cache_rate",
@@ -219,7 +220,7 @@ def parse_resource_logs(log_files_by_host, since=None, until=None):
                     parsed_lines += 1
                     m = {}
 
-                    # $8 SHARED_MEMORY (6 sub-fields)
+                    # $8 SHARED_MEMORY (7 sub-fields; older logs may have only 6)
                     mem = _parse_sub(parts[7]) if len(parts) > 7 else []
                     m["mem_usage"] = mem[0] if len(mem) > 0 else 0
                     m["mem_physical"] = mem[1] if len(mem) > 1 else 0
@@ -227,6 +228,7 @@ def parse_resource_logs(log_files_by_host, since=None, until=None):
                     m["mem_ratio"] = mem[3] if len(mem) > 3 else 0
                     m["sc_mem_usage"] = mem[4] if len(mem) > 4 else 0
                     m["sc_mem_limit"] = mem[5] if len(mem) > 5 else 0
+                    m["fabricmem_physical_memory_usage"] = mem[6] if len(mem) > 6 else 0
 
                     # $9 SPILL_HARD_DISK (4)
                     spill = _parse_sub(parts[8]) if len(parts) > 8 else []
@@ -502,6 +504,7 @@ def generate_html(cluster_stats, per_host_stats, all_data, output_path, since, u
     mem_usage_avg = [round(s["mem_usage_avg"] / 1024**3, 2) for s in cluster_stats]
     mem_usage_max = [round(s["mem_usage_max"] / 1024**3, 2) for s in cluster_stats]
     mem_limit = [round(s["mem_total_limit_avg"] / 1024**3, 2) for s in cluster_stats]
+    fabricmem_physical = [round(s["fabricmem_physical_memory_usage_avg"] / 1024**3, 2) for s in cluster_stats]
     mem_ratio_avg = [round(s["mem_ratio_avg"] * 100, 1) for s in cluster_stats]
 
     obj_count_avg = [round(s["object_count_avg"]) for s in cluster_stats]
@@ -564,6 +567,7 @@ def generate_html(cluster_stats, per_host_stats, all_data, output_path, since, u
     <tr><td>Host Count</td><td>{host_count}</td></tr>
     <tr><td>Total Records</td><td>{total_records:,}</td></tr>
     <tr><td>Latest Memory Usage (avg)</td><td>{_fmt_bytes(latest['mem_usage_avg'])} / {_fmt_bytes(latest['mem_total_limit_avg'])} ({_fmt_pct(latest['mem_ratio_avg'])})</td></tr>
+    <tr><td>Latest FabricMem Physical</td><td>{_fmt_bytes(latest['fabricmem_physical_memory_usage_avg'])}</td></tr>
     <tr><td>Peak Memory Usage</td><td>{_fmt_bytes(peak_mem['mem_usage_max'])} at {_bin_label(peak_mem['time'], interval_ms)}</td></tr>
     <tr><td>Latest Object Count (avg/host)</td><td>{latest['object_count_avg']:,.0f}</td></tr>
     <tr><td>Peak Object Count</td><td>{peak_obj['object_count_max']:,.0f} at {_bin_label(peak_obj['time'], interval_ms)}</td></tr>
@@ -581,6 +585,7 @@ def generate_html(cluster_stats, per_host_stats, all_data, output_path, since, u
             <td>{s['host_count']}</td>
             <td>{_fmt_bytes(s['mem_usage_avg'])}</td>
             <td>{_fmt_bytes(s['mem_usage_max'])}</td>
+            <td>{_fmt_bytes(s['fabricmem_physical_memory_usage_avg'])}</td>
             <td>{_fmt_pct(s['mem_ratio_avg'])}</td>
             <td>{s['object_count_avg']:,.0f}</td>
             <td>{s['object_count_max']:,.0f}</td>
@@ -736,7 +741,7 @@ select {{ padding: 6px 12px; border-radius: 4px; border: 1px solid #ccc; font-si
 <div class="detail-wrap">
 <table>
 <thead><tr>
-  <th>Time</th><th>Hosts</th><th>Mem Avg</th><th>Mem Max</th><th>Mem%</th>
+  <th>Time</th><th>Hosts</th><th>Mem Avg</th><th>Mem Max</th><th>FabricMem Physical</th><th>Mem%</th>
   <th>Obj Avg</th><th>Obj Max</th><th>Obj Size Avg</th>
   <th>Hit Rate</th><th>Hits</th><th>Requests</th>
   <th>OC TP%</th><th>OC Wait</th><th>Async TP%</th><th>Async Wait</th>
@@ -752,6 +757,7 @@ var timeLabels = __TIMELABELS__;
 var memUsageAvg = __MEM_USAGE_AVG__;
 var memUsageMax = __MEM_USAGE_MAX__;
 var memLimit = __MEM_LIMIT__;
+var fabricmemPhysical = __FABRICMEM_PHYSICAL__;
 var memRatioAvg = __MEM_RATIO_AVG__;
 var objCountAvg = __OBJ_COUNT_AVG__;
 var objCountMax = __OBJ_COUNT_MAX__;
@@ -809,7 +815,7 @@ var c1 = echarts.init(document.getElementById('mem_chart'));
 c1.setOption({{
   title: {{ text: 'Memory Usage Trend (GB)', left: 'center' }},
   tooltip: {{ trigger: 'axis' }},
-  legend: {{ data: ['Avg Usage','Max Usage','Limit'], bottom: 0 }},
+  legend: {{ data: ['Avg Usage','Max Usage','FabricMem Physical','Limit'], bottom: 0 }},
   grid: {{ left: 80, right: 40, top: 50, bottom: 50 }},
   xAxis: {{ type: 'category', data: timeLabels }},
   yAxis: {{ type: 'value', name: 'GB' }},
@@ -817,6 +823,8 @@ c1.setOption({{
     {{ name: 'Avg Usage', type: 'line', data: memUsageAvg, smooth: true, itemStyle: {{ color: '#5470c6' }} }},
     {{ name: 'Max Usage', type: 'line', data: memUsageMax, smooth: true, itemStyle: {{ color: '#ee6666' }},
       areaStyle: {{ color: 'rgba(238,102,102,0.1)' }} }},
+    {{ name: 'FabricMem Physical', type: 'line', data: fabricmemPhysical, smooth: true,
+      lineStyle: {{ type: 'dotted' }}, itemStyle: {{ color: '#3ba272' }} }},
     {{ name: 'Limit', type: 'line', data: memLimit, lineStyle: {{ type: 'dashed' }}, itemStyle: {{ color: '#999' }} }}
   ]
 }});
@@ -1051,6 +1059,7 @@ window.addEventListener('resize', function() {{
         "__MEM_USAGE_AVG__": js_arr(mem_usage_avg),
         "__MEM_USAGE_MAX__": js_arr(mem_usage_max),
         "__MEM_LIMIT__": js_arr(mem_limit),
+        "__FABRICMEM_PHYSICAL__": js_arr(fabricmem_physical),
         "__MEM_RATIO_AVG__": js_arr(mem_ratio_avg),
         "__OBJ_COUNT_AVG__": js_arr(obj_count_avg),
         "__OBJ_COUNT_MAX__": js_arr(obj_count_max),

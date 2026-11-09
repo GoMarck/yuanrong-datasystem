@@ -129,6 +129,8 @@ const DsHixlApi FAKE_API = {
     RegisterMemory,
     DeregisterMemory,
     TransferSync,
+    nullptr,
+    nullptr,
 };
 
 class HixlTransportPluginTest : public testing::Test {

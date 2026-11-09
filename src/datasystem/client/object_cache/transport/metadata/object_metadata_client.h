@@ -130,6 +130,8 @@ private:
     Status HandleMetadataRouteFailure(const HostPort &address, const ObjectMetadataBatch &items, const Status &rc,
                                       bool rpcDispatched, bool quarantineUbBuffers, InlineRequestContext &context,
                                       int32_t &routeDegradationRetries, TransportPhaseLatencyRecorder *recorder);
+    bool TryFallbackUnsupportedShmToTcp(const HostPort &address, const Status &rc, bool rpcDispatched,
+                                        InlineRequestContext &context) const;
     void DelayReleaseUbBuffers(InlineRequestContext &context, const Status &reason,
                                const std::string &reasonSource) const;
     Status HandleUbTransportStatus(const HostPort &provider, ObjectMetadataItem &item,

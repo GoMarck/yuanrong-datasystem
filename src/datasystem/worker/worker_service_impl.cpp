@@ -77,6 +77,7 @@ DS_DEFINE_uint64(oc_shm_transfer_threshold_kb, 500u,
                  "The data threshold to transfer obj data between client and worker via shm, unit is KB");
 DS_DECLARE_bool(enable_p2p_transfer);
 DS_DECLARE_uint32(client_reconnect_wait_s);
+DS_DECLARE_bool(enable_shm_decrease_ref_queue);
 
 namespace datasystem {
 namespace worker {
@@ -155,8 +156,8 @@ Status WorkerServiceImpl::Init()
 
 Status WorkerServiceImpl::GetClientFd(const GetClientFdReqPb &req, GetClientFdRspPb &rsp)
 {
-    INJECT_POINT("worker.before_GetClientFd");
     (void)rsp;
+    INJECT_POINT("worker.before_GetClientFd");
     int socketFd;
     LOG(INFO) << "Start to query client fd, localAddress: " << localAddress_.ToString();
     std::string tenantId;
@@ -174,7 +175,6 @@ Status WorkerServiceImpl::GetClientFd(const GetClientFdReqPb &req, GetClientFdRs
     std::vector<int> workerFds = { req.worker_fds().cbegin(), req.worker_fds().cend() };
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(memory::Allocator::Instance()->CheckWorkerFdTenant(tenantId, workerFds),
                                      "Authenticate workerFd failed.");
-
     LOG(INFO) << "Start to send client fd. worker fds: " << VectorToString(workerFds) << ", socket fd: " << socketFd
               << ", request id: " << req.request_id() << ", client id: " << clientId;
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(SockSendFd(socketFd, shmWorkerPort_ > 0, workerFds, req.request_id()),
@@ -274,7 +274,7 @@ Status WorkerServiceImpl::RegisterClient(const RegisterClientReqPb &req, Registe
     uint64_t mmapSize = 0;
     ptrdiff_t offset = 0;
     ShmKey id;
-    if (req.shm_enabled()) {
+    if (req.shm_enabled() && FLAGS_enable_shm_decrease_ref_queue) {
         RETURN_IF_NOT_OK_PRINT_ERROR_MSG(worker_->GetShmQueueUnit(lockId, fd, mmapSize, offset, id),
                                          "worker process get ShmQ unit failed");
     }

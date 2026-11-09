@@ -54,7 +54,7 @@ public:
 
     Status Init(const std::vector<int32_t> &deviceIds) override;
     Status Init(const std::vector<int32_t> &deviceIds, const Options &options);
-    Status GetConnectionIdentity(std::string *identity) override;
+    Status GetConnectionIdentity(std::string *identity, int32_t devId = -1) override;
     Status GetDeviceEndpoint(int32_t devId, std::string &endpoint) const;
     Status Connect(const std::string &remoteIdentity, P2pKind kind, std::function<int()> *heartbeatCallback) override;
     Status Connect(const std::string &remoteIdentity, int32_t timeoutMs);
@@ -65,15 +65,20 @@ public:
     Status Disconnect(const std::string &remoteIdentity) override;
     Status DisconnectAll() override;
     Status RegisterMemory(void *addr, uint64_t size, P2pSegmentInfo *segInfo) override;
+    Status UnregisterMemory(void *addr) override;
+    Status PrepareRemoteMemory(void *addr, uint64_t offset, uint64_t size, uint64_t *remoteAddr) override;
     Status PreRegisterDeviceMemory(const std::vector<void *> &addrs, const std::vector<uint64_t> &sizes) override;
     Status UnregisterDeviceMemory(const std::vector<void *> &addrs) override;
     Status ImportRemoteAddressInfo(const std::string &remoteEndpoint, const RemoteHostSegmentPb &seg) override;
     Status ScatterBatch(P2pScatterEntry *entries, uint32_t count, const std::string &remoteEndpoint,
                         std::shared_ptr<aclrtStream> stream) override;
+    Status TransferBatch(HixlTransferOp op, const std::vector<HixlTransferDesc> &descs,
+                         const std::string &remoteEndpoint, std::shared_ptr<aclrtStream> stream) override;
     P2pLink LinkType() const override;
     Status WriteBatch(const std::string &remoteEndpoint, const std::vector<DsHixlTransferDesc> &descriptors,
                        int32_t timeoutMs);
     bool UsesBufferPool() const { return bufferPoolEnabled_; }
+    bool AllowSameDeviceConnection() const override;
 
     // Setter for HCCS local IP. Must be called before Init().
     void SetLocalEndpoint(const std::string &ep, bool isClient = false);
@@ -103,8 +108,17 @@ private:
         DsHixlMemHandle handle;
     };
 
+    struct FabricMemoryRegion {
+        void *sourceAddr = nullptr;
+        uint64_t size = 0;
+        std::map<int32_t, DsHixlMemHandle> registrationHandles;
+    };
+
     Status InitializeSingleDevice(int32_t devId, const Options &options, DsHixlEngineHandle &engine,
                                   std::string &endpoint);
+    Status BindDeviceForEngine(int32_t devId) const;
+    Status ResolveDeviceEndpoint(int32_t devId, std::string &endpoint) const;
+    std::string ResolveLocalCommRes(const std::string &bufferPool) const;
     void DestroyEngine(DsHixlEngineHandle engine) const;
     Status CheckReadyLocked() const;
     Status ConnectImpl(const std::string &remoteIdentity, int32_t timeoutMs, bool retainForWrite);
@@ -112,6 +126,15 @@ private:
     Status ValidateDeviceMemoryRegistrationInputs(const std::vector<void *> &addrs,
                                                   const std::vector<uint64_t> &sizes) const;
     static std::string FormatDeviceMemoryRanges(const std::vector<RegisteredDeviceMemory> &registrations);
+    Status DeregisterFabricMemory(const std::shared_ptr<FabricMemoryRegion> &region);
+    Status FillFabricSegmentIdentity(int32_t devId, const std::shared_ptr<FabricMemoryRegion> &region,
+                                     P2pSegmentInfo *segInfo) const;
+    Status RegisterHostMemoryOnEngine(int32_t devId, void *addr, uint64_t size, DsHixlMemHandle &handle);
+    Status EnsureFabricMemoryRegisteredOnDevice(int32_t devId, const std::shared_ptr<FabricMemoryRegion> &region);
+    Status RegisterFabricMemory(void *addr, uint64_t size, P2pSegmentInfo *segInfo);
+    Status RegisterRoceDirectHostMemory(void *addr, uint64_t size);
+    Status TransferFabricMemBatchParallel(HixlTransferOp op, const std::vector<HixlTransferDesc> &descs,
+                                          const std::string &remoteEndpoint);
     Status RegisterDeviceMemoryLocked(uintptr_t addr, uint64_t size);
     Status ReleaseDeviceMemoryLocked(uintptr_t addr, uint64_t size);
     Status ReleaseDeviceMemoryReferenceLocked(uintptr_t addr);
@@ -119,6 +142,11 @@ private:
     bool HasRegisteredHostMemoryLocked(int32_t devId, uintptr_t addr, uint64_t size) const;
     void ClearRegisteredDeviceMemory();
     void ClearRegisteredHostMemory();
+    bool IsHixlRoceDirectMode() const;
+    bool IsHixlFabricMemMode() const;
+    bool IsHixlBufferPoolMode() const;
+    bool ShouldAllowSameDeviceConnection() const;
+    const char *RoleName() const;
 
     // Per-device plugin-owned HIXL engines: devId -> opaque engine handle.
     std::map<int32_t, DsHixlEngineHandle> engines_;
@@ -133,6 +161,11 @@ private:
     bool initialized_ = false;
     HixlMemoryMode hixlMemoryMode_ = HixlMemoryMode::BUFFER_POOL;
     bool bufferPoolEnabled_ = false;
+    // Physical FabricMem arenas keyed by source VA. Each worker HIXL engine that may expose the arena keeps its own
+    // registration handle.
+    std::map<uintptr_t, std::shared_ptr<FabricMemoryRegion>> fabricMemoryRegions_;
+    std::mutex fabricMemoryMutex_;
+    bool allowSameDeviceConnection_ = false;
     std::unordered_set<std::string> activeEndpoints_;
     // Transfers share a lifecycle lease; teardown and registration changes require exclusive access.
     mutable std::shared_timed_mutex lifecycleMutex_;

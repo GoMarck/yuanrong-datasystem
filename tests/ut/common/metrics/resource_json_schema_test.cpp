@@ -33,11 +33,11 @@ class ResourceJsonSchemaTest : public CommonTest {};
 TEST_F(ResourceJsonSchemaTest, SplitMultiField)
 {
     std::vector<std::string> tokens;
-    SplitResourceFields("73814/80000/1073741824/0.069/0/0", '/', tokens);
-    ASSERT_EQ(tokens.size(), static_cast<size_t>(6));
+    SplitResourceFields("73814/80000/1073741824/0.069/0/0/1073741824", '/', tokens);
+    ASSERT_EQ(tokens.size(), static_cast<size_t>(7));
     EXPECT_EQ(tokens[0], "73814");
     EXPECT_EQ(tokens[3], "0.069");
-    EXPECT_EQ(tokens[5], "0");
+    EXPECT_EQ(tokens[6], "1073741824");
 }
 
 // SplitResourceFields: single-field metric (sep == '\0') keeps the whole string as one token.
@@ -58,20 +58,22 @@ TEST_F(ResourceJsonSchemaTest, SplitEmpty)
     EXPECT_EQ(tokens[0], "");
 }
 
-// GetResourceFieldDesc: SHARED_MEMORY has 6 fields, ods records the first 4 (memory/physical/total/usage)
+// GetResourceFieldDesc: SHARED_MEMORY has 7 fields, ods records memory/physical/total/usage/FabricMem physical usage.
 // and drops sc_memory_usage / sc_memory_limit.
 TEST_F(ResourceJsonSchemaTest, SharedMemoryWhitelist)
 {
     const auto &desc = GetResourceFieldDesc(ResMetricName::SHARED_MEMORY);
     EXPECT_EQ(desc.groupName, std::string("shared_memory"));
-    ASSERT_EQ(desc.fieldNames.size(), static_cast<size_t>(6));
+    ASSERT_EQ(desc.fieldNames.size(), static_cast<size_t>(7));
     EXPECT_EQ(desc.fieldNames[0], std::string("memory_usage"));
     EXPECT_EQ(desc.fieldNames[3], std::string("worker_share_memory_usage"));
+    EXPECT_EQ(desc.fieldNames[6], std::string("fabricmem_physical_memory_usage"));
     ASSERT_EQ(desc.recordMask.size(), desc.fieldNames.size());
     EXPECT_TRUE(desc.recordMask[0]);
     EXPECT_TRUE(desc.recordMask[3]);
     EXPECT_FALSE(desc.recordMask[4]);  // sc_memory_usage
     EXPECT_FALSE(desc.recordMask[5]);  // sc_memory_limit
+    EXPECT_TRUE(desc.recordMask[6]);
     EXPECT_TRUE(desc.recordGroup);
 }
 

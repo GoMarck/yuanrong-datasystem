@@ -592,6 +592,12 @@ public:
     Status PreRegisterDeviceMemory(const std::vector<void *> &data, const std::vector<uint64_t> &dataSize);
 
     /**
+     * @brief Initialize the client RemoteH2D transport when enabled.
+     * @return Status of the result.
+     */
+    Status InitRemoteH2D();
+
+    /**
      * @brief For device object, to async get multiple objects
      * @param[in] objectKeys multiple keys support
      * @param[in] devBlobList vector of compose blobInfo
@@ -846,7 +852,8 @@ private:
      * @param[in] existBufferList The tmp buffer list which will be decrease after memory copy
      * @return Status of the result.
      */
-    Status HostDataCopy2Device(const std::vector<DeviceBlobList> &devBlobList, std::vector<Buffer *> &existBufferList);
+    Status HostDataCopy2Device(const std::vector<DeviceBlobList> &devBlobList,
+                               std::vector<Buffer *> &existBufferList);
 
     /**
      * @brief Multiple shared memory and copy data from device.
@@ -865,6 +872,21 @@ private:
                             std::vector<bool> &exists, std::vector<const DeviceBlobList *> &filteredDeviceBlobRefs);
 
     /**
+     * @brief Copy device data into the buffers returned by DeviceDataCreate.
+     * @param[in] filteredDeviceBlobRefs Non-owning pointers to the source device blob lists for newly created
+     * objects.
+     * @param[in,out] bufferList The created host buffers to receive device data.
+     * @param[in] d2hObjects Non-owning views used by the local D2H copy path.
+     * @param[in] memoryAlignment The worker memory alignment for composing legacy POSIX buffers.
+     * @param[in] useHixlPayloadOnlyLayout Whether the created buffers use the HIXL payload-only layout.
+     * @return Status of the result.
+     */
+    Status CopyCreatedDeviceDataFromDevice(const std::vector<const DeviceBlobList *> &filteredDeviceBlobRefs,
+                                           std::vector<std::shared_ptr<Buffer>> &bufferList,
+                                           const std::vector<D2HObjectView> &d2hObjects, uint64_t memoryAlignment,
+                                           bool useHixlPayloadOnlyLayout);
+
+    /**
      * @brief Create multiple objects at a time to the worker.
      * @param[in] objectKeyList The vector of the object key that needs to create.
      * @param[in] dataSizeList The object sizes.
@@ -876,7 +898,8 @@ private:
      */
     Status MultiCreate(const std::vector<std::string> &objectKeyList, const std::vector<uint64_t> &dataSizeList,
                        const FullParam &param, const bool skipCheckExistence,
-                       std::vector<std::shared_ptr<Buffer>> &bufferList, std::vector<bool> &exists);
+                       std::vector<std::shared_ptr<Buffer>> &bufferList, std::vector<bool> &exists,
+                       bool requireRemoteHostInfo = false);
 
     /**
      * @brief Publish multiple objects at a time to the worker.
@@ -1205,7 +1228,7 @@ private:
      * @param[in] devId The device id used by the client
      * @return K_OK on success; an error code otherwise.
      */
-    Status UpdateClientRemoteH2DConfig(int32_t devId);
+    Status UpdateClientHeteroTransportConfig(int32_t devId);
 
     void StartPerfThread();
     void ShutdownPerfThread();
@@ -1348,10 +1371,9 @@ private:
     std::unique_ptr<ClientDeviceObjectManager> devOcImpl_{ nullptr };
     std::mutex preRegisteredDeviceMemoryMutex_;
     std::vector<void *> preRegisteredDeviceMemoryAddrs_;
-    bool enableRemoteH2D_;
+    bool enableHeteroTransport_;
     bool enableClientDirectPipelineH2D_ = false;
     int32_t clientDirectPipelineH2DThreadNum_ = 64;
-    int32_t devId_ = -1;
     std::string deviceId_;
 
     // Protect tbb map globalRefCount_, use unique_lock in for/while loop.

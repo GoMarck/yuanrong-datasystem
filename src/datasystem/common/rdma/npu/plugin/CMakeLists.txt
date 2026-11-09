@@ -7,11 +7,15 @@ set_target_properties(ds_hixl_plugin PROPERTIES
     VISIBILITY_INLINES_HIDDEN YES
     LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/hixl_plugin.map)
 target_include_directories(ds_hixl_plugin PRIVATE ${ASCEND_HIXL_INCLUDE_DIR})
+if (ASCEND_HIXL_FABRIC_MEM_SUPPORTED)
+    target_compile_definitions(ds_hixl_plugin PRIVATE ASCEND_HIXL_FABRIC_MEM_AVAILABLE)
+endif()
 target_link_options(ds_hixl_plugin PRIVATE
     "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/hixl_plugin.map")
 target_link_libraries(ds_hixl_plugin PRIVATE
     -Wl,--no-as-needed
     ${ASCEND_HIXL_LIBRARIES}
+    ${ASCEND_HIXL_FABRIC_MEM_LIBRARIES}
     -Wl,--as-needed)
 add_custom_command(TARGET ds_hixl_plugin POST_BUILD
     COMMAND ${CMAKE_COMMAND}

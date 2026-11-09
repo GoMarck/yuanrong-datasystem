@@ -368,21 +368,24 @@ public:
     /**
      * @brief Obtains the usage of shared memory.
      * @return Usage:
-     * "memoryUsage/physicalMemoryUsage/totalLimit/workerShareMemoryUsage/streamMemoryUsage/streamMemoryLimit"
+     * "memoryUsage/physicalMemoryUsage/totalLimit/workerShareMemoryUsage/streamMemoryUsage/streamMemoryLimit/
+     *  fabricMemPhysicalMemoryUsage"
      */
     std::string GetMemoryStatistics()
     {
         if (physicalMemoryStats_->FootprintLimit() == 0) {
-            return "0/0/0/0/0/0";
+            return "0/0/0/0/0/0/0";
         }
         auto objectMemoryUsage = objectMemoryStats_->RealUsage();
         auto streamMemoryUsage = streamMemoryStats_->RealUsage();
         auto memoryUsage = objectMemoryUsage + streamMemoryUsage;
         auto workerShareMemoryUsage = memoryUsage / static_cast<float>(physicalMemoryStats_->FootprintLimit());
         auto streamMemoryLimit = GetTotalMemoryLimit(ServiceType::STREAM);
-        return FormatString("%lu/%lu/%lu/%.3f/%lu/%lu", memoryUsage, physicalMemoryStats_->RealUsage(),
+        auto fabricMemPhysicalMemoryUsage =
+            arenaManager_ == nullptr ? 0 : arenaManager_->GetFabricMemPhysicalMemoryUsage();
+        return FormatString("%lu/%lu/%lu/%.3f/%lu/%lu/%lu", memoryUsage, physicalMemoryStats_->RealUsage(),
                             physicalMemoryStats_->FootprintLimit(), workerShareMemoryUsage, streamMemoryUsage,
-                            streamMemoryLimit);
+                            streamMemoryLimit, fabricMemPhysicalMemoryUsage);
     }
 
     /**

@@ -418,6 +418,13 @@ Status ClientWorkerRemoteApi::MultiCreate(bool skipCheckExistence, std::vector<M
         req.add_object_key(param.objectKey);
         req.add_data_size(param.dataSize);
     }
+    RETURN_IF_NOT_OK(GetClientCommUuid(*req.mutable_comm_id()));
+    RemoteH2DClientDeviceInfoPb remoteH2DClientDeviceInfo;
+    bool hasRemoteH2DClientDeviceInfo = false;
+    RETURN_IF_NOT_OK(FillClientRemoteH2DDeviceInfo(&remoteH2DClientDeviceInfo, &hasRemoteH2DClientDeviceInfo));
+    if (hasRemoteH2DClientDeviceInfo) {
+        req.mutable_remote_h2d_client_device_info()->CopyFrom(remoteH2DClientDeviceInfo);
+    }
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(SetTokenAndTenantId(req), "Fail to set token when create data.");
 
     PerfPoint point(PerfKey::CLIENT_MULTI_CREATE_IPC);

@@ -26,6 +26,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <string>
 
 #include "datasystem/common/device/ascend/cann_types.h"
 #include "datasystem/common/device/ascend/p2phccl_types.h"
@@ -109,6 +110,14 @@ public:
      * @return K_OK if get success.
      */
     virtual Status GetDeviceIdx(int32_t &deviceIdx);
+
+    /**
+     * @brief Get the physical device index mapped from a logical device index.
+     * @param[in] logicDeviceIdx The logical device index.
+     * @param[out] physicalDeviceIdx The physical device index.
+     * @return K_OK if get success.
+     */
+    virtual Status GetPhysicalDeviceId(int32_t logicDeviceIdx, int32_t &physicalDeviceIdx);
 
     /**
      * @brief Verify if devices ID is valid
@@ -515,6 +524,7 @@ private:
     REG_METHOD(MallocDeviceMemory, int, size_t, void *&);
     REG_METHOD(FreeDeviceMemory, int, void *);
     REG_METHOD(GetDeviceIdx, int, int32_t &);
+    REG_METHOD(GetPhysicalDeviceId, int, int32_t, int32_t &);
     REG_METHOD(MemCopyD2H, int, void *, size_t, const void *, size_t);
     REG_METHOD(MemCopyH2D, int, void *, size_t, const void *, size_t);
     REG_METHOD(MemCopyD2D, int, void *, size_t, const void *, size_t);
@@ -552,7 +562,6 @@ private:
     REG_METHOD(DSAclrtFree, int, void *);
     REG_METHOD(DSAclrtMallocHost, int, void **, size_t);
     REG_METHOD(DSAclrtFreeHost, int, void *);
-
     REG_METHOD(DSP2PGetRootInfo, int, HcclRootInfo *);
     REG_METHOD(DSP2PCommInitRootInfo, int, const HcclRootInfo *, P2pKind, P2pLink, P2PComm *, P2PCommInitOptions *);
     REG_METHOD(DSP2PCommDestroy, int, P2PComm);

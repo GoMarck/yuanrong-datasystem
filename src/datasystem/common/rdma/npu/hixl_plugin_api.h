@@ -90,6 +90,8 @@ typedef struct DsHixlApi {
                                       uint32_t *vendorStatus);
     DsHixlResult (*transfer_sync)(DsHixlEngineHandle engine, const DsHixlTransferRequest *request,
                                   uint32_t *vendorStatus);
+    DsHixlResult (*malloc_memory)(uint32_t memoryType, uint64_t length, void **ptr, uint32_t *vendorStatus);
+    DsHixlResult (*free_memory)(void *ptr, uint32_t *vendorStatus);
 } DsHixlApi;
 
 #if defined(__GNUC__)

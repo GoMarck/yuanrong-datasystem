@@ -21,8 +21,10 @@
 #include "datasystem/common/shared_memory/mmap/mem_mmap.h"
 
 #include <fcntl.h>
+#include <atomic>
 #include <optional>
 #include <sstream>
+#include <vector>
 #ifdef __linux__
 #include <linux/memfd.h>
 #endif
@@ -33,8 +35,12 @@
 
 #include "datasystem/common/flags/flags.h"
 #include "datasystem/common/shared_memory/mmap/allocation.h"
+#ifdef ASCEND_SUPPORT_FABRIC_MEM
+#include "datasystem/common/device/ascend/acl_device_manager.h"
+#endif
 #include "datasystem/common/flags/common_flags.h"
 #include "datasystem/common/util/numa_util.h"
+#include "datasystem/common/util/raii.h"
 #include "datasystem/common/util/status_helper.h"
 #include "datasystem/common/util/strings_util.h"
 #include "datasystem/common/util/timer.h"
@@ -57,15 +63,112 @@ DS_DEFINE_bool(
 
 namespace datasystem {
 namespace memory {
+#ifdef ASCEND_SUPPORT_FABRIC_MEM
+namespace {
+std::atomic<uint32_t> g_nextFabricArenaDevice{ 0 };
+
+Status SelectFabricMemoryDeviceId(int32_t &deviceId)
+{
+    std::vector<int32_t> deviceIds;
+    RETURN_IF_NOT_OK(GetFabricMemoryArenaDeviceIds(deviceIds));
+    auto index = g_nextFabricArenaDevice.fetch_add(1, std::memory_order_relaxed) % deviceIds.size();
+    deviceId = deviceIds[index];
+    return Status::OK();
+}
+}  // namespace
+#endif
+
+MemMmap::~MemMmap()
+{
+#ifdef ASCEND_SUPPORT_FABRIC_MEM
+    if (fabricMemoryInitialized_) {
+        Destroy();
+        if (!fabricUnregistered_) {
+            LOG(ERROR) << "Keeping HIXL-allocated FabricMem arena alive because HIXL deregistration failed";
+            return;
+        }
+        if (pointer_ != nullptr) {
+            Status rc = FreeFabricMemory(pointer_);
+            if (rc.IsError()) {
+                LOG(ERROR) << "Failed to free FabricMem arena: " << rc.ToString();
+                return;
+            }
+            pointer_ = nullptr;
+        }
+        fabricMemoryInitialized_ = false;
+    }
+#endif
+}
+
+void MemMmap::Destroy()
+{
+    if (fabricMemoryInitialized_) {
+        if (!fabricUnregistered_) {
+            Status rc = UnregisterHostMemory(pointer_);
+            LOG_IF_ERROR(rc, "Failed to unregister HIXL-allocated FabricMem arena");
+            fabricUnregistered_ = rc.IsOk();
+        }
+        return;
+    }
+    BaseMmap::Destroy();
+}
+
+#ifdef ASCEND_SUPPORT_FABRIC_MEM
+Status MemMmap::GetFabricMemoryDeviceIds(int32_t &logicDevId, int32_t &physicalDevId)
+{
+    auto *aclManager = acl::AclDeviceManager::Instance();
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(aclManager->GetDeviceIdx(logicDevId), "aclrtGetDevice failed");
+    RETURN_IF_NOT_OK_PRINT_ERROR_MSG(aclManager->GetPhysicalDeviceId(logicDevId, physicalDevId),
+                                     "aclrtGetPhyDevIdByLogicDevId failed");
+    return Status::OK();
+}
+
+#endif
+
+Status MemMmap::InitializeFabricMemory(uint64_t size)
+{
+#ifdef ASCEND_SUPPORT_FABRIC_MEM
+    RETURN_IF_NOT_OK(SelectFabricMemoryDeviceId(fabricMemoryDeviceId_));
+    RETURN_IF_NOT_OK(AllocateFabricMemory(size, fabricMemoryDeviceId_, &pointer_));
+    bool keepFabricMemory = false;
+    Raii cleanupFabricMemory([this, &keepFabricMemory]() {
+        if (keepFabricMemory || pointer_ == nullptr) {
+            return;
+        }
+        LOG_IF_ERROR(FreeFabricMemory(pointer_), "Failed to roll back HIXL-allocated FabricMem arena");
+        pointer_ = nullptr;
+    });
+
+    int32_t logicDevId = -1;
+    int32_t physicalDevId = -1;
+    RETURN_IF_NOT_OK(GetFabricMemoryDeviceIds(logicDevId, physicalDevId));
+
+    fabricMemoryInitialized_ = true;
+    posixMapped_ = false;
+    type_ = "fabric_memory";
+    mmapSize_ = size;
+    curr_ = reinterpret_cast<uintptr_t>(pointer_);
+    tail_ = curr_ + static_cast<uintptr_t>(mmapSize_);
+    LOG(INFO) << "Initialized HIXL-allocated FabricMem arena, fd token=" << fd_ << ", addr=" << pointer_
+              << ", size=" << size << ", logicDevId=" << logicDevId << ", physicalDevId=" << physicalDevId
+              << ", requestedDeviceId=" << fabricMemoryDeviceId_;
+    keepFabricMemory = true;
+    return Status::OK();
+#else
+    (void)size;
+    RETURN_STATUS(StatusCode::K_RUNTIME_ERROR, "FabricMem allocation APIs are unavailable");
+#endif
+}
 
 Status MemMmap::Initialize(uint64_t size, bool populate, bool hugepage)
 {
     // 1. Create tmpfs file.
     std::string tmpfs = "datasystem";
     std::string hugeTlbOpenHint = "";
+    const bool usePhysicalFabricArena = UsePhysicalFabricArena();
 
     unsigned int mfdFlag = MFD_ALLOW_SEALING;
-    if (hugepage) {
+    if (hugepage && !usePhysicalFabricArena) {
 #ifdef MFD_HUGETLB
         mfdFlag = MFD_ALLOW_SEALING | MFD_HUGETLB;
         hugeTlbOpenHint = " huge tlb is open, this probably means you have to increase /proc/sys/vm/nr_hugepages";
@@ -78,6 +181,13 @@ Status MemMmap::Initialize(uint64_t size, bool populate, bool hugepage)
     fd_ = syscall(SYS_memfd_create, tmpfs.c_str(), mfdFlag);
     CHECK_FAIL_RETURN_STATUS(fd_ >= 0, StatusCode::K_RUNTIME_ERROR,
                              "memfd_create failed: " + StrErr(errno) + hugeTlbOpenHint);
+
+    if (usePhysicalFabricArena) {
+        RETURN_IF_NOT_OK(InitializeHostMemoryContext());
+        RETURN_IF_NOT_OK(InitializeFabricMemory(size));
+        RETURN_IF_NOT_OK(RegisterHostMemory(pointer_, mmapSize_));
+        return Status::OK();
+    }
 
     unsigned int flags = MAP_SHARED;
     if (hugepage) {
@@ -123,6 +233,9 @@ bool MemMmap::InRange(void *pointer, ptrdiff_t &offset)
 
 bool MemMmap::Commit(void *addr, size_t offset, size_t length)
 {
+    if (fabricMemoryInitialized_) {
+        return false;
+    }
     ptrdiff_t offsetInMmap = 0;
     if (!InRange(addr, offsetInMmap)) {
         return true;
@@ -152,6 +265,9 @@ bool MemMmap::Commit(void *addr, size_t offset, size_t length)
 
 bool MemMmap::Decommit(void *addr, size_t offset, size_t length)
 {
+    if (fabricMemoryInitialized_) {
+        return false;
+    }
     if (IsFastTransportEnabled() || IsRemoteH2DEnabled()) {
         // if urma/rdma/RH2D is enabled memory is pinned
         // Decommit is a noop
@@ -161,6 +277,15 @@ bool MemMmap::Decommit(void *addr, size_t offset, size_t length)
         return false;
     }
     return BaseMmap::Decommit(addr, offset, length);
+}
+
+uint64_t MemMmap::GetPhysicalBackingSize() const
+{
+#ifdef ASCEND_SUPPORT_FABRIC_MEM
+    return fabricMemoryInitialized_ ? mmapSize_ : 0;
+#else
+    return 0;
+#endif
 }
 
 }  // namespace memory

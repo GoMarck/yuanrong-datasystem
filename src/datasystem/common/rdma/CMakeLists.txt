@@ -50,6 +50,7 @@ endif()
 
 if (BUILD_HETERO AND BUILD_HETERO_NPU)
     list(APPEND URMA_DEPEND_LIBS common_acl_device)
+    list(APPEND URMA_DEPEND_LIBS common_util)
     if (BUILD_HETERO_GPU)
         list(APPEND URMA_DEPEND_LIBS common_cuda_device)
     endif()

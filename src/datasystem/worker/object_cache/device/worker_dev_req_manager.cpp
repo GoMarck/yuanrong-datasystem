@@ -24,6 +24,7 @@
 
 #include "datasystem/common/iam/tenant_auth_manager.h"
 #include "datasystem/common/object_cache/shm_guard.h"
+#include "datasystem/common/rdma/fast_transport_base.h"
 #include "datasystem/common/util/memory.h"
 #include "datasystem/common/util/request_context.h"
 #include "datasystem/worker/client_manager/client_manager.h"
@@ -128,6 +129,8 @@ Status WorkerDevReqManager::AddEntryToGetDeviceObjectResponse(const std::shared_
     auto metaSize = param->metaSize;
     // Only add shm ref when we will return this shmUnit to the client.
     if (shmEnabled && dataSize >= FLAGS_oc_shm_transfer_threshold_kb * KB) {
+        CHECK_FAIL_RETURN_STATUS(!UsePhysicalFabricArena(), K_NOT_SUPPORTED,
+                                 "FabricMem GetDeviceObject does not support legacy SHM response.");
         auto *shmInfo = resp.mutable_shm_info();
         shmInfo->set_shm_id(entryShmUnit->GetId());
         shmInfo->set_store_fd(entryShmUnit->GetFd());
