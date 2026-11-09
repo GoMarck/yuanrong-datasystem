@@ -262,6 +262,33 @@ owner 却只计少量字节。因此成功链路的批次也必须在此预算�
 再按实际设备停止访问保证重启目标 Worker，不要仅关闭开关就认为内存已经可安全回收。
 # Routed FabricMem 写入
 
+## FabricMem 传输并发配置
+
+在客户端进程启动前设置以下两个独立参数：
+
+| 环境变量 | 控制范围 | 默认值 | 有效范围 |
+| --- | --- | --- | --- |
+| `DS_HIXL_TRANSFER_SYNC_PARALLELISM` | 每次源端分组传输最多拆成多少个 descriptor chunk | 4 | 1–16 |
+| `DS_HIXL_TRANSFER_SYNC_THREAD_NUM` | 进程共享 `hixl_transfer_sync` 线程池的最大线程数 | 4 | 1–64 |
+
+两个参数均将低于下限/高于上限的整数钳制到边界；无法解析的值使用默认值。
+线程池在线程池首次使用时创建，之后修改环境变量不会调整已有线程池大小。
+`PARALLELISM=1` 时直接执行串行传输，不进入该线程池。
+新参数未设置时固定使用 4 个线程，不再随 `PARALLELISM` 增长；已有调优部署应显式配置线程数。
+
+两个 Worker 各对应一个源端分组、每组拆成 4 个任务时，可以使用：
+
+```bash
+export DS_HIXL_TRANSFER_SYNC_PARALLELISM=4
+export DS_HIXL_TRANSFER_SYNC_THREAD_NUM=8
+```
+
+这为合计 8 个任务提供线程容量，但并不保证没有排队：同进程其他请求也共享线程池，
+外层分组调度、communicator 锁和设备资源仍可能限制实际并发。增加线程数需要结合 CPU、
+HiXL 并发能力及吞吐/尾延迟验证，不能直接视作性能提升。
+
+## 启用与验证
+
 通过 `ConnectOptions.enableLocalCache=false`（Python 为 `enable_local_cache=False`）开启同步写路由。
 默认 true 时整批写绑定 Worker，不做 placement 分组。两种模式的 `MGetH2D` 均保持 bound-read；
 false 时 `AsyncMSetD2H` 返回不支持，不会静默改写到绑定 Worker。

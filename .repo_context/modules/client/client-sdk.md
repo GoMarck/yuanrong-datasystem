@@ -2,6 +2,12 @@
 
 ## Routed FabricMem device writes
 
+- FabricMem descriptor chunking and executor capacity are independent:
+  `DS_HIXL_TRANSFER_SYNC_PARALLELISM` bounds chunks per source-group transfer (default 4, range 1–16);
+  `DS_HIXL_TRANSFER_SYNC_THREAD_NUM` bounds the process-shared `hixl_transfer_sync` pool (default 4, range 1–64).
+  Pool capacity is captured on first use; configure it before process startup. Unset capacity no longer follows
+  an overridden chunk parallelism. Two groups with four chunks each can use eight pool threads, but other
+  requests, communicator locks and device limits can still cause queueing. No throughput gain is asserted.
 - `HeteroClient` uses `BOUND_READ`: `enableLocalCache=true` (default) keeps synchronous device writes bound;
   false enables placement routing. `UseRoutedReads` explicitly keeps `MGetH2D` bound in both modes, independently
   of the stored cache option. Ordinary Object/KV read policy is unchanged. Async device writes require true.

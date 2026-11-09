@@ -81,10 +81,13 @@ const std::string K_HIXL_CS_LOCAL_COMM_RES = R"({"version":"1.3"})";
 const std::string K_WORKER_DEVICE_COMM_PORT_ENV = "DS_RH2D_HCCS_WORKER_DEVICE_COMM_PORT";
 const std::string K_FABRIC_MEM_AICPU_UNFOLD_ENV = "DS_RH2D_HCCS_ENABLE_AICPU_UNFOLD";
 const std::string K_HIXL_TRANSFER_SYNC_PARALLELISM_ENV = "DS_HIXL_TRANSFER_SYNC_PARALLELISM";
+const std::string K_HIXL_TRANSFER_SYNC_THREAD_NUM_ENV = "DS_HIXL_TRANSFER_SYNC_THREAD_NUM";
 constexpr uint32_t K_FABRIC_MEM_AICPU_TASK_STREAM_NUM = 1;
 constexpr uint32_t K_FABRIC_MEM_HOST_TASK_STREAM_NUM = 8;
 constexpr int32_t K_DEFAULT_HIXL_TRANSFER_SYNC_PARALLELISM = 4;
 constexpr int32_t K_MAX_HIXL_TRANSFER_SYNC_PARALLELISM = 16;
+constexpr int32_t K_DEFAULT_HIXL_TRANSFER_SYNC_THREAD_NUM = 4;
+constexpr int32_t K_MAX_HIXL_TRANSFER_SYNC_THREAD_NUM = 64;
 
 // HCCL registration limit: keep a small reserve under the 256 MEM_DEVICE limit.
 // Long-lived pre-registrations and temporary fallback registrations share this budget.
@@ -241,8 +244,10 @@ int32_t GetHixlTransferSyncParallelism()
 
 datasystem::ThreadPool &GetHixlTransferThreadPool()
 {
-    static datasystem::ThreadPool pool(0, static_cast<size_t>(GetHixlTransferSyncParallelism()),
-                                       "hixl_transfer_sync");
+    static datasystem::ThreadPool pool(0, static_cast<size_t>(std::clamp(
+        datasystem::GetInt32FromEnv(K_HIXL_TRANSFER_SYNC_THREAD_NUM_ENV.c_str(),
+                                    K_DEFAULT_HIXL_TRANSFER_SYNC_THREAD_NUM),
+        1, K_MAX_HIXL_TRANSFER_SYNC_THREAD_NUM)), "hixl_transfer_sync");
     return pool;
 }
 
