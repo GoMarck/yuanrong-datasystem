@@ -5451,6 +5451,25 @@ TEST(ObjectClientTransportTest, ForcedRoutingRefreshReclaimsExpiredOwnersWithout
     EXPECT_FALSE(client.ShouldForceRefreshRouting(active, now + window));
 }
 
+TEST(ObjectClientTransportTest, DeviceWriteRoutingFollowsLocalCacheWhileDeviceReadsStayBound)
+{
+    using Impl = object_cache::ObjectClientImpl;
+    for (bool localCache : { true, false }) {
+        ConnectOptions options;
+        options.enableLocalCache = localCache;
+        auto hetero = std::make_shared<Impl>(options, Impl::DeviceAccessMode::BOUND_READ);
+        EXPECT_EQ(hetero->enableLocalCache_, localCache);
+        EXPECT_EQ(hetero->UseRoutedDeviceWrites(), !localCache);
+        EXPECT_FALSE(hetero->UseRoutedReads(true));
+        EXPECT_EQ(hetero->UseRoutedReads(false), !localCache);
+
+        auto ordinary = std::make_shared<Impl>(options);
+        EXPECT_EQ(ordinary->UseRoutedDeviceWrites(), !localCache);
+        EXPECT_EQ(ordinary->UseRoutedReads(true), !localCache);
+        EXPECT_EQ(ordinary->UseRoutedReads(false), !localCache);
+    }
+}
+
 TEST(ObjectClientTransportTest, ReadTransportRoundPreservesMixedItemStatusesWhenAggregateIsStale)
 {
     ApiDeadlineGuard deadline(1000);

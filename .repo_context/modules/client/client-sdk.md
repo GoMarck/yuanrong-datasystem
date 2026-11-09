@@ -1,5 +1,23 @@
 # Client SDK
 
+## Routed FabricMem device writes
+
+- `HeteroClient` uses `BOUND_READ`: `enableLocalCache=true` (default) keeps synchronous device writes bound;
+  false enables placement routing. `UseRoutedReads` explicitly keeps `MGetH2D` bound in both modes, independently
+  of the stored cache option. Ordinary Object/KV read policy is unchanged. Async device writes require true.
+  Python exposes the same switch as the appended `enable_local_cache=True` constructor argument.
+- FabricMem is selected before the same-host SHM branch in `ObjectClientImpl::MSetD2HRouted`.
+  `HixlTransporter` sends `hixl_fabric_mem`, layouts and the RH2D communicator/device information.
+  Workers return payload-only `host_info`; the SDK imports segments and groups WRITE descriptors by root identity.
+  Neither same-host nor cross-host FabricMem writes use client mmap or TCP payload fallback.
+- Worker Create reuses the routed HiXL pending-write budget and protection until `hixl_write_complete` publication.
+  Uncertain writes retain target allocations under the existing bounded protection policy; no persistent format changes.
+- Device pre-registration configures the hetero transport first. FabricMem uses RemoteH2DManager registration once;
+  buffer-pool writes retain their additional HixlTransporter registration.
+- SDK and Worker must be upgraded together. `enable_hixl_d2rh` also gates this routed FabricMem protocol.
+  Manual two-target regression: `HeteroD2RHWithRH2DTest.DISABLED_FabricMemTwoWorkerRoundTrip`;
+  prerequisites and coverage limits are in `tests/st/device/README_hixl_d2rh.md`.
+
 ## Routed SHM read-reference handoff
 
 - `ShmTransporter::Get/BatchGet` and `ObjectMetadataClient::ApplyResults` register response references before
@@ -517,15 +535,17 @@ handler. Clearing the Router handler synchronously excludes later callback acces
     (`py::arg("enableLocalCache") = true`, `py::arg("dataPlacementPolicy") = PREFERRED_SAME_NODE`)
     so existing positional callers remain compatible; `DataPlacementPolicy` is registered as a pybind
     enum (`ds.DataPlacementPolicy.PREFERRED_SAME_NODE / REQUIRED_SAME_NODE / PREFERRED_META_OWNER`).
-    `HeteroClient` exposes only `data_placement_policy`, without an external local-cache toggle. Its internal
-    immutable `ObjectClientImpl::DeviceAccessMode::BOUND_READ_ROUTED_WRITE` keeps reads on the bound Worker
-    (`enableLocalCache_` true) and routes synchronous `MSetD2H` independently. The same client initializes transport
-    and routing for writes, including non-bound-Worker admission on failover; requests never toggle shared settings.
+    `HeteroClient` exposes `enable_local_cache=True` and `data_placement_policy`. Its immutable
+    `ObjectClientImpl::DeviceAccessMode::BOUND_READ` keeps `MGetH2D` bound independently of the cache option.
+    Synchronous `MSetD2H` uses the bound Worker when true and placement routing when false.
+    Routed clients initialize transport and routing, including non-bound-Worker admission on failover;
+    requests never toggle shared settings.
     Generic ObjectClient/KVClient retain their original local-cache behavior and RH2D rejection when cache is off.
-    Synchronous device writes group keys through existing placement routing: same-host targets use SHM+D2H,
-    remote targets use `transport/data_plane/hixl_transporter` with MultiCreate/HIXL WRITE/MultiPublish.
-    Remote writes require one fixed pre-registered source device arena and HIXL buffer-pool mode; empty blob
-    placeholders are unsupported. `AsyncMSetD2H` retains the legacy bound-Worker path, without async routed writes.
+    Routed device writes group keys through existing placement routing. FabricMem uses host_info and HIXL WRITE
+    for both same-host and remote targets; otherwise same-host targets use SHM+D2H and remote targets use
+    `transport/data_plane/hixl_transporter` with MultiCreate/HIXL WRITE/MultiPublish and a pre-registered
+    buffer-pool source arena. Empty blob placeholders are unsupported in routed mode.
+    `AsyncMSetD2H` requires local cache enabled and retains the bound-Worker path.
     `DS_HIXL_D2RH_LOCAL_IP` overrides the SDK endpoint IP for a remote bound Worker. The Worker flag
     `enable_hixl_d2rh` defaults false. D2RH uses per-instance HIXL options from the environment without mutating
     RH2D global flags; serial admission and Connect honor the remaining request deadline. With RH2D enabled,

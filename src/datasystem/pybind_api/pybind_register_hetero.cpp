@@ -176,7 +176,7 @@ PybindDefineRegisterer g_pybind_define_f_HeteroClient("HeteroClient", PRIORITY_M
                          const std::string &clientPublicKey, const std::string &clientPrivateKey,
                          const std::string &serverPublicKey, const std::string &accessKey, const std::string &secretKey,
                          const std::string &tenantId, const bool enableCrossNodeConnection, int32_t reqTimeoutMs,
-                         bool enableRemoteH2D, DataPlacementPolicy dataPlacementPolicy) {
+                         bool enableRemoteH2D, DataPlacementPolicy dataPlacementPolicy, bool enableLocalCache) {
             ConnectOptions connectOpts{
                 .host = host,
                 .port = port,
@@ -190,6 +190,7 @@ PybindDefineRegisterer g_pybind_define_f_HeteroClient("HeteroClient", PRIORITY_M
                 .secretKey = secretKey,
                 .tenantId = tenantId,
                 .enableCrossNodeConnection = enableCrossNodeConnection,
+                .enableLocalCache = enableLocalCache,
                 .dataPlacementPolicy = dataPlacementPolicy,
                 .enableRemoteH2D = enableRemoteH2D
             };
@@ -198,7 +199,8 @@ PybindDefineRegisterer g_pybind_define_f_HeteroClient("HeteroClient", PRIORITY_M
             py::arg("clientPublicKey"), py::arg("clientPrivateKey"), py::arg("serverPublicKey"),
             py::arg("accessKey"), py::arg("secretKey"), py::arg("tenantId"), py::arg("enableCrossNodeConnection"),
             py::arg("reqTimeoutMs"), py::arg("enableRemoteH2D"),
-            py::arg("dataPlacementPolicy") = DataPlacementPolicy::PREFERRED_SAME_NODE)
+            py::arg("dataPlacementPolicy") = DataPlacementPolicy::PREFERRED_SAME_NODE,
+            py::arg("enableLocalCache") = true)
         .def("init",
              [](HeteroClient &client) {
                  py::gil_scoped_release release;

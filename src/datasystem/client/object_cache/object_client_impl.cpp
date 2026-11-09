@@ -504,8 +504,7 @@ ObjectClientImpl::ObjectClientImpl(const ConnectOptions &connectOptions1, Device
     tenantId_ = connectOptions.tenantId;
     signature_ = std::make_unique<Signature>(connectOptions.accessKey, connectOptions.secretKey);
     enableCrossNodeConnection_ = connectOptions.enableCrossNodeConnection;
-    enableLocalCache_ =
-        deviceAccessMode_ == DeviceAccessMode::BOUND_READ_ROUTED_WRITE || connectOptions.enableLocalCache;
+    enableLocalCache_ = connectOptions.enableLocalCache;
     dataPlacementPolicy_ = static_cast<client::DataPlacementPolicy>(connectOptions.dataPlacementPolicy);
     transportSignature_ = std::make_shared<Signature>(connectOptions.accessKey, connectOptions.secretKey);
     (void)authKeys_.SetClientPublicKey(connectOptions.clientPublicKey);
@@ -1910,12 +1909,12 @@ Status ObjectClientImpl::PreRegisterDeviceMemory(const std::vector<void *> &data
     RETURN_IF_NOT_OK(acl::AclDeviceManager::Instance()->GetDeviceIdx(deviceId));
     CHECK_FAIL_RETURN_STATUS(deviceId >= 0, K_INVALID,
                              "Device id is not initialized. Set current device before pre-registering device memory.");
-    if (UseRoutedDeviceWrites()) {
+    RETURN_IF_NOT_OK(UpdateClientHeteroTransportConfig(deviceId));
+    const bool fabricMem = IsHixlRemoteHostTransferEnabled() && FLAGS_remote_h2d_hccs_enable_fabric_mem;
+    if (UseRoutedDeviceWrites() && !fabricMem) {
         RETURN_RUNTIME_ERROR_IF_NULL(transportLayer_);
         RETURN_IF_NOT_OK(transportLayer_->RegisterD2RHDeviceMemory(deviceId, ipAddress_.Host(), data, dataSize));
     }
-    RETURN_IF_NOT_OK(UpdateClientHeteroTransportConfig(deviceId));
-    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().PreRegisterDeviceMemory(data, dataSize));
     {
         std::lock_guard<std::mutex> lock(preRegisteredDeviceMemoryMutex_);
         preRegisteredDeviceMemoryAddrs_.reserve(preRegisteredDeviceMemoryAddrs_.size() + data.size());
@@ -2500,7 +2499,7 @@ Status ObjectClientImpl::MSetD2H(const std::vector<std::string> &objectKeys,
         access.Result(rc).Record();
         return rc;
     }
-    if (!UseRoutedDeviceWrites()) {
+    if (enableHeteroTransport_) {
         auto cfgRc = UpdateClientHeteroTransportConfig(devBlobList[0].deviceIdx);
         if (cfgRc.IsError()) {
             access.Result(cfgRc).Record();
@@ -2526,19 +2525,12 @@ std::shared_future<AsyncResult> ObjectClientImpl::AsyncMSetD2H(const std::vector
     }
 
     if (UseRoutedDeviceWrites()) {
-        if (!enableLocalCache_) {
-            return MakeFailedAsyncH2DFuture(*access, Status(K_NOT_SUPPORTED, "Routed D2RH supports synchronous writes only"),
-                                            devBlobList, objectKeys, objectKeys);
-        }
-
-        // D2H never touches RemoteH2DManager, so this path must not initialize or update RH2D configuration.
-        // Device-id consistency is enforced later in DeviceDataCreate (ValidateDeviceDataCreateBlobs +
-        // CheckDeviceValid), matching the synchronous MSetD2H path above.
-    } else {
-        auto cfgRc = UpdateClientHeteroTransportConfig(devBlobList[0].deviceIdx);
-        if (cfgRc.IsError()) {
-            return MakeFailedAsyncH2DFuture(*access, cfgRc, devBlobList, objectKeys, objectKeys);
-        }
+        return MakeFailedAsyncH2DFuture(*access, Status(K_NOT_SUPPORTED, "Routed D2RH supports synchronous writes only"),
+                                        devBlobList, objectKeys, objectKeys);
+    }
+    auto cfgRc = UpdateClientHeteroTransportConfig(devBlobList[0].deviceIdx);
+    if (cfgRc.IsError()) {
+        return MakeFailedAsyncH2DFuture(*access, cfgRc, devBlobList, objectKeys, objectKeys);
     }
     auto asyncState = std::make_shared<AsyncMSetD2HState>(objectKeys, devBlobList, setParam);
     access->ObjectKeysSummaryRef(asyncState->objectKeys)
@@ -2606,6 +2598,7 @@ Status ObjectClientImpl::MSetD2HRouted(const std::vector<std::string> &keys,
     RETURN_IF_NOT_OK(ValidateDeviceDataCreateBlobs(blobs, blobs.front().deviceIdx));
     RETURN_IF_NOT_OK(ValidateDeviceDataCreatePayload(blobs, std::vector<bool>(blobs.size(), false)));
     RETURN_IF_NOT_OK(CheckDeviceValid({ static_cast<uint32_t>(blobs.front().deviceIdx) }));
+    const bool fabricMem = IsHixlRemoteHostTransferEnabled() && FLAGS_remote_h2d_hccs_enable_fabric_mem;
     auto routing = std::atomic_load(&routing_);
     RETURN_RUNTIME_ERROR_IF_NULL(routing);
     std::unordered_map<std::string, size_t> indexes;
@@ -2616,6 +2609,11 @@ Status ObjectClientImpl::MSetD2HRouted(const std::vector<std::string> &keys,
     std::unordered_map<HostPort, std::vector<std::string>> groups;
     RETURN_IF_NOT_OK(routing->SelectWorkers(keys, dataPlacementPolicy_, client::WorkerAccessAction::SET,
                                             groups, MergeWriteTargetExclusions({})));
+    INJECT_POINT("ObjectClientImpl.MSetD2HRouted.requireGroups", [&groups](int count) {
+        CHECK_FAIL_RETURN_STATUS(groups.size() == static_cast<size_t>(count), K_RUNTIME_ERROR,
+                                 "Unexpected routed device write target count");
+        return Status::OK();
+    });
     Status lastRc;
     for (const auto &group : groups) {
         std::vector<const DeviceBlobList *> sources;
@@ -2639,7 +2637,7 @@ Status ObjectClientImpl::MSetD2HRouted(const std::vector<std::string> &keys,
         publish.subTimeoutMs = requestTimeoutMs_;
         publish.returnLocalPublishedIndexes = confirmedKeys != nullptr;
         Status rc;
-        if (transportLayer_->IsSameHostWorker(group.first)) {
+        if (!fabricMem && transportLayer_->IsSameHostWorker(group.first)) {
             rc = MSetD2HLocal(group.first, group.second, sources, create, publish, confirmedKeys);
         } else {
             client::TransportMSetResult result;
@@ -4313,7 +4311,7 @@ Status ObjectClientImpl::Get(const std::vector<std::string> &objectKeys, int64_t
     }
     std::vector<std::shared_ptr<Buffer>> objectBuffers(objectKeys.size());
     Status rc;
-    if (!enableLocalCache_) {
+    if (UseRoutedReads(isRH2DSupported)) {
         CHECK_FAIL_RETURN_STATUS(!isRH2DSupported, K_NOT_SUPPORTED,
                                  "Remote H2D is not supported when local cache is disabled");
         rc = routedMode_->GetFromTransportLayer(objectKeys, objectBuffers, traceEnabled, subTimeoutMs, queryL2Cache);

@@ -260,3 +260,38 @@ owner 却只计少量字节。因此成功链路的批次也必须在此预算�
 提交前注入错误的 ST **不证明**真实 DMA 超时、设备侧停止访问、断连或进程重启的 fence 语义；这些需要结合
 实际 HiXL/驱动版本确认。回滚时先停止新客户端写入并关闭 `enable_hixl_d2rh`；有未确认写时，先终止源进程，
 再按实际设备停止访问保证重启目标 Worker，不要仅关闭开关就认为内存已经可安全回收。
+# Routed FabricMem 写入
+
+通过 `ConnectOptions.enableLocalCache=false`（Python 为 `enable_local_cache=False`）开启同步写路由。
+默认 true 时整批写绑定 Worker，不做 placement 分组。两种模式的 `MGetH2D` 均保持 bound-read；
+false 时 `AsyncMSetD2H` 返回不支持，不会静默改写到绑定 Worker。
+
+开启后，同步 `HeteroClient::MSetD2H` 复用 placement 分组；FabricMem 分组无论同机还是跨机，
+均通过 `comm_id` 获取目标 Worker 的 `host_info`，执行 payload-only HIXL WRITE，
+随后向同一 Worker 发布对象。此路径不请求客户端 SHM mmap，也不回退 TCP。
+读取保持 bound Worker 协调、按返回的数据源信息分组 READ 的既有语义。
+
+SDK 和目标 Worker 均需包含 `MultiCreateReqPb.hixl_fabric_mem` 协议支持。
+Worker 需启用 `enable_hixl_d2rh=true`、HCCS、物理 FabricMem arena，并遵守原有 FabricMem
+配置约束（包括关闭对象内嵌 metadata header）。客户端启用 HCCS/FabricMem 和异构传输，
+buffer pool 使用 FabricMem 的 `0:0` 配置。预注册走 RemoteH2DManager，不进入 buffer-pool 注册接口。
+升级或回退时同步处理 SDK 和 Worker；旧 Worker 不保证支持此路径。
+
+该路径复用 routed HiXL 的 pending-write 内存保护：每 Worker 256 MiB、1024 个分配。
+只有收到 WRITE 完成后的发布请求才解除保护；失败/丢响应可能保留分配直到 Worker 退出。
+发生不确定 DMA 失败时，不得提前释放源设备 arena；按既有 HiXL 故障处理要求重启进程。
+
+手工回归入口（需要 NPU、FabricMem、`WITH_TESTS` 和两个已启动的 Worker）：
+
+```bash
+export DS_D2RH_TEST_WORKER='<bound-worker-address>'
+export DS_FABRIC_TEST_KEY_A='<absent-key-owned-by-worker-A>'
+export DS_FABRIC_TEST_KEY_B='<absent-key-owned-by-worker-B>'
+<device-test-binary> --gtest_also_run_disabled_tests \
+  --gtest_filter=HeteroD2RHWithRH2DTest.DISABLED_FabricMemTwoWorkerRoundTrip
+```
+
+两个测试 key 必须不存在且在当前 ring 中对应不同的 placement 目标，测试会断言实际产生两组，
+并验证多 blob 写入、bound-read 读回、NX 保留已有数据和新写入确认列表。
+分别使用“一个同机目标加一个跨机目标”和“两个跨机目标”拓扑运行；不能以单 Worker 测试代替。
+该手工用例未覆盖真实 DMA 超时、客户端死亡或 Worker 重启，需要独立故障验证。

@@ -222,6 +222,7 @@ def run(args):
         tenant_id=os.getenv("DS_D2RH_TEST_TENANT_ID", ""),
         enable_remote_h2d=args.enable_remote_h2d,
         data_placement_policy=DataPlacementPolicy.PREFERRED_META_OWNER,
+        enable_local_cache=False,
     )
     client.init()
     if args.enable_remote_h2d:

@@ -121,6 +121,7 @@ message MultiCreateReqPb {
   repeated string allocation_ids = 103;
   repeated HixlWriteLayoutPb hixl_layouts = 104;
   string hixl_comm_id = 105;
+  bool hixl_fabric_mem = 106;
 }
 
 message MultiCreateRspPb {

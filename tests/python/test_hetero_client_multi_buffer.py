@@ -14,6 +14,7 @@
 """Unit tests for the HeteroClient synchronous multi-buffer APIs."""
 
 import unittest
+from unittest.mock import patch
 
 from yr.datasystem.hetero_client import HeteroClient
 from yr.datasystem.kv_client import SetParam, DataPlacementPolicy
@@ -54,6 +55,17 @@ class _NativeClient:
 
 
 class TestHeteroClientConstruction(unittest.TestCase):
+    def test_local_cache_option_is_forwarded_and_defaults_to_bound(self):
+        with patch.object(ds, "HeteroClient") as native:
+            HeteroClient("127.0.0.1", 1)
+            self.assertIs(native.call_args.args[-1], True)
+            HeteroClient("127.0.0.1", 1, enable_local_cache=False)
+            self.assertIs(native.call_args.args[-1], False)
+
+    def test_local_cache_option_requires_bool(self):
+        with self.assertRaises(TypeError):
+            HeteroClient("127.0.0.1", 1, enable_local_cache="false")
+
     def test_native_legacy_arguments_use_registered_default_policy(self):
         client = ds.HeteroClient(
             "127.0.0.1", 1, 9000, "", "", "", "", "", "", "", False, 0, False

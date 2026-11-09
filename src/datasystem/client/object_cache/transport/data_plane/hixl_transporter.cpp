@@ -11,10 +11,14 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <unordered_map>
 
+#include "datasystem/common/flags/common_flags.h"
 #include "datasystem/common/flags/flags.h"
+#include "datasystem/common/inject/inject_point.h"
 #include "datasystem/common/log/access_recorder.h"
 #include "datasystem/common/object_cache/buffer_composer.h"
+#include "datasystem/common/rdma/fast_transport_manager_wrapper.h"
 #include "datasystem/common/rpc/api_deadline.h"
 #include "datasystem/common/rpc/timeout_duration.h"
 #include "datasystem/common/util/raii.h"
@@ -145,7 +149,7 @@ Status HixlTransporter::ValidateSources(const std::vector<const DeviceBlobList *
 namespace {
 Status BuildHixlCreate(const std::vector<std::string> &keys,
                        const std::vector<const DeviceBlobList *> &blobs, TransportCreateParam &param,
-                       MultiCreateReqPb &request, std::vector<ShmKey> &allocations)
+                       MultiCreateReqPb &request, std::vector<ShmKey> &allocations, bool fabricMem)
 {
     constexpr uint32_t defaultAlignment = 64;
     std::vector<uint64_t> sizes;
@@ -158,6 +162,9 @@ Status BuildHixlCreate(const std::vector<std::string> &keys,
         uint64_t size = 1;
         if (!blobSizes.empty()) {
             RETURN_IF_NOT_OK(object_cache::BuildComposedBufferHeader(blobSizes, defaultAlignment, header, size));
+            if (fabricMem) {
+                size -= header.size() * sizeof(uint64_t);
+            }
         }
         sizes.push_back(size);
         param.allocationIds.push_back(GetStringUuid());
@@ -206,6 +213,77 @@ Status BuildHixlWrites(const std::vector<std::string> &keys,
     }
     return Status::OK();
 }
+
+Status BuildFabricWrites(const std::vector<std::string> &keys,
+                         const std::vector<const DeviceBlobList *> &blobs, const MultiCreateRspPb &response,
+                         MultiPublishReqPb &publish)
+{
+    CHECK_FAIL_RETURN_STATUS(response.results_size() == static_cast<int>(keys.size())
+                                 && response.exists_size() == static_cast<int>(keys.size()), K_RUNTIME_ERROR,
+                             "FabricMem allocation response count mismatch");
+    for (size_t i = 0; i < keys.size(); ++i) {
+        if (response.exists(i)) {
+            continue;
+        }
+        const auto &item = response.results(i);
+        CHECK_FAIL_RETURN_STATUS(item.has_host_info() && !item.has_hixl_target() && !item.shm_id().empty(),
+                                 K_NOT_SUPPORTED, "Target worker did not return a FabricMem allocation");
+        const auto &host = item.host_info();
+        const auto &seg = host.remote_host_segment();
+        CHECK_FAIL_RETURN_STATUS(!host.root_info().internal().empty()
+                                     && seg.seg_data_offset() <= seg.seg_len()
+                                     && seg.seg_va() <= UINT64_MAX - seg.seg_len(),
+                                 K_RUNTIME_ERROR, "Invalid FabricMem target segment");
+        uint64_t size = 0;
+        auto *info = publish.add_object_info();
+        info->set_object_key(keys[i]);
+        info->set_shm_id(item.shm_id());
+        for (const auto &blob : blobs[i]->blobs) {
+            CHECK_FAIL_RETURN_STATUS(blob.pointer != nullptr && blob.size > 0
+                                         && blob.size <= seg.seg_len() - seg.seg_data_offset() - size,
+                                     K_INVALID, "FabricMem blob exceeds target allocation");
+            size += blob.size;
+            info->add_blob_sizes(blob.size);
+        }
+        info->set_data_size(size);
+    }
+    return Status::OK();
+}
+
+Status WriteFabricObjects(const std::vector<const DeviceBlobList *> &blobs, const MultiCreateRspPb &response)
+{
+    struct WriteGroup {
+        std::shared_ptr<RemoteH2DContext> comm;
+        std::vector<HixlTransferDesc> writes;
+    };
+    auto &manager = RemoteH2DManager::Instance();
+    std::unordered_map<std::string, WriteGroup> groups;
+    for (size_t i = 0; i < blobs.size(); ++i) {
+        if (response.exists(i)) {
+            continue;
+        }
+        RETURN_IF_NOT_OK(ApiDeadline::Instance().CheckApiDeadline());
+        const auto &host = response.results(i).host_info();
+        const auto &root = host.root_info();
+        const auto &seg = host.remote_host_segment();
+        auto &group = groups[root.internal()];
+        if (group.comm == nullptr) {
+            RETURN_IF_NOT_OK(manager.P2PCommInitRootInfo(root.internal(), root, P2P_RECEIVER, group.comm));
+        }
+        RETURN_IF_NOT_OK(manager.ImportHostSegment(group.comm->remoteEndpoint, seg));
+        uint64_t offset = seg.seg_data_offset();
+        for (const auto &blob : blobs[i]->blobs) {
+            group.writes.push_back({ reinterpret_cast<uintptr_t>(blob.pointer), seg.seg_va() + offset, blob.size });
+            offset += blob.size;
+        }
+    }
+    for (const auto &group : groups) {
+        RETURN_IF_NOT_OK(ApiDeadline::Instance().CheckApiDeadline());
+        INJECT_POINT("HixlTransporter.FabricMemWrite");
+        RETURN_IF_NOT_OK(manager.TransferBatch(HixlTransferOp::WRITE, group.second.writes, group.second.comm));
+    }
+    return Status::OK();
+}
 }  // namespace
 #endif
 
@@ -225,13 +303,31 @@ Status HixlTransporter::MSetDevice(const std::shared_ptr<WorkerRpcClient> &rpc,
                              "D2RH deadline expired waiting for the transport");
     result.actualKind = AccessTransportKind::HIXL;
     CHECK_FAIL_RETURN_STATUS(keys.size() == blobs.size() && !keys.empty(), K_INVALID, "Invalid D2RH batch");
-    RETURN_IF_NOT_OK(ValidateSources(blobs));
 #ifdef ASCEND_HIXL_AVAILABLE
-    RETURN_IF_NOT_OK(acl::AclDeviceManager::Instance()->SetDeviceIdx(deviceId_));
+    const bool fabricMem = FLAGS_remote_h2d_link_type == "HCCS" && FLAGS_remote_h2d_hccs_enable_fabric_mem;
+    CHECK_FAIL_RETURN_STATUS(!failed_, K_NOT_READY, "D2RH transport has stopped");
+    if (!fabricMem) {
+        RETURN_IF_NOT_OK(ValidateSources(blobs));
+    } else {
+        RETURN_RUNTIME_ERROR_IF_NULL(blobs.front());
+        for (const auto *item : blobs) {
+            CHECK_FAIL_RETURN_STATUS(item != nullptr && item->deviceIdx == blobs.front()->deviceIdx
+                                         && !item->blobs.empty(),
+                                     K_INVALID, "FabricMem batch requires nonempty blobs on one device");
+        }
+    }
+    RETURN_IF_NOT_OK(acl::AclDeviceManager::Instance()->SetDeviceIdx(fabricMem ? blobs.front()->deviceIdx : deviceId_));
     MultiCreateReqPb request;
     std::vector<ShmKey> allocations;
-    RETURN_IF_NOT_OK(BuildHixlCreate(keys, blobs, createParam, request, allocations));
+    RETURN_IF_NOT_OK(BuildHixlCreate(keys, blobs, createParam, request, allocations, fabricMem));
     request.set_hixl_comm_id(commId_);
+    if (fabricMem) {
+        RETURN_IF_NOT_OK(GetClientCommUuid(*request.mutable_comm_id()));
+        CHECK_FAIL_RETURN_STATUS(!request.comm_id().empty(), K_NOT_READY, "FabricMem communicator is unavailable");
+        request.set_hixl_comm_id(request.comm_id());
+        request.set_hixl_fabric_mem(true);
+        RETURN_IF_NOT_OK(FillClientRemoteH2DDeviceInfo(request.mutable_remote_h2d_client_device_info()));
+    }
     Raii release([&]() {
         constexpr int64_t releaseTimeoutMs = 1000;
         ApiDeadlineGuard releaseDeadline(releaseTimeoutMs);
@@ -247,27 +343,36 @@ Status HixlTransporter::MSetDevice(const std::shared_ptr<WorkerRpcClient> &rpc,
             if (std::find(allocations.begin(), allocations.end(), id) == allocations.end()) { allocations.push_back(id); }
         }
     }
-    CHECK_FAIL_RETURN_STATUS(response.hixl_comm_id() == commId_, K_NOT_SUPPORTED,
+    CHECK_FAIL_RETURN_STATUS(response.hixl_comm_id() == request.hixl_comm_id(), K_NOT_SUPPORTED,
                              "Worker does not support HIXL peer affinity; upgrade SDK and Worker together");
     MultiPublishReqPb publish;
     std::vector<DsHixlTransferDesc> writes;
-    RETURN_IF_NOT_OK(BuildHixlWrites(keys, blobs, response, writes, publish));
-    if (writes.empty()) { return Status::OK(); }
-    remaining = TimeoutDuration::CeilUsToMs(ApiDeadline::Instance().ApiRemainingUs());
-    CHECK_FAIL_RETURN_STATUS(remaining > 0, K_RPC_DEADLINE_EXCEEDED, "D2RH deadline expired before connect");
-    auto retained = writeEndpoints_.insert(response.hixl_endpoint());
-    if (retained.second) {
-        auto status = transport_->RetainWriteConnection(
-            response.hixl_endpoint(), static_cast<int32_t>(std::min<int64_t>(remaining, INT32_MAX)));
-        if (status.IsError()) {
-            writeEndpoints_.erase(retained.first);
-            return status;
-        }
+    if (fabricMem) {
+        RETURN_IF_NOT_OK(BuildFabricWrites(keys, blobs, response, publish));
+    } else {
+        RETURN_IF_NOT_OK(BuildHixlWrites(keys, blobs, response, writes, publish));
     }
-    remaining = TimeoutDuration::CeilUsToMs(ApiDeadline::Instance().ApiRemainingUs());
-    CHECK_FAIL_RETURN_STATUS(remaining > 0, K_RPC_DEADLINE_EXCEEDED, "D2RH deadline expired before write");
-    auto rc = transport_->WriteBatch(response.hixl_endpoint(), writes,
+    if (publish.object_info_size() == 0) { return Status::OK(); }
+    Status rc;
+    if (fabricMem) {
+        rc = WriteFabricObjects(blobs, response);
+    } else {
+        remaining = TimeoutDuration::CeilUsToMs(ApiDeadline::Instance().ApiRemainingUs());
+        CHECK_FAIL_RETURN_STATUS(remaining > 0, K_RPC_DEADLINE_EXCEEDED, "D2RH deadline expired before connect");
+        auto retained = writeEndpoints_.insert(response.hixl_endpoint());
+        if (retained.second) {
+            auto status = transport_->RetainWriteConnection(
+                response.hixl_endpoint(), static_cast<int32_t>(std::min<int64_t>(remaining, INT32_MAX)));
+            if (status.IsError()) {
+                writeEndpoints_.erase(retained.first);
+                return status;
+            }
+        }
+        remaining = TimeoutDuration::CeilUsToMs(ApiDeadline::Instance().ApiRemainingUs());
+        CHECK_FAIL_RETURN_STATUS(remaining > 0, K_RPC_DEADLINE_EXCEEDED, "D2RH deadline expired before write");
+        rc = transport_->WriteBatch(response.hixl_endpoint(), writes,
                                     static_cast<int32_t>(std::min<int64_t>(remaining, INT32_MAX)));
+    }
     if (rc.IsError()) {
         failed_ = true;
         transferFailed_ = true;

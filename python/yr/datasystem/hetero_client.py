@@ -93,6 +93,7 @@ class HeteroClient:
         connect_timeout_ms.
         enable_remote_h2d(bool): Whether the remote h2d feature is enabled or not, default off.
         data_placement_policy(DataPlacementPolicy): Placement for synchronous routed D2H writes.
+        enable_local_cache(bool): True uses bound device writes; False enables synchronous placement-routed writes.
 
     Raises:
         TypeError: Raise a type error if the input parameter is invalid.
@@ -113,7 +114,8 @@ class HeteroClient:
         enable_cross_node_connection=False,
         req_timeout_ms=0,
         enable_remote_h2d=False,
-        data_placement_policy=DataPlacementPolicy.PREFERRED_SAME_NODE
+        data_placement_policy=DataPlacementPolicy.PREFERRED_SAME_NODE,
+        enable_local_cache=True
     ):
         """Constructor of the HeteroClient class
 
@@ -134,6 +136,8 @@ class HeteroClient:
             enable_remote_h2d(bool): Whether the remote h2d feature is enabled or not, default off.
             data_placement_policy(DataPlacementPolicy): Synchronous D2H write placement. Reads use the bound
                 Worker path; remote writes require a pre-registered HIXL arena and an enabled target Worker.
+            enable_local_cache(bool): True writes to the bound Worker; False enables synchronous D2H placement
+                routing and does not support AsyncMSetD2H. MGetH2D uses the bound Worker in both modes.
 
         Raises:
             TypeError: Raise a type error if the input parameter is invalid.
@@ -152,6 +156,7 @@ class HeteroClient:
             ["enable_cross_node_connection", enable_cross_node_connection, bool],
             ["enable_remote_h2d", enable_remote_h2d, bool],
             ["data_placement_policy", data_placement_policy, DataPlacementPolicy],
+            ["enable_local_cache", enable_local_cache, bool],
         ]
         validator.check_args_types(args)
         self._client = ds.HeteroClient(
@@ -168,7 +173,8 @@ class HeteroClient:
             enable_cross_node_connection,
             req_timeout_ms,
             enable_remote_h2d,
-            data_placement_policy.value
+            data_placement_policy.value,
+            enable_local_cache
         )
 
     @staticmethod

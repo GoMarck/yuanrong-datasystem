@@ -118,7 +118,7 @@ class __attribute((visibility("default"))) ObjectClientImpl : public std::enable
     friend class BoundMode;
     friend class WorkerFailover;
 public:
-    enum class DeviceAccessMode { FOLLOW_LOCAL_CACHE, BOUND_READ_ROUTED_WRITE };
+    enum class DeviceAccessMode { FOLLOW_LOCAL_CACHE, BOUND_READ };
     explicit ObjectClientImpl(const ConnectOptions &connectOptions,
                               DeviceAccessMode deviceAccessMode = DeviceAccessMode::FOLLOW_LOCAL_CACHE);
 
@@ -1341,7 +1341,11 @@ private:
     bool enableCrossNodeConnection_ = false;
     bool UseRoutedDeviceWrites() const
     {
-        return deviceAccessMode_ == DeviceAccessMode::BOUND_READ_ROUTED_WRITE || !enableLocalCache_;
+        return !enableLocalCache_;
+    }
+    bool UseRoutedReads(bool deviceRead) const
+    {
+        return !enableLocalCache_ && !(deviceRead && deviceAccessMode_ == DeviceAccessMode::BOUND_READ);
     }
     const DeviceAccessMode deviceAccessMode_;
     bool enableLocalCache_ = true;

@@ -370,7 +370,7 @@ Status WorkerOcServiceCreateImpl::FillMultiCreateShmUnits(
         point.RecordAndReset(PerfKey::WORKER_MULTI_CREATE_FILL_SUB_RSP);
         results[index] = FillCreateResponse(clientId, shmUnits[index], metadataSize, subRsp[index],
                                             req.hixl_layouts_size() > 0, commId, clientDeviceInfo);
-        if (results[index].IsOk() && req.hixl_layouts_size() > 0) {
+        if (results[index].IsOk() && req.hixl_layouts_size() > 0 && !req.hixl_fabric_mem()) {
             results[index] = FillHixlTarget(req, index, shmUnits[index], subRsp[index]);
         }
         if (results[index].IsError()) {
@@ -391,9 +391,14 @@ Status WorkerOcServiceCreateImpl::PrepareHixlWrite(MultiCreateReqPb &req, MultiC
     CHECK_FAIL_RETURN_STATUS(!req.hixl_comm_id().empty(), K_NOT_SUPPORTED,
                              "HIXL peer affinity requires matching SDK and Worker versions");
 #ifdef ASCEND_HIXL_AVAILABLE
-    std::string endpoint;
-    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().GetHixlWriteEndpoint(req.hixl_comm_id(), endpoint));
-    resp.set_hixl_endpoint(endpoint);
+    if (req.hixl_fabric_mem()) {
+        CHECK_FAIL_RETURN_STATUS(UsePhysicalFabricArena() && req.comm_id() == req.hixl_comm_id(),
+                                 K_NOT_SUPPORTED, "FabricMem writes require a physical arena and matching communicator");
+    } else {
+        std::string endpoint;
+        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().GetHixlWriteEndpoint(req.hixl_comm_id(), endpoint));
+        resp.set_hixl_endpoint(endpoint);
+    }
     resp.set_hixl_comm_id(req.hixl_comm_id());
     uint64_t batchBytes = 0;
     for (int i = 0; i < req.object_key_size(); ++i) {
@@ -402,6 +407,9 @@ Status WorkerOcServiceCreateImpl::PrepareHixlWrite(MultiCreateReqPb &req, MultiC
         uint64_t size = 0;
         RETURN_IF_NOT_OK(BuildComposedBufferHeader({ sizes.begin(), sizes.end() }, FLAGS_memory_alignment,
                                                    header, size));
+        if (req.hixl_fabric_mem()) {
+            size -= header.size() * sizeof(uint64_t);
+        }
         CHECK_FAIL_RETURN_STATUS(size <= SharedMemoryRefTable::MAX_HIXL_WRITE_BYTES - batchBytes, K_INVALID,
                                  "HIXL batch exceeds the protected memory budget");
         batchBytes += size;

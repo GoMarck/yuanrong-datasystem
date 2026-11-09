@@ -52,6 +52,7 @@ struct ConnectOptions {
     std::string tenantId = "";
     bool enableCrossNodeConnection = false;
     // true: Get/MGet use the bound Worker path; false: Get/MGet query metadata owners through TransportLayer.
+    // HeteroClient: controls bound versus routed MSetD2H; MGetH2D always uses the bound Worker.
     bool enableLocalCache = true;
     // Used only by Set/MSet when enableLocalCache is false; it never changes Get/MGet routing.
     DataPlacementPolicy dataPlacementPolicy = DataPlacementPolicy::PREFERRED_SAME_NODE;

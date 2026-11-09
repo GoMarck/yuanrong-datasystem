@@ -46,8 +46,8 @@ struct MetaInfo {
 class __attribute((visibility("default"))) HeteroClient : public std::enable_shared_from_this<HeteroClient> {
 public:
     /// \brief Constructor a HeteroClient.
-    /// \param[in] connectOptions The connection options. Reads use the bound Worker; synchronous device writes
-    ///     use placement routing. This policy is automatic and independent of connectOptions.enableLocalCache.
+    /// \param[in] connectOptions The connection options. MGetH2D uses the bound Worker in both modes.
+    ///     With enableLocalCache=true (default), MSetD2H writes to the bound Worker; false enables placement routing.
     explicit HeteroClient(const ConnectOptions &connectOptions = {});
 
     /// \brief Destructor.
@@ -91,8 +91,9 @@ public:
     /// \param[in] devBlobList Pointers to the HBM memory in a group of devices. Data is obtained from these pointers
     ///     and written to the key of the host. If the DeviceBlobList contains multiple HBM pointers, the data is
     ///     combined and written to the shared memory corresponding to the host key.
-    ///     Remote targets use HIXL D2RH (buffer pool required); same-host targets
-    ///     use shared memory and D2H. Empty blob placeholders are unsupported in this mode.
+    ///     FabricMem targets use HIXL WRITE without client shared-memory mapping, including same-host targets.
+    ///     Otherwise remote targets require the HIXL buffer pool and same-host targets use shared memory and D2H.
+    ///     Empty blob placeholders are unsupported in this mode.
     /// \param[in] setParam Configuration parameters for the MSetD2H operation.
     /// \return K_OK when the operation completes successfully; the error code otherwise.
     Status MSetD2H(const std::vector<std::string> &keys, const std::vector<DeviceBlobList> &devBlobList,
@@ -120,7 +121,7 @@ public:
     Status Delete(const std::vector<std::string> &keys, std::vector<std::string> &failedKeys);
 
     /// @brief For device object Async set multiple objects, and return before publish rpc called.
-    ///     Uses the existing bound-Worker path; routed HIXL D2RH writes are synchronous only.
+    ///     Requires enableLocalCache=true and uses the bound-Worker path; routed writes are synchronous only.
     /// \param[in] keys Keys in the host. Constraint: The number of keys cannot exceed 10,000.
     ///     For performance reasons, only the validity of the first key is validated.
     /// \param[in] devBlobList Pointers to the HBM memory in a group of devices. Data is obtained from these pointers

@@ -24,6 +24,7 @@
 
 #include "common.h"
 #include "datasystem/common/device/ascend/acl_device_manager.h"
+#include "datasystem/common/flags/common_flags.h"
 #include "datasystem/common/inject/inject_point.h"
 #include "datasystem/common/log/access_recorder.h"
 #include "datasystem/common/util/net_util.h"
@@ -58,6 +59,7 @@ protected:
         options_.port = address.Port();
         options_.requestTimeoutMs = 30000;
         options_.enableRemoteH2D = EnableRemoteH2D();
+        options_.enableLocalCache = EnableLocalCache();
         options_.dataPlacementPolicy = DataPlacementPolicy::PREFERRED_META_OWNER;
         const char *accessKey = std::getenv("DS_D2RH_TEST_ACCESS_KEY");
         const char *secretKey = std::getenv("DS_D2RH_TEST_SECRET_KEY");
@@ -77,6 +79,8 @@ protected:
     void TearDown() override
     {
         inject::Clear("HixlTransport.WriteBatch");
+        inject::Clear("ObjectClientImpl.MSetD2HRouted.requireGroups");
+        inject::Clear("HixlTransporter.FabricMemWrite");
         if (client_ != nullptr) {
             DS_ASSERT_OK(client_->ShutDown());
             client_.reset();
@@ -105,6 +109,11 @@ protected:
     }
 
     virtual bool EnableRemoteH2D() const
+    {
+        return false;
+    }
+
+    virtual bool EnableLocalCache() const
     {
         return false;
     }
@@ -158,6 +167,33 @@ protected:
         return true;
     }
 };
+
+TEST_F(HeteroD2RHWithRH2DTest, DISABLED_FabricMemTwoWorkerRoundTrip)
+{
+    ASSERT_TRUE(FLAGS_remote_h2d_hccs_enable_fabric_mem);
+    const char *first = std::getenv("DS_FABRIC_TEST_KEY_A");
+    const char *second = std::getenv("DS_FABRIC_TEST_KEY_B");
+    ASSERT_NE(first, nullptr) << "Supply two absent keys owned by different Workers";
+    ASSERT_NE(second, nullptr);
+    keys_ = { first, second };
+    DS_ASSERT_OK(inject::Set("ObjectClientImpl.MSetD2HRouted.requireGroups", "call(2)"));
+    DS_ASSERT_OK(client_->PreRegisterDeviceMemory({ source_, destination_ }, { arenaSize_, arenaSize_ }));
+    std::vector<std::string> confirmed;
+    DS_ASSERT_OK(Write(sourceBlobs_, {}, &confirmed));
+    ASSERT_EQ(confirmed.size(), keys_.size());
+    ASSERT_EQ(AccessTransportTracker::ToString(), "HIXL");
+    Verify('a');
+    FillSource('b');
+    SetParam param;
+    param.existence = ExistenceOpt::NX;
+    confirmed.clear();
+    DS_ASSERT_OK(Write(sourceBlobs_, param, &confirmed));
+    ASSERT_TRUE(confirmed.empty());
+    Verify('a');
+    std::vector<std::string> failed;
+    DS_ASSERT_OK(client_->Delete(keys_, failed));
+    ASSERT_TRUE(failed.empty());
+}
 
 TEST_F(HeteroD2RHWithRH2DTest, DISABLED_MultiDeviceWorkerRoundTrip)
 {
@@ -246,13 +282,36 @@ TEST_F(HeteroD2RHTest, DISABLED_UnregisteredSourceRejected)
     ASSERT_EQ(failed.size(), keys_.size());
 }
 
-TEST_F(HeteroD2RHTest, DISABLED_AsyncBoundRoundTrip)
+class HeteroBoundD2HTest : public HeteroD2RHTest {
+protected:
+    bool EnableLocalCache() const override
+    {
+        return true;
+    }
+};
+
+TEST_F(HeteroBoundD2HTest, DISABLED_AsyncBoundRoundTrip)
 {
     const auto result = client_->AsyncMSetD2H(keys_, sourceBlobs_).get();
     transferFailed_ = result.status.IsError();
     DS_ASSERT_OK(result.status);
     ASSERT_TRUE(result.failedList.empty());
     Verify('a');
+}
+
+TEST_F(HeteroD2RHWithRH2DTest, DISABLED_FabricMemWriteFailureDoesNotPublish)
+{
+    ASSERT_TRUE(FLAGS_remote_h2d_hccs_enable_fabric_mem);
+    DS_ASSERT_OK(client_->PreRegisterDeviceMemory({ source_, destination_ }, { arenaSize_, arenaSize_ }));
+    DS_ASSERT_OK(inject::Set("HixlTransporter.FabricMemWrite", "1*return(K_RUNTIME_ERROR)"));
+    std::vector<std::string> confirmed;
+    ASSERT_EQ(Write(sourceBlobs_, {}, &confirmed).GetCode(), K_RUNTIME_ERROR);
+    ASSERT_TRUE(confirmed.empty());
+    inject::Clear("HixlTransporter.FabricMemWrite");
+    ASSERT_EQ(Write(sourceBlobs_).GetCode(), K_NOT_READY);
+    std::vector<std::string> failed;
+    ASSERT_TRUE(client_->MGetH2D(keys_, destinationBlobs_, failed, 0).IsError());
+    ASSERT_EQ(failed.size(), keys_.size());
 }
 
 TEST_F(HeteroD2RHTest, DISABLED_WriteFailureDoesNotPublish)
