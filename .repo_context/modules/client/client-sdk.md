@@ -14,7 +14,8 @@
   Uncertain writes retain target allocations under the existing bounded protection policy; no persistent format changes.
 - Device pre-registration configures the hetero transport first. FabricMem uses RemoteH2DManager registration once;
   buffer-pool writes retain their additional HixlTransporter registration.
-- SDK and Worker must be upgraded together. `enable_hixl_d2rh` also gates this routed FabricMem protocol.
+- SDK and Worker must be upgraded together. `enable_hixl_d2rh` gates only buffer-pool routed writes;
+  FabricMem writes require HCCS and a physical FabricMem arena independently of that flag.
   Manual two-target regression: `HeteroD2RHWithRH2DTest.DISABLED_FabricMemTwoWorkerRoundTrip`;
   prerequisites and coverage limits are in `tests/st/device/README_hixl_d2rh.md`.
 

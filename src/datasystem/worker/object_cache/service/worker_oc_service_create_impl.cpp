@@ -382,8 +382,9 @@ Status WorkerOcServiceCreateImpl::FillMultiCreateShmUnits(
 
 Status WorkerOcServiceCreateImpl::PrepareHixlWrite(MultiCreateReqPb &req, MultiCreateRspPb &resp)
 {
-    CHECK_FAIL_RETURN_STATUS(FLAGS_enable_hixl_d2rh && req.is_routed(), K_NOT_SUPPORTED,
-                             "HIXL D2RH writes are disabled");
+    CHECK_FAIL_RETURN_STATUS(req.is_routed(), K_NOT_SUPPORTED, "HIXL D2RH writes require a routed request");
+    CHECK_FAIL_RETURN_STATUS(req.hixl_fabric_mem() || FLAGS_enable_hixl_d2rh, K_NOT_SUPPORTED,
+                             "HIXL buffer-pool D2RH writes are disabled");
     CHECK_FAIL_RETURN_STATUS(FLAGS_remote_h2d_link_type == "HCCS", K_NOT_SUPPORTED,
                              "D2RH requires remote_h2d_link_type=HCCS");
     CHECK_FAIL_RETURN_STATUS(req.hixl_layouts_size() == req.object_key_size(), K_INVALID,

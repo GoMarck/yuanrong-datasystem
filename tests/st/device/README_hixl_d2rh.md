@@ -272,9 +272,11 @@ false 时 `AsyncMSetD2H` 返回不支持，不会静默改写到绑定 Worker。
 读取保持 bound Worker 协调、按返回的数据源信息分组 READ 的既有语义。
 
 SDK 和目标 Worker 均需包含 `MultiCreateReqPb.hixl_fabric_mem` 协议支持。
-Worker 需启用 `enable_hixl_d2rh=true`、HCCS、物理 FabricMem arena，并遵守原有 FabricMem
+Worker 需启用 HCCS、物理 FabricMem arena，并遵守原有 FabricMem
 配置约束（包括关闭对象内嵌 metadata header）。客户端启用 HCCS/FabricMem 和异构传输，
 buffer pool 使用 FabricMem 的 `0:0` 配置。预注册走 RemoteH2DManager，不进入 buffer-pool 注册接口。
+`enable_hixl_d2rh` 仅控制 buffer-pool routed 写；FabricMem 不需要开启它，测试时保持 false。
+关闭该开关不会停止 FabricMem 写入；停用时应先停止调用方写入，再按 FabricMem 生命周期关闭服务。
 升级或回退时同步处理 SDK 和 Worker；旧 Worker 不保证支持此路径。
 
 该路径复用 routed HiXL 的 pending-write 内存保护：每 Worker 256 MiB、1024 个分配。
@@ -282,6 +284,8 @@ buffer pool 使用 FabricMem 的 `0:0` 配置。预注册走 RemoteH2DManager，
 发生不确定 DMA 失败时，不得提前释放源设备 arena；按既有 HiXL 故障处理要求重启进程。
 
 手工回归入口（需要 NPU、FabricMem、`WITH_TESTS` 和两个已启动的 Worker）：
+
+两个目标 Worker 均使用 `--enable_hixl_d2rh=false`，验证 FabricMem 写不依赖该开关。
 
 ```bash
 export DS_D2RH_TEST_WORKER='<bound-worker-address>'

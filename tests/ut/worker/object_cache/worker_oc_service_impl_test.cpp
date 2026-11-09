@@ -82,6 +82,8 @@ DS_DECLARE_bool(enable_metadata_recovery);
 DS_DECLARE_bool(enable_reconciliation);
 DS_DECLARE_bool(enable_transport_fallback);
 DS_DECLARE_bool(enable_worker_worker_batch_get);
+DS_DECLARE_bool(enable_hixl_d2rh);
+DS_DECLARE_string(remote_h2d_link_type);
 DS_DECLARE_string(data_migrate_urma_transport_mode);
 DS_DECLARE_uint32(arena_per_tenant);
 DS_DECLARE_int32(oc_worker_worker_parallel_min);
@@ -939,6 +941,34 @@ private:
     memory::Allocator *allocator_{ nullptr };
     uint32_t savedArenaPerTenant_{ 0 };
 };
+
+TEST_F(WorkerOcServiceImplTest, FabricMemWriteAdmissionDoesNotRequireBufferPoolFlag)
+{
+    const bool savedEnabled = FLAGS_enable_hixl_d2rh;
+    const auto savedLink = FLAGS_remote_h2d_link_type;
+    Raii restore([savedEnabled, savedLink] {
+        FLAGS_enable_hixl_d2rh = savedEnabled;
+        FLAGS_remote_h2d_link_type = savedLink;
+    });
+    FLAGS_remote_h2d_link_type = "HCCS";
+    MultiCreateReqPb req;
+    MultiCreateRspPb resp;
+    req.set_is_routed(true);
+    req.add_object_key("fabric-admission");
+    // A missing layout stops after admission, before hardware-dependent initialization.
+    for (bool enabled : { false, true }) {
+        FLAGS_enable_hixl_d2rh = enabled;
+        req.set_hixl_fabric_mem(true);
+        EXPECT_EQ(impl_->createProc_->PrepareHixlWrite(req, resp).GetCode(), K_INVALID);
+        req.set_hixl_fabric_mem(false);
+        EXPECT_EQ(impl_->createProc_->PrepareHixlWrite(req, resp).GetCode(),
+                  enabled ? K_INVALID : K_NOT_SUPPORTED);
+        req.set_hixl_fabric_mem(true);
+        req.set_is_routed(false);
+        EXPECT_EQ(impl_->createProc_->PrepareHixlWrite(req, resp).GetCode(), K_NOT_SUPPORTED);
+        req.set_is_routed(true);
+    }
+}
 
 TEST_F(WorkerOcServiceImplTest, AllocationIdReservationUsesStableShmIdAndRejectsConcurrentDuplicate)
 {

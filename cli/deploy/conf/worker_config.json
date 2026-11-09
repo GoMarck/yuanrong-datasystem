@@ -761,7 +761,7 @@
     },
     "enable_hixl_d2rh": {
         "value": "false",
-        "description": "Enable synchronous routed HIXL D2RH writes. Reuses RH2D engines across remote_h2d_device_ids, including multi-device workers. Requires an HIXL build, HCCS and either a nonzero remote_h2d_hccs_buffer_pool or a physical FabricMem arena with matching SDK support. Default false."
+        "description": "Enable synchronous routed HIXL buffer-pool D2RH writes. Requires an HIXL build, HCCS and a nonzero remote_h2d_hccs_buffer_pool. FabricMem writes are controlled separately by remote_h2d_hccs_enable_fabric_mem and do not require this flag. Default false."
     },
     "remote_h2d_device_ids": {
         "value": "",
