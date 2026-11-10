@@ -264,6 +264,18 @@ owner 却只计少量字节。因此成功链路的批次也必须在此预算�
 
 ## FabricMem 传输并发配置
 
+### 可选提前初始化 RH2D
+
+```bash
+export DS_HETERO_EAGER_INIT_REMOTE_H2D=1
+```
+
+默认关闭。只有显式开启且基础客户端初始化成功，`HeteroClient::Init()` 才调用 `InitRemoteH2D()`。
+需要提前初始化时，在 Init 前设置环境变量并正确绑定当前 ACL 设备。
+不开启时，设备内存预注册及设备读写接口沿用已有的按需初始化流程。
+这个开关只控制初始化时机，不关闭 RH2D，也不允许已初始化的进程随意修改设备或传输配置。
+提前初始化失败时，Init 保留现有错误返回与回滚处理。
+
 ### 跳过 GlobalResourceConfig
 
 ```bash

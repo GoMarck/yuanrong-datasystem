@@ -2,6 +2,10 @@
 
 ## Routed FabricMem device writes
 
+- `HeteroClient::Init` eagerly calls `InitRemoteH2D` only when `DS_HETERO_EAGER_INIT_REMOTE_H2D=1`
+  and base initialization succeeds. Default false leaves device transport initialization to the existing
+  preregistration/read/write paths. Eager initialization errors still flow through CompleteHandler and Init's
+  returned status. This gate does not disable RH2D or reset an already-initialized process-wide transport.
 - `DS_HIXL_SKIP_GLOBAL_RESOURCE_CONFIG=1` omits the entire GlobalResourceConfig option during HiXL engine
   initialization (client and Worker); default false preserves current behavior. This skips both device listen-port
   and FabricMem capacity/AICPU/task-stream overrides, leaving native defaults. Other options are unchanged.

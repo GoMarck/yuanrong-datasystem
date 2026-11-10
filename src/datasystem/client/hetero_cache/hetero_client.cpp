@@ -24,6 +24,7 @@
 
 #include "datasystem/client/hetero_cache/device_util.h"
 #include "datasystem/client/object_cache/object_client_impl.h"
+#include "datasystem/common/flags/flags.h"
 #include "datasystem/common/log/access_recorder.h"
 #include "datasystem/common/log/log.h"
 #include "datasystem/common/log/log_sampler.h"
@@ -101,7 +102,7 @@ Status HeteroClient::Init()
     auto access = AccessRecorder::Object(AccessRecorderKey::DS_HETERO_CLIENT_INIT);
     bool needRollbackState;
     auto rc = impl_->Init(needRollbackState, true);
-    if (rc.IsOk()) {
+    if (rc.IsOk() && GetBoolFromEnv("DS_HETERO_EAGER_INIT_REMOTE_H2D", false)) {
         rc = impl_->InitRemoteH2D();
     }
     impl_->CompleteHandler(rc.IsError(), needRollbackState);
