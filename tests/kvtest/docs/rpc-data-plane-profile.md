@@ -290,3 +290,23 @@ CPU clock 与采样元数据分配有观测开销，应分别采集关闭、普�
 新增本地诊断覆盖路由选择、负载调度的槽查询/状态更新/决策记录、TCP Create/Publish，
 以及 SafeTable 查找与未命中 Status 构造。正常业务返回值与同步方式保持原状。
 共享头使用版本命名空间，避免同一进程加载不同版本 SDK 时 profiler 内部类型发生符号冲突。
+
+### 固定对象规模和并发诊断
+
+`cmake --build <kvtest-build> --target kvtest_table_probe` 构建可选诊断程序。
+它复用 KVTest 的 SDK 连接配置及 Mooncake `put/get_buffer` 适配器；不修改正常 KVTest 用例。
+运行：`kvtest_table_probe <client-config.json> <plan.json>`，环境变量由启动器显式设置，方式与正常 KVTest 相同。
+
+```json
+{"prefix":"tp1111","resident_keys":4096,"seed_begin":0,"seed_threads":4,
+ "key_bytes":32,"value_bytes":1,"threads":[1,4,16,32],"seconds":20,"warmup_seconds":3}
+```
+
+这是独立诊断组：种子 Set 使用 `NONE_L2_CACHE_EVICT`、TTL=0 固定存活规模；Get 使用同一客户端的原生线程，
+依次运行均匀随机键与单热键。正常基线的 TTL、线程模型和读写混合不受影响，二者绝对时延不能直接混用。
+同一服务集群从 N 增长至 M 时沿用 prefix，设置 `seed_begin=N,resident_keys=M`，仅写新增键；
+服务应从空数据状态开始，并核对采样表规模、淘汰和 API 失败数。`threads:[]` 可单独采集种子 Set。
+种子 Set 输出精确 API 平均耗时/P99 和增长范围；Get 输出各阶段时间窗口、精确平均/P50/P99、失败及全量数据验证数。
+API 计时不含返回 Buffer 的验证和析构，与 KVTest 主用例一致；析构引起的后台处理仍会影响下一次调用。
+先关闭打点测吞吐，再独立采集细节；高吞吐时增加采样间隔并核对样本丢弃数。采样耗时不能除以全量请求数。
+不要将 `resident_keys` 计划值当成已测的某张表大小：以具体表/分片属性和实际成功计数核对。

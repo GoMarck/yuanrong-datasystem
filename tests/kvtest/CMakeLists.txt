@@ -339,3 +339,17 @@ if(KVTEST_ENABLE_MOONCAKE)
         "${DATASYSTEM_SDK_DIR}/lib;${MC_DEPS}/gflags-install/lib;${MC_DEPS}/glog-install/lib64;${MC_BUILD}/mooncake-common;/opt/mooncake-bench/.deps/gflags-install/lib;/opt/mooncake-bench/.deps/glog-install/lib64;/opt/Mooncake/build-ub/mooncake-common")
     message(STATUS "Mooncake C++ KVTest enabled from ${MOONCAKE_OUTPUT_DIR}")
 endif()
+
+
+# Diagnostic executable; not part of default builds or the production benchmark pipeline.
+add_executable(kvtest_table_probe EXCLUDE_FROM_ALL src/benchmark/table_probe.cpp src/common/config.cpp)
+foreach(property INCLUDE_DIRECTORIES COMPILE_DEFINITIONS COMPILE_OPTIONS LINK_LIBRARIES LINK_OPTIONS BUILD_RPATH)
+    get_target_property(probe_${property} kvtest ${property})
+    if(probe_${property})
+        set_property(TARGET kvtest_table_probe PROPERTY ${property} "${probe_${property}}")
+    endif()
+endforeach()
+if(KVTEST_ENABLE_MOONCAKE)
+    target_sources(kvtest_table_probe PRIVATE src/pipeline/mooncake_client.cpp)
+    set_property(TARGET kvtest_table_probe PROPERTY CXX_STANDARD 20)
+endif()

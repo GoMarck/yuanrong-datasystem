@@ -700,3 +700,8 @@ and same-thread bthread switches can include unrelated CPU work. Sample attribut
 key size and hit state under existing synchronization. Sample metadata allocation and CPU clocks require overhead
 calibration. The shared header uses an inline version namespace to isolate profiler layout across loaded SDK versions.
 Normal table misses can include rich Status construction; the SafeTable lookup and Status checkpoints distinguish them.
+
+The EXCLUDE_FROM_ALL `kvtest_table_probe` target reuses KVTest client configuration and the Mooncake adapter for
+separate fixed-residency diagnostics. It seeds TTL=0 keys and measures native-thread Get at uniform/hot-key skew;
+seed Set reports the population growth range. Its threading/TTL differ from the original mixed workload, so its
+absolute latency is not the baseline. Build/usage and population validity checks are in the profiling document.
