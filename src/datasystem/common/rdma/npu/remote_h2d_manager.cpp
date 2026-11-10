@@ -227,6 +227,8 @@ Status RemoteH2DManager::CheckClientHeteroTransportConfig(bool enableHeteroTrans
 void RemoteH2DManager::CommitClientHeteroTransportConfig(bool enableHeteroTransport, uint32_t devId,
                                                          const std::string &localIp)
 {
+    LOG(INFO) << "CommitClientHeteroTransportConfig: enableHeteroTransport=" << enableHeteroTransport
+              << ", devId=" << devId << ", localIp=" << localIp;
     clientConfig_.enableHeteroTransport = enableHeteroTransport;
     clientConfig_.devId = static_cast<int32_t>(devId);
     clientConfig_.localIp = FLAGS_remote_h2d_link_type == "HCCS" ? localIp : "";
