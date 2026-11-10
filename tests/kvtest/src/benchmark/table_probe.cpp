@@ -113,7 +113,7 @@ struct Client {
 };
 
 void Phase(Client &client, const std::vector<std::string> &keys, const std::string &value,
-           unsigned threads, unsigned seconds, bool hot, unsigned warmup, const Json &identity)
+           unsigned threads, unsigned seconds, bool hot, unsigned warmup, bool failOnApiError, const Json &identity)
 {
     std::atomic<unsigned> ready{0};
     std::atomic<uint64_t> startNs{0};
@@ -171,7 +171,9 @@ void Phase(Client &client, const std::vector<std::string> &keys, const std::stri
                 {"p50_us", percentile(.5)}, {"p99_us", percentile(.99)},
                 {"qps", latency.size() / static_cast<double>(seconds)}});
     std::cout << "[KVTEST_TABLE_PROBE] " << row.dump() << std::endl;
-    if (failed || verifyFailed || latency.empty()) throw std::runtime_error("invalid measured phase");
+    if ((failed && failOnApiError) || verifyFailed || latency.empty()) {
+        throw std::runtime_error("invalid measured phase");
+    }
 }
 }  // namespace
 
@@ -187,6 +189,7 @@ int main(int argc, char **argv)
         const uint64_t seedBegin = plan.value("seed_begin", uint64_t{0});
         const unsigned seconds = plan.value("seconds", 20U);
         const unsigned warmup = plan.value("warmup_seconds", 3U);
+        const bool failOnApiError = plan.value("fail_on_api_error", true);
         const auto threads = plan.at("threads").get<std::vector<unsigned>>();
         const unsigned seedThreads = plan.value("seed_threads", 4U);
         const std::string prefix = plan.at("prefix");
@@ -217,7 +220,8 @@ int main(int argc, char **argv)
         });
         for (auto &thread : seeders) thread.join();
         Json identity{{"backend", cfg.backend}, {"resident_keys", count}, {"prefix", prefix},
-                      {"key_bytes", keyBytes}, {"value_bytes", valueBytes}, {"ttl_second", 0}};
+                      {"key_bytes", keyBytes}, {"value_bytes", valueBytes}, {"ttl_second", 0},
+                      {"fail_on_api_error", failOnApiError}};
         std::vector<uint64_t> seedTimes;
         uint64_t seedSum = 0;
         for (const auto &times : seedLatency) for (auto ns : times) { seedSum += ns; seedTimes.push_back(ns); }
@@ -231,8 +235,8 @@ int main(int argc, char **argv)
         std::cout << "[KVTEST_TABLE_PROBE] " << seed.dump() << std::endl;
         if (seedFailures.load()) throw std::runtime_error("seeding failed; resident population invalid");
         for (auto t : threads) {
-            Phase(client, keys, value, t, seconds, false, warmup, identity);
-            Phase(client, keys, value, t, seconds, true, warmup, identity);
+            Phase(client, keys, value, t, seconds, false, warmup, failOnApiError, identity);
+            Phase(client, keys, value, t, seconds, true, warmup, failOnApiError, identity);
         }
         return 0;
     } catch (const std::exception &error) {
