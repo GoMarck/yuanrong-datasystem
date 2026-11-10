@@ -2,6 +2,10 @@
 
 ## Routed FabricMem device writes
 
+- `DS_HIXL_SKIP_GLOBAL_RESOURCE_CONFIG=1` omits the entire GlobalResourceConfig option during HiXL engine
+  initialization (client and Worker); default false preserves current behavior. This skips both device listen-port
+  and FabricMem capacity/AICPU/task-stream overrides, leaving native defaults. Other options are unchanged.
+  Configure before engine initialization; multi-engine connection behavior requires validation when opting in.
 - `DS_ASCEND_USE_ASYNC_TRANSFER=1` opts HixlTransport into async vendor submission, default false.
   The plugin ABI appends optional submit/query/release callbacks after its stable synchronous prefix;
   unsupported plugins fail initialization without fallback. The plugin owns endpoint/descriptors until completion.

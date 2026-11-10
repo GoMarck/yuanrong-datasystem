@@ -264,6 +264,20 @@ owner 却只计少量字节。因此成功链路的批次也必须在此预算�
 
 ## FabricMem 传输并发配置
 
+### 跳过 GlobalResourceConfig
+
+```bash
+export DS_HIXL_SKIP_GLOBAL_RESOURCE_CONFIG=1
+```
+
+默认 false。开启后 `BuildHixlOptions` 不传 `GlobalResourceConfig` 项，而不是传空 JSON。
+客户端和 Worker 都适用，分别在需要测试的进程启动前设置；已初始化的 engine 不受影响。
+其他 options（如 FabricMem 启用、buffer pool、LocalCommRes）保持原有逻辑。
+跳过范围包括 `comm_resource_config.listen_port`、`fabric_memory.max_capacity`、
+`fabric_memory.enable_aicpu_unfold` 和 `fabric_memory.task_stream_num`。
+这些值改由 HiXL 默认行为决定；跳过后不能假定设备端口仍按 DataSystem 指定值隔离，
+多 engine 共存、连接和性能都需要重新验证。取消变量或设为 0，再重启进程即可恢复原配置。
+
 ### 异步 HiXL 提交
 
 ```bash

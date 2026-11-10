@@ -77,6 +77,7 @@ const std::string K_HIXL_OPTION_BUFFER_POOL = "BufferPool";
 const std::string K_HIXL_OPTION_LOCAL_COMM_RES = "LocalCommRes";
 const std::string K_HIXL_OPTION_ENABLE_USE_FABRIC_MEM = "EnableUseFabricMem";
 const std::string K_HIXL_OPTION_GLOBAL_RESOURCE_CONFIG = "GlobalResourceConfig";
+const std::string K_HIXL_SKIP_GLOBAL_RESOURCE_CONFIG_ENV = "DS_HIXL_SKIP_GLOBAL_RESOURCE_CONFIG";
 constexpr uint64_t K_FABRIC_MEM_MAX_CAPACITY_TB = 32;
 const std::string K_HIXL_CS_LOCAL_COMM_RES = R"({"version":"1.3"})";
 const std::string K_WORKER_DEVICE_COMM_PORT_ENV = "DS_RH2D_HCCS_WORKER_DEVICE_COMM_PORT";
@@ -385,9 +386,11 @@ std::vector<std::pair<std::string, std::string>> BuildHixlOptions(const std::str
     if (!localCommRes.empty()) {
         optionValues.emplace_back(K_HIXL_OPTION_LOCAL_COMM_RES, localCommRes);
     }
-    std::string resourceConfig = BuildGlobalResourceConfig(mode, deviceCommPort);
-    if (!resourceConfig.empty()) {
-        optionValues.emplace_back(K_HIXL_OPTION_GLOBAL_RESOURCE_CONFIG, std::move(resourceConfig));
+    if (!datasystem::GetBoolFromEnv(K_HIXL_SKIP_GLOBAL_RESOURCE_CONFIG_ENV.c_str(), false)) {
+        std::string resourceConfig = BuildGlobalResourceConfig(mode, deviceCommPort);
+        if (!resourceConfig.empty()) {
+            optionValues.emplace_back(K_HIXL_OPTION_GLOBAL_RESOURCE_CONFIG, std::move(resourceConfig));
+        }
     }
     return optionValues;
 }

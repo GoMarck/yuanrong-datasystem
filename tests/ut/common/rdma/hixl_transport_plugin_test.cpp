@@ -52,6 +52,7 @@ struct FakeHixlState {
     bool failTransfer = false;
     std::string bufferPool;
     std::string globalResourceConfig;
+    size_t globalResourceConfigCount = 0;
 };
 
 FakeHixlState g_state;
@@ -90,6 +91,7 @@ DsHixlResult InitializeEngine(DsHixlEngineHandle, DsHixlStringView, const DsHixl
         if (key == "BufferPool") {
             g_state.bufferPool.assign(options[i].value.data, options[i].value.size);
         } else if (key == "GlobalResourceConfig") {
+            ++g_state.globalResourceConfigCount;
             g_state.globalResourceConfig.assign(options[i].value.data, options[i].value.size);
         }
     }
@@ -289,6 +291,45 @@ TEST_F(HixlTransportPluginTest, ConnectHonorsCallerBudget)
     EXPECT_EQ(g_state.connectTimeoutMs, 100);
     EXPECT_EQ(transport.Connect("127.0.0.1:12346", 0).GetCode(), K_RPC_DEADLINE_EXCEEDED);
     EXPECT_EQ(g_state.connectCalls, 1);
+}
+
+TEST_F(HixlTransportPluginTest, GlobalResourceConfigCanBeOmittedForBothRolesAndMemoryModes)
+{
+    constexpr const char *env = "DS_HIXL_SKIP_GLOBAL_RESOURCE_CONFIG";
+    const char *value = std::getenv(env);
+    const bool hadValue = value != nullptr;
+    const std::string savedValue = value == nullptr ? "" : value;
+    const bool savedFabricMem = FLAGS_remote_h2d_hccs_enable_fabric_mem;
+    Raii restore([&] {
+        FLAGS_remote_h2d_hccs_enable_fabric_mem = savedFabricMem;
+        if (hadValue) {
+            setenv(env, savedValue.c_str(), 1);
+        } else {
+            unsetenv(env);
+        }
+    });
+    for (bool fabricMem : { false, true }) {
+        FLAGS_remote_h2d_hccs_enable_fabric_mem = fabricMem;
+        for (bool client : { false, true }) {
+            for (const char *setting : { static_cast<const char *>(nullptr), "0", "1" }) {
+                if (setting == nullptr) {
+                    ASSERT_EQ(unsetenv(env), 0);
+                } else {
+                    ASSERT_EQ(setenv(env, setting, 1), 0);
+                }
+                g_state = {};
+                HixlTransport transport(&FAKE_API, true);
+                transport.SetLocalEndpoint("127.0.0.1", client);
+                ASSERT_TRUE(transport.Init({ 0 }, { "4:8", false }).IsOk());
+                const bool skip = setting != nullptr && std::string(setting) == "1";
+                EXPECT_EQ(g_state.globalResourceConfigCount, skip ? 0U : 1U);
+                EXPECT_EQ(g_state.globalResourceConfig.empty(), skip);
+                if (!fabricMem) {
+                    EXPECT_EQ(g_state.bufferPool, "4:8");
+                }
+            }
+        }
+    }
 }
 
 TEST_F(HixlTransportPluginTest, ClientUsesAllocatedDeviceCommPort)
