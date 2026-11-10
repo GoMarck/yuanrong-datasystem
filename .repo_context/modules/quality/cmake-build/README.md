@@ -209,6 +209,8 @@ Rules for updating baselines:
 ## Review And Bugfix Notes
 
 - Common risks:
+  - `cmake/external_libs/leveldb.cmake` disables Snappy detection explicitly. Otherwise a host with Snappy development
+    headers can produce a cached static LevelDB archive with unresolved Snappy symbols in brpc's link closure.
   - changing a target used by `datasystem`, `datasystem_worker_shared`, or `ds_client_py` can alter multiple language
     packages because install rules reuse those targets;
   - changing third-party flags can invalidate `DS_OPENSOURCE_DIR` cache keys and may change package ABI;
