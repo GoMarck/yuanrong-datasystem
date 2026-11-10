@@ -274,3 +274,19 @@ python3 tests/kvtest/summarize_stage_profile.py <collected-log-directory> \
 `stages.json` 包含计时、全量事件次数及进程资源；`checkpoints.json` 在每个函数内按耗时从高到低排列，给出每次采样调用的平均耗时、出现次数和占该函数比例。分支没执行的阶段按该函数全部采样次数摊销；重复经过同一阶段的次数单列。丢样本会提示，不能把样本文件的计数当作全部请求数。`start-seq` 对样本按导出批次筛选，不承诺与累计计数的起止时刻完全重合。
 
 打点会增加时钟、原子统计、栈空间和周期输出开销。若需要将结果作为最终性能结论，应在同一批测试任务中保留关闭打点的基线；单独一份开启打点的数据用于定位，不足以证明无打点时的精确可优化收益。
+
+### CPU 时间与表规模诊断
+
+可选 `KVTEST_DETAIL_CPU=1` 为采样 checkpoint 增加 `cpu_ns`、`cpu_valid`、`begin_tid` 和 `end_tid`。
+默认关闭；需要 Linux `CLOCK_THREAD_CPUTIME_ID`。跨原生线程的区间标记为无效，不能相减。
+同一线程中的其他 bthread 执行也可能计入线程 CPU 时间，因此服务端有协程切换的区间不能视为该请求独占 CPU。
+CPU clock 与采样元数据分配有观测开销，应分别采集关闭、普通打点、CPU 打点三组校准数据。
+
+采样记录的 `attributes` 可包含 `table_size`（当前表元素数）、`shard_size`（当前分片/租户分片元素数）、
+`bucket_count`、`shard_index`、`key_bytes`、`hit`、`item_count`。
+属性只在已有保护范围内按 O(1) 读取；不会遍历表或为统计另取业务锁。
+它们是采样时的近似规模，并非整条分布式请求的强一致快照。不要把 worker 槽容量、分片元素数或累计写入数当成全局存活对象数。
+
+新增本地诊断覆盖路由选择、负载调度的槽查询/状态更新/决策记录、TCP Create/Publish，
+以及 SafeTable 查找与未命中 Status 构造。正常业务返回值与同步方式保持原状。
+共享头使用版本命名空间，避免同一进程加载不同版本 SDK 时 profiler 内部类型发生符号冲突。

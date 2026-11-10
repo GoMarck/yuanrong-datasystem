@@ -22,14 +22,20 @@
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <new>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <unistd.h>
 #include <sys/resource.h>
+#include <time.h>
+#ifdef __linux__
+#include <sys/syscall.h>
+#endif
 #include <utility>
 
 namespace kvtest_profile {
+inline namespace v2 {
 enum class Stage : size_t {
     DS_SET, DS_GET, DS_RPC_CREATE, DS_RPC_PUBLISH, DS_RPC_QUERY, DS_RPC_GET,
     DS_SERVER_CREATE, DS_SERVER_PUBLISH, DS_SERVER_QUERY, DS_SERVER_GET,
@@ -649,6 +655,42 @@ enum class Stage : size_t {
     D_DS_DETAIL_SHARED_CONNECTION_BUILD_CACHE_HIT_COUNT,
     D_DS_DETAIL_SET_MASTER_API_OWNER_TOTAL_CALLS,
     D_DS_DETAIL_SHARED_MASTER_API_BUILD_TOTAL_CALLS,
+    D_DS_DETAIL_SHARED_SAFE_TABLE_GET_LOOKUP,
+    D_DS_DETAIL_SHARED_SAFE_TABLE_GET_RESULT,
+    D_DS_DETAIL_SHARED_SAFE_TABLE_GET_MISSING_STATUS,
+    D_DS_DETAIL_SHARED_SAFE_TABLE_GET_TOTAL,
+    D_DS_DETAIL_SHARED_SAFE_TABLE_GET_TOTAL_CALLS,
+    D_DS_DETAIL_SHARED_STATUS_NOT_FOUND_FORMAT,
+    D_DS_DETAIL_SHARED_STATUS_NOT_FOUND_TRACE,
+    D_DS_DETAIL_SHARED_STATUS_NOT_FOUND_ALLOCATE,
+    D_DS_DETAIL_SHARED_STATUS_NOT_FOUND_TOTAL,
+    D_DS_DETAIL_SHARED_STATUS_NOT_FOUND_TOTAL_CALLS,
+    D_DS_DETAIL_SHARED_ROUTER_SELECT_VALIDATE,
+    D_DS_DETAIL_SHARED_ROUTER_SELECT_SNAPSHOT,
+    D_DS_DETAIL_SHARED_ROUTER_SELECT_SELECT,
+    D_DS_DETAIL_SHARED_ROUTER_SELECT_HEALTH,
+    D_DS_DETAIL_SHARED_ROUTER_SELECT_AFFINITY,
+    D_DS_DETAIL_SHARED_ROUTER_SELECT_SCHEDULE,
+    D_DS_DETAIL_SHARED_ROUTER_SELECT_TOTAL,
+    D_DS_DETAIL_SHARED_ROUTER_SELECT_TOTAL_CALLS,
+    D_DS_DETAIL_SHARED_SCHEDULER_AFFINITY_CLOCK,
+    D_DS_DETAIL_SHARED_SCHEDULER_AFFINITY_HEALTH,
+    D_DS_DETAIL_SHARED_SCHEDULER_AFFINITY_SLOT_LOOKUP,
+    D_DS_DETAIL_SHARED_SCHEDULER_AFFINITY_MARK_SELECTED,
+    D_DS_DETAIL_SHARED_SCHEDULER_AFFINITY_DECISION_RECORD,
+    D_DS_DETAIL_SHARED_SCHEDULER_AFFINITY_TOTAL,
+    D_DS_DETAIL_SHARED_SCHEDULER_AFFINITY_TOTAL_CALLS,
+    D_DS_DETAIL_SET_TCP_CREATE_VALIDATE,
+    D_DS_DETAIL_SET_TCP_CREATE_BUFFER,
+    D_DS_DETAIL_SET_TCP_CREATE_TOTAL,
+    D_DS_DETAIL_SET_TCP_CREATE_TOTAL_CALLS,
+    D_DS_DETAIL_SET_TCP_PUBLISH_VALIDATE,
+    D_DS_DETAIL_SET_TCP_PUBLISH_REQUEST,
+    D_DS_DETAIL_SET_TCP_PUBLISH_PAYLOAD,
+    D_DS_DETAIL_SET_TCP_PUBLISH_RPC,
+    D_DS_DETAIL_SET_TCP_PUBLISH_RESULT,
+    D_DS_DETAIL_SET_TCP_PUBLISH_TOTAL,
+    D_DS_DETAIL_SET_TCP_PUBLISH_TOTAL_CALLS,
     COUNT
 };
 inline constexpr const char *STAGE_NAMES[] = {
@@ -1270,7 +1312,43 @@ inline constexpr const char *STAGE_NAMES[] = {
     "ds.detail.shared.connection.build.log_ready",
     "ds.detail.shared.connection.build.cache_hit.count",
     "ds.detail.set.master_api.owner.total.calls",
-    "ds.detail.shared.master_api.build.total.calls"
+    "ds.detail.shared.master_api.build.total.calls",
+    "ds.detail.shared.safe_table.get.lookup",
+    "ds.detail.shared.safe_table.get.result",
+    "ds.detail.shared.safe_table.get.missing_status",
+    "ds.detail.shared.safe_table.get.total",
+    "ds.detail.shared.safe_table.get.total.calls",
+    "ds.detail.shared.status.not_found.format",
+    "ds.detail.shared.status.not_found.trace",
+    "ds.detail.shared.status.not_found.allocate",
+    "ds.detail.shared.status.not_found.total",
+    "ds.detail.shared.status.not_found.total.calls",
+    "ds.detail.shared.router.select.validate",
+    "ds.detail.shared.router.select.snapshot",
+    "ds.detail.shared.router.select.select",
+    "ds.detail.shared.router.select.health",
+    "ds.detail.shared.router.select.affinity",
+    "ds.detail.shared.router.select.schedule",
+    "ds.detail.shared.router.select.total",
+    "ds.detail.shared.router.select.total.calls",
+    "ds.detail.shared.scheduler.affinity.clock",
+    "ds.detail.shared.scheduler.affinity.health",
+    "ds.detail.shared.scheduler.affinity.slot_lookup",
+    "ds.detail.shared.scheduler.affinity.mark_selected",
+    "ds.detail.shared.scheduler.affinity.decision_record",
+    "ds.detail.shared.scheduler.affinity.total",
+    "ds.detail.shared.scheduler.affinity.total.calls",
+    "ds.detail.set.tcp.create.validate",
+    "ds.detail.set.tcp.create.buffer",
+    "ds.detail.set.tcp.create.total",
+    "ds.detail.set.tcp.create.total.calls",
+    "ds.detail.set.tcp.publish.validate",
+    "ds.detail.set.tcp.publish.request",
+    "ds.detail.set.tcp.publish.payload",
+    "ds.detail.set.tcp.publish.rpc",
+    "ds.detail.set.tcp.publish.result",
+    "ds.detail.set.tcp.publish.total",
+    "ds.detail.set.tcp.publish.total.calls"
 };
 inline constexpr std::array<uint64_t, 22> BUCKET_NS = {
     100, 250, 500, 1000, 2000, 4000, 8000, 16000, 32000, 64000, 128000, 256000,
@@ -1302,6 +1380,51 @@ struct alignas(64) Slot {
     std::array<std::atomic<uint64_t>, BUCKET_NS.size()> buckets{};
 };
 
+enum class DetailAttribute : size_t { TABLE_SIZE, SHARD_SIZE, KEY_BYTES, HIT, ITEM_COUNT, BUCKET_COUNT, SHARD_INDEX, COUNT };
+inline constexpr std::array<const char *, static_cast<size_t>(DetailAttribute::COUNT)> ATTRIBUTE_NAMES{
+    "table_size", "shard_size", "key_bytes", "hit", "item_count", "bucket_count", "shard_index"
+};
+
+struct ThreadClock {
+    uint64_t tid{0}, cpuNs{0};
+};
+
+inline bool DetailCpuEnabled()
+{
+    static const bool enabled = [] {
+        const char *value = std::getenv("KVTEST_DETAIL_CPU");
+        return value != nullptr && std::strcmp(value, "1") == 0;
+    }();
+    return enabled;
+}
+
+inline ThreadClock ReadThreadClock()
+{
+#if defined(__linux__) && defined(CLOCK_THREAD_CPUTIME_ID)
+    static thread_local const uint64_t tid = static_cast<uint64_t>(syscall(SYS_gettid));
+    timespec time{};
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &time) != 0) return {};
+    return {tid, static_cast<uint64_t>(time.tv_sec) * 1000000000ULL + static_cast<uint64_t>(time.tv_nsec)};
+#else
+    return {};
+#endif
+}
+
+struct DetailDiagnostics {
+    bool cpuEnabled{false};
+    ThreadClock checkpoint{};
+    std::array<uint64_t, 32> cpuNs{}, beginTid{}, endTid{};
+    std::array<bool, 32> cpuValid{};
+    uint64_t attributeMask{0};
+    std::array<uint64_t, static_cast<size_t>(DetailAttribute::COUNT)> attributes{};
+};
+
+inline const DetailDiagnostics &EmptyDiagnostics()
+{
+    static const DetailDiagnostics empty{};
+    return empty;
+}
+
 struct DetailSample {
     Stage group{Stage::COUNT};
     uint64_t start{0}, duration{0};
@@ -1310,6 +1433,7 @@ struct DetailSample {
     int outcome{-1};
     std::array<Stage, 32> stages{};
     std::array<uint64_t, 32> durations{};
+    DetailDiagnostics diagnostics{};
 };
 
 class DetailSamples {
@@ -1344,11 +1468,27 @@ public:
                 static_cast<unsigned long long>(s.start), static_cast<unsigned long long>(s.duration),
                 s.overflow ? "true" : "false", s.outcome);
             for (size_t j = 0; j < s.size; ++j) {
-                std::fprintf(output, "%s{\"phase\":\"%s\",\"duration_ns\":%llu}", j == 0 ? "" : ",",
+                std::fprintf(output, "%s{\"phase\":\"%s\",\"duration_ns\":%llu", j == 0 ? "" : ",",
                     STAGE_NAMES[static_cast<size_t>(s.stages[j])],
                     static_cast<unsigned long long>(s.durations[j]));
+                if (s.diagnostics.cpuEnabled) {
+                    std::fprintf(output, ",\"cpu_ns\":%llu,\"cpu_valid\":%s,\"begin_tid\":%llu,\"end_tid\":%llu",
+                        static_cast<unsigned long long>(s.diagnostics.cpuNs[j]),
+                        s.diagnostics.cpuValid[j] ? "true" : "false",
+                        static_cast<unsigned long long>(s.diagnostics.beginTid[j]),
+                        static_cast<unsigned long long>(s.diagnostics.endTid[j]));
+                }
+                std::fprintf(output, "}");
             }
-            std::fprintf(output, "]}\n");
+            std::fprintf(output, "],\"attributes\":{");
+            bool first = true;
+            for (size_t j = 0; j < s.diagnostics.attributes.size(); ++j) {
+                if ((s.diagnostics.attributeMask & (1ULL << j)) == 0) continue;
+                std::fprintf(output, "%s\"%s\":%llu", first ? "" : ",", ATTRIBUTE_NAMES[j],
+                    static_cast<unsigned long long>(s.diagnostics.attributes[j]));
+                first = false;
+            }
+            std::fprintf(output, "}}\n");
         }
         std::fprintf(output, "[KVTEST_DETAIL_STATUS] {\"schema\":1,\"instance\":\"%s\",\"seq\":%llu,"
             "\"final\":%s,\"dropped_lifetime\":%llu}\n", instance.c_str(),
@@ -1372,7 +1512,8 @@ inline DetailSamples *GetDetailSamples()
 inline void SaveDetailSample(Stage group, uint64_t start, uint64_t duration,
                              const std::array<Stage, 32> &stages,
                              const std::array<uint64_t, 32> &durations,
-                             size_t size, bool overflow, int outcome) noexcept
+                             size_t size, bool overflow, int outcome,
+                             const DetailDiagnostics &diagnostics) noexcept
 {
     static const bool enabled = [] {
         const char *value = std::getenv("KVTEST_DETAIL_SAMPLES");
@@ -1384,6 +1525,7 @@ inline void SaveDetailSample(Stage group, uint64_t start, uint64_t duration,
         sample.group = group; sample.start = start; sample.duration = duration;
         sample.stages = stages; sample.durations = durations; sample.size = size;
         sample.overflow = overflow; sample.outcome = outcome;
+        sample.diagnostics = diagnostics;
         GetDetailSamples()->Save(sample);
     } catch (...) {
         // Optional diagnostics must not affect the request result or cleanup.
@@ -1689,6 +1831,12 @@ inline Stage DetailCallStage(Stage stage)
         case Stage::D_DS_DETAIL_GET_API_GET_READONLY_TOTAL: return Stage::D_DS_DETAIL_GET_API_GET_READONLY_TOTAL_CALLS;
         case Stage::D_DS_DETAIL_SET_MASTER_API_OWNER_TOTAL: return Stage::D_DS_DETAIL_SET_MASTER_API_OWNER_TOTAL_CALLS;
         case Stage::D_DS_DETAIL_SHARED_MASTER_API_BUILD_TOTAL: return Stage::D_DS_DETAIL_SHARED_MASTER_API_BUILD_TOTAL_CALLS;
+        case Stage::D_DS_DETAIL_SHARED_SAFE_TABLE_GET_TOTAL: return Stage::D_DS_DETAIL_SHARED_SAFE_TABLE_GET_TOTAL_CALLS;
+        case Stage::D_DS_DETAIL_SHARED_STATUS_NOT_FOUND_TOTAL: return Stage::D_DS_DETAIL_SHARED_STATUS_NOT_FOUND_TOTAL_CALLS;
+        case Stage::D_DS_DETAIL_SHARED_ROUTER_SELECT_TOTAL: return Stage::D_DS_DETAIL_SHARED_ROUTER_SELECT_TOTAL_CALLS;
+        case Stage::D_DS_DETAIL_SHARED_SCHEDULER_AFFINITY_TOTAL: return Stage::D_DS_DETAIL_SHARED_SCHEDULER_AFFINITY_TOTAL_CALLS;
+        case Stage::D_DS_DETAIL_SET_TCP_CREATE_TOTAL: return Stage::D_DS_DETAIL_SET_TCP_CREATE_TOTAL_CALLS;
+        case Stage::D_DS_DETAIL_SET_TCP_PUBLISH_TOTAL: return Stage::D_DS_DETAIL_SET_TCP_PUBLISH_TOTAL_CALLS;
         default: return Stage::COUNT;
     }
 }
@@ -1789,6 +1937,8 @@ inline Stage DetailRouteStage(Stage group, Stage phase)
     }
 }
 
+using DetailAttribute = detail::DetailAttribute;
+
 class DetailFrame {
 public:
     DetailFrame(Stage total, Stage first, uint64_t bytes = 0)
@@ -1799,12 +1949,25 @@ public:
             detail::GetRecorder();
             stages_.fill(Stage::COUNT);
             durations_.fill(0);
+            diagnostics_.reset(new (std::nothrow) detail::DetailDiagnostics);
+            if (diagnostics_) diagnostics_->cpuEnabled = detail::DetailCpuEnabled();
             start_ = checkpoint_ = detail::NowNs();
+            if (diagnostics_ && diagnostics_->cpuEnabled) diagnostics_->checkpoint = detail::ReadThreadClock();
         }
     }
     DetailFrame(const DetailFrame &) = delete;
     DetailFrame &operator=(const DetailFrame &) = delete;
     ~DetailFrame() { Finish(-1); }
+
+    bool Sampled() const noexcept { return sampled_; }
+
+    void Observe(DetailAttribute attribute, uint64_t value) noexcept
+    {
+        const auto index = static_cast<size_t>(attribute);
+        if (!sampled_ || !diagnostics_ || index >= diagnostics_->attributes.size()) return;
+        diagnostics_->attributes[index] = value;
+        diagnostics_->attributeMask |= 1ULL << index;
+    }
 
     void Next(Stage stage)
     {
@@ -1831,7 +1994,8 @@ public:
             stages_[i] = DetailRouteStage(total_, stages_[i]);
             if (auto *slot = detail::GetSlot(stages_[i])) detail::Record(*slot, durations_[i], 0, outcome);
         }
-        detail::SaveDetailSample(total_, start_, end - start_, stages_, durations_, size_, overflow_, outcome);
+        detail::SaveDetailSample(total_, start_, end - start_, stages_, durations_, size_, overflow_, outcome,
+                                 diagnostics_ ? *diagnostics_ : detail::EmptyDiagnostics());
         sampled_ = false;
     }
 
@@ -1850,8 +2014,18 @@ public:
 private:
     void Append(uint64_t now)
     {
+        const bool cpuEnabled = diagnostics_ && diagnostics_->cpuEnabled;
+        const auto clock = cpuEnabled ? detail::ReadThreadClock() : detail::ThreadClock{};
         if (stage_ != Stage::COUNT) {
             if (size_ < stages_.size()) {
+                if (cpuEnabled) {
+                    diagnostics_->beginTid[size_] = diagnostics_->checkpoint.tid;
+                    diagnostics_->endTid[size_] = clock.tid;
+                    const bool valid = clock.tid != 0 && clock.tid == diagnostics_->checkpoint.tid
+                                       && clock.cpuNs >= diagnostics_->checkpoint.cpuNs;
+                    diagnostics_->cpuValid[size_] = valid;
+                    diagnostics_->cpuNs[size_] = valid ? clock.cpuNs - diagnostics_->checkpoint.cpuNs : 0;
+                }
                 stages_[size_] = stage_;
                 durations_[size_++] = now - checkpoint_;
             } else {
@@ -1859,6 +2033,7 @@ private:
             }
         }
         checkpoint_ = now;
+        if (diagnostics_) diagnostics_->checkpoint = clock;
     }
     bool sampled_, overflow_{false};
     Stage total_, stage_;
@@ -1866,6 +2041,7 @@ private:
     size_t size_{0};
     std::array<Stage, 32> stages_;
     std::array<uint64_t, 32> durations_;
+    std::unique_ptr<detail::DetailDiagnostics> diagnostics_;
 };
 
 template <typename Function>
@@ -1875,5 +2051,6 @@ decltype(auto) DetailMeasure(Stage stage, Function &&function)
     return std::forward<Function>(function)();
 }
 
+}  // namespace v2
 }  // namespace kvtest_profile
 #endif

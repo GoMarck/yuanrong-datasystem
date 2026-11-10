@@ -1,10 +1,10 @@
 {
   "revision": "719735896c86b56fabec6cf3e825fb2ea640597a",
-  "profile_generation": 3,
+  "profile_generation": 4,
   "files": {
     "mooncake-common/include/kvtest_benchmark_profile.h": {
       "base": null,
-      "profile": "3b2fdc7b741a0a9c8cad5aa90ceabcf20871bbf2027579b9f30a99cb7d465c9f"
+      "profile": "d0d30f403eb06df41b032a0b3413d8805914dcf2688fd6879283c8c68ad7b65c"
     },
     "mooncake-store/include/benchmark_profile.h": {
       "base": null,
@@ -12,7 +12,7 @@
     },
     "mooncake-store/include/master_service.h": {
       "base": "bbf675ef5a8402ff6ca831ebad785a74e6da14ba63f50daa89ba1d358bbc328a",
-      "profile": "54c691f98324ae22f7d4bcbdc07713f35ccc5b894e64b1f0d83589969440c145"
+      "profile": "fba7fc7a9405577341005f337cfc8002041b3e53c0f5dfa5244cfbcf2a6f3ddd"
     },
     "mooncake-store/src/client_buffer.cpp": {
       "base": "6538ac143ba2cf8cf6a5ac24878aeee654c067d6f17a3c53f935d855fde71e37",
@@ -28,7 +28,7 @@
     },
     "mooncake-store/src/master_service.cpp": {
       "base": "9face0294209e17423f51ea73f3c37dda7d1d25d4c86901b1d48e99485397967",
-      "profile": "e333b1fe355c875b73d392298c10ed48f14f0c077393251f859d297c1351748c"
+      "profile": "abd798354d27576bf02e0cd0e1512e1fceba30ec4e47d3823f1df0866e68079b"
     },
     "mooncake-store/src/real_client.cpp": {
       "base": "70586a93081af55e9965d137148071c1592a1a90d9a916ee925dfaefddc3fb02",
@@ -51,5 +51,5 @@
       "profile": "b611974af3b1a452c96172c99c2dcf07601e4072586894627956916c673d2726"
     }
   },
-  "patch_sha256": "c56185749505280935a37a9e6f731257646dd967bd628ea94cab728711a778b6"
+  "patch_sha256": "97193ee089e670fae3eb6a45b6d9599a982a7d445f18a41667c1f1c901d837ab"
 }

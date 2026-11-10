@@ -9,13 +9,15 @@
 
 int main(int argc, char **argv)
 {
-    const bool enabled = argc == 2 && std::string(argv[1]) == "enabled";
+    const bool cpu = argc == 2 && std::string(argv[1]) == "enabled-cpu";
+    const bool enabled = cpu || (argc == 2 && std::string(argv[1]) == "enabled");
     const std::string prefix = "/tmp/kvtest-stage-profile-test-" + std::to_string(getpid());
     setenv("KVTEST_STAGE_PROFILE", enabled ? "1" : "0", 1);
     setenv("KVTEST_STAGE_PROFILE_OUTPUT", prefix.c_str(), 1);
     setenv("KVTEST_DETAIL_PROFILE", "1", 1);
     setenv("KVTEST_DETAIL_SAMPLE_EVERY", "1", 1);
     setenv("KVTEST_DETAIL_SAMPLES", "1", 1);
+    setenv("KVTEST_DETAIL_CPU", cpu ? "1" : "0", 1);
     auto findLogs = [&prefix]() {
         glob_t found{};
         std::vector<std::string> paths;
@@ -58,9 +60,18 @@ int main(int argc, char **argv)
     {
         kvtest_profile::DetailFrame frame(kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_TOTAL,
                                           kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_CONTEXT);
+        frame.Observe(kvtest_profile::DetailAttribute::TABLE_SIZE, 17);
         frame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_COPY);
         frame.Finish(1);
         frame.Finish(0);
+    }
+    if (cpu) {
+        auto frame = std::make_unique<kvtest_profile::DetailFrame>(
+            kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_TOTAL,
+            kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_CONTEXT);
+        frame->Observe(kvtest_profile::DetailAttribute::TABLE_SIZE, 99);
+        std::thread migrated([frame = std::move(frame)]() mutable { frame->Finish(1); });
+        migrated.join();
     }
     if (!enabled) {
         REQUIRE(findLogs().empty());
@@ -82,7 +93,17 @@ int main(int argc, char **argv)
             uint64_t sum = 0;
             for (const auto &step : row["steps"]) sum += step["duration_ns"].get<uint64_t>();
             REQUIRE(sum == row["duration_ns"]);
-            REQUIRE(row["steps"].size() == 2);
+            const bool migrated = row["attributes"]["table_size"] == 99;
+            REQUIRE(row["attributes"]["table_size"] == (migrated ? 99 : 17));
+            REQUIRE(row["steps"].size() == (migrated ? 1 : 2));
+            for (const auto &step : row["steps"]) {
+                if (cpu) {
+                    REQUIRE(step["cpu_valid"] == !migrated);
+                    REQUIRE((step["begin_tid"] == step["end_tid"]) == !migrated);
+                } else {
+                    REQUIRE(!step.contains("cpu_ns"));
+                }
+            }
             REQUIRE(row["overflow"] == false);
             ++samples;
             continue;
@@ -107,7 +128,10 @@ int main(int argc, char **argv)
             REQUIRE(row["requested_bytes"] == 0);
             REQUIRE(row["unknown"] == (row["phase"] == "ds.sdk.get.route" ? 1 : 0));
         } else if (row["phase"].get<std::string>().find("ds.detail.") == 0) {
-            REQUIRE(row["count"] == 1);
+            const bool doubled = cpu && (row["phase"] == "ds.detail.set.sdk.total"
+                || row["phase"] == "ds.detail.set.sdk.total.calls"
+                || row["phase"] == "ds.detail.set.sdk.context");
+            REQUIRE(row["count"] == (doubled ? 2 : 1));
             REQUIRE(row["failed"] == 0);
         } else {
             REQUIRE(row["phase"] == "ds.api.set");
@@ -117,7 +141,7 @@ int main(int argc, char **argv)
         ++stages;
     }
     REQUIRE(stages == 9);
-    REQUIRE(samples == 1);
+    REQUIRE(samples == (cpu ? 2 : 1));
     kvtest_profile::RecordDuration(kvtest_profile::Stage::DS_RPC_QUERY, 1000, true);
     std::remove(path.c_str());
     return 0;

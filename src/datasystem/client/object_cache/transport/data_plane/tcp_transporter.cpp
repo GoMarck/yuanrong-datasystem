@@ -25,6 +25,7 @@
 #include "datasystem/client/object_cache/transport/rpc/mset_request_builder.h"
 #include "datasystem/client/object_cache/transport/rpc/set_request_builder.h"
 #include "datasystem/common/metrics/kv_metrics.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include "datasystem/common/object_cache/object_base.h"
 #include "datasystem/common/rpc/brpc_status_util.h"
 #include "datasystem/common/rpc/mem_view.h"
@@ -125,8 +126,11 @@ Status TcpTransporter::BatchGet(const DataGetBatchRequest &inputs, DataGetBatchR
 Status TcpTransporter::Create(const HostPort &workerAddr, const std::string &key, uint64_t size,
                               const TransportCreateParam &param, std::shared_ptr<ObjectBuffer> &buffer)
 {
+    kvtest_profile::DetailFrame detailFrame(kvtest_profile::Stage::D_DS_DETAIL_SET_TCP_CREATE_TOTAL,
+                                           kvtest_profile::Stage::D_DS_DETAIL_SET_TCP_CREATE_VALIDATE);
     RETURN_RUNTIME_ERROR_IF_NULL(rpcClient_);
     RETURN_IF_NOT_OK(ValidateCreateRequest(key, size, param));
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_TCP_CREATE_BUFFER);
     return CreateBuffer(workerAddr, key, size, param, buffer);
 }
 
@@ -148,6 +152,8 @@ Status TcpTransporter::CreateBuffer(const HostPort &workerAddr, const std::strin
 
 Status TcpTransporter::Set(ObjectBuffer &buffer, const TransportSetParam &param, TransportSetResult *result)
 {
+    kvtest_profile::DetailFrame detailFrame(kvtest_profile::Stage::D_DS_DETAIL_SET_TCP_PUBLISH_TOTAL,
+                                           kvtest_profile::Stage::D_DS_DETAIL_SET_TCP_PUBLISH_VALIDATE);
     RETURN_RUNTIME_ERROR_IF_NULL(rpcClient_);
 
     const ObjectBufferInfo &info = ObjectBufferInternal::GetInfo(buffer);
@@ -158,8 +164,10 @@ Status TcpTransporter::Set(ObjectBuffer &buffer, const TransportSetParam &param,
         result->publishDefinitelyNotSent = false;
     }
     PublishReqPb pubReq;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_TCP_PUBLISH_REQUEST);
     RETURN_IF_NOT_OK(BuildSetRequest(info, param, pubReq));
 
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_TCP_PUBLISH_PAYLOAD);
     // TCP payload: send the data inline through the RPC
     MemView payload(info.pointer + info.metadataSize, info.dataSize);
     std::vector<MemView> payloads{ payload };
@@ -168,7 +176,9 @@ Status TcpTransporter::Set(ObjectBuffer &buffer, const TransportSetParam &param,
     if (result != nullptr) {
         result->publishAttempted = true;
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_TCP_PUBLISH_RPC);
     Status invokeRc = rpcClient_->InvokeSet(param.subTimeoutMs, pubReq, payloads, rsp, workerVersion);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_TCP_PUBLISH_RESULT);
     if (result != nullptr) {
         result->publishDefinitelyNotSent = IsBrpcRequestDefinitelyNotSent(invokeRc);
     }

@@ -693,3 +693,10 @@ encoding and SDK result materialization. Process resource snapshots do not estab
 See `tests/kvtest/docs/rpc-data-plane-profile.md` for collection, `tests/kvtest/detail_profile_catalog.json` for coverage,
 and `tests/kvtest/summarize_stage_profile.py` for phase, same-scope checkpoint and process-resource summaries.
 The Mooncake patch manifest binds the shared profiler header and Store/TE instrumentation to fixed base source content.
+
+
+The optional `KVTEST_DETAIL_CPU=1` diagnostic adds native-thread CPU/TID fields; cross-thread intervals are invalid,
+and same-thread bthread switches can include unrelated CPU work. Sample attributes report O(1) table/shard cardinality,
+key size and hit state under existing synchronization. Sample metadata allocation and CPU clocks require overhead
+calibration. The shared header uses an inline version namespace to isolate profiler layout across loaded SDK versions.
+Normal table misses can include rich Status construction; the SafeTable lookup and Status checkpoints distinguish them.

@@ -392,6 +392,42 @@
       "file": "src/datasystem/worker/worker_master_api_manager_base.h",
       "function": "virtual Status GetWorkerMasterApi(const HostPort",
       "group": "ds.detail.shared.master_api.build.total"
+    },
+    {
+      "repo": "datasystem",
+      "file": "src/datasystem/common/object_cache/safe_table.h",
+      "function": "Status SafeTable<KeyType, ObjType>::Get(",
+      "group": "ds.detail.shared.safe_table.get.total"
+    },
+    {
+      "repo": "datasystem",
+      "file": "src/datasystem/common/util/status.cpp",
+      "function": "Status::Status(StatusCode code, int lineOfCode",
+      "group": "ds.detail.shared.status.not_found.total"
+    },
+    {
+      "repo": "datasystem",
+      "file": "src/datasystem/client/object_cache/routing/worker_router.cpp",
+      "function": "Status WorkerRouter::SelectWorkerByScheduling(",
+      "group": "ds.detail.shared.router.select.total"
+    },
+    {
+      "repo": "datasystem",
+      "file": "src/datasystem/client/object_cache/routing/client_read_bandwidth_scheduler.cpp",
+      "function": "bool ClientReadBandwidthScheduler::Impl::ShouldKeepAffinity(",
+      "group": "ds.detail.shared.scheduler.affinity.total"
+    },
+    {
+      "repo": "datasystem",
+      "file": "src/datasystem/client/object_cache/transport/data_plane/tcp_transporter.cpp",
+      "function": "Status TcpTransporter::Create(",
+      "group": "ds.detail.set.tcp.create.total"
+    },
+    {
+      "repo": "datasystem",
+      "file": "src/datasystem/client/object_cache/transport/data_plane/tcp_transporter.cpp",
+      "function": "Status TcpTransporter::Set(",
+      "group": "ds.detail.set.tcp.publish.total"
     }
   ],
   "phases": {

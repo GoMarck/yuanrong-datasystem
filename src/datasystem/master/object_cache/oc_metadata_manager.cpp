@@ -775,6 +775,12 @@ Status OCMetadataManager::CreateMetaForBinaryFormat(const ObjectMetaPb &newMeta,
         TbbMetaTable::accessor accessor;
         firstOne = metaShards_[shardIdx].table.insert(accessor, objectKey);
         detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_MASTER_BINARY_EXISTENCE_CHECK);
+        if (detailFrame.Sampled()) {
+            detailFrame.Observe(kvtest_profile::DetailAttribute::SHARD_SIZE, metaShards_[shardIdx].table.size());
+            detailFrame.Observe(kvtest_profile::DetailAttribute::SHARD_INDEX, shardIdx);
+            detailFrame.Observe(kvtest_profile::DetailAttribute::KEY_BYTES, objectKey.size());
+            detailFrame.Observe(kvtest_profile::DetailAttribute::HIT, !firstOne);
+        }
         RETURN_IF_NOT_OK(CheckExistenceOpt(accessor->second, objectKey, newMeta.existence(), firstOne));
         version = static_cast<int64_t>(GetSystemClockTimeStampUs());
 

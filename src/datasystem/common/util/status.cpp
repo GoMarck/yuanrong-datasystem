@@ -25,6 +25,7 @@
 #include <unordered_map>
 
 #include "datasystem/common/log/trace.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 
 namespace datasystem {
 bool HasCurrentTraceId(const std::string &msg, const std::string &traceId)
@@ -83,6 +84,10 @@ Status::Status(StatusCode code, int lineOfCode, const std::string &fileName, con
      if (code == StatusCode::K_OK) {
         return;
     }
+    kvtest_profile::DetailFrame detailFrame(
+        code == K_NOT_FOUND ? kvtest_profile::Stage::D_DS_DETAIL_SHARED_STATUS_NOT_FOUND_TOTAL
+                           : kvtest_profile::Stage::COUNT,
+        kvtest_profile::Stage::D_DS_DETAIL_SHARED_STATUS_NOT_FOUND_FORMAT);
     std::ostringstream ss;
     ss << "Thread ID " << std::this_thread::get_id() << " " << StatusCodeName(code) << ". ";
     if (!extra.empty()) {
@@ -94,10 +99,12 @@ Status::Status(StatusCode code, int lineOfCode, const std::string &fileName, con
         size_t position = fileName.find_last_of('/') + 1;
         ss << "File         : " << fileName.substr(position, fileName.length() - position) << std::endl;
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_STATUS_NOT_FOUND_TRACE);
     auto traceId = Trace::Instance().GetTraceID();
     if (code != K_OK && !traceId.empty() && !HasCurrentTraceId(ss.str(), traceId)) {
         ss << "traceId      : " << traceId;
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_STATUS_NOT_FOUND_ALLOCATE);
     state_ = std::make_unique<State>();
     state_->code = code;
     state_->errMsg = ss.str();

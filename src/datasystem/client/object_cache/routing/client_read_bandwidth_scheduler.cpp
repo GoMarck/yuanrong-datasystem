@@ -15,6 +15,7 @@
  */
 
 #include "datasystem/client/object_cache/routing/client_read_bandwidth_scheduler.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 
 #include <algorithm>
 #include <array>
@@ -1314,15 +1315,25 @@ bool ClientReadBandwidthScheduler::Impl::ShouldKeepAffinity(
         taskId = 0;
         return true;
     }
+    kvtest_profile::DetailFrame detailFrame(kvtest_profile::Stage::D_DS_DETAIL_SHARED_SCHEDULER_AFFINITY_TOTAL,
+                                           kvtest_profile::Stage::D_DS_DETAIL_SHARED_SCHEDULER_AFFINITY_CLOCK);
     const uint64_t nowNs = SteadyNowNs();
     taskId = taskIdCounter_.fetch_add(1, std::memory_order_relaxed) + 1;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_SCHEDULER_AFFINITY_HEALTH);
     const PortCounts ports = ReadPortCounts(snapshot.get(), worker);
     const bool keepAffinity = !ports.known || ports.failed == 0;
     if (keepAffinity) {
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_SCHEDULER_AFFINITY_SLOT_LOOKUP);
         SlotPin pin = FindOrCreateSlot(worker, nowNs);
+        detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_SCHEDULER_AFFINITY_MARK_SELECTED);
         if (pin) {
             MarkSelected(*pin.Get(), nowNs);
         }
+    }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_SCHEDULER_AFFINITY_DECISION_RECORD);
+    if (detailFrame.Sampled()) {
+        detailFrame.Observe(kvtest_profile::DetailAttribute::BUCKET_COUNT, workerSlotCapacity_);
+        detailFrame.Observe(kvtest_profile::DetailAttribute::KEY_BYTES, requestKey.size());
     }
     if (!keepAffinity) {
         LOG(INFO) << "[RBS_C_INFO] Enter scheduling algorithm." << " preferred_worker=" << worker.ToString()

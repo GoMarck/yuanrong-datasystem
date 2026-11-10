@@ -23,6 +23,7 @@
 #include <tbb/concurrent_hash_map.h>
 
 #include "datasystem/common/log/log.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include "datasystem/common/inject/inject_point.h"
 #include "datasystem/common/object_cache/safe_object.h"
 #include "datasystem/common/util/locks.h"
@@ -523,14 +524,23 @@ Status SafeTable<KeyType, ObjType>::ReserveGetAndLock(const KeyType &key, std::s
 template <typename KeyType, typename ObjType>
 Status SafeTable<KeyType, ObjType>::Get(const KeyType &key, std::shared_ptr<SafeObjType> &safeObjPtr) const
 {
+    kvtest_profile::DetailFrame detailFrame(kvtest_profile::Stage::D_DS_DETAIL_SHARED_SAFE_TABLE_GET_TOTAL,
+                                            kvtest_profile::Stage::D_DS_DETAIL_SHARED_SAFE_TABLE_GET_LOOKUP);
     // Note: Get() is read-only so we can allow get requests even if the iterator is in progress and holding the write
     // lock on the table. Iterator does not add or remove entries.
     typename TbbTable::const_accessor accessor;
-    if (tbbTable_.find(accessor, key)) {
+    const bool found = tbbTable_.find(accessor, key);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_SAFE_TABLE_GET_RESULT);
+    if (detailFrame.Sampled()) {
+        detailFrame.Observe(kvtest_profile::DetailAttribute::TABLE_SIZE, tbbTable_.size());
+        detailFrame.Observe(kvtest_profile::DetailAttribute::HIT, found);
+    }
+    if (found) {
         RETURN_RUNTIME_ERROR_IF_NULL(accessor->second);
         safeObjPtr = accessor->second;
         return Status::OK();
     }
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_SAFE_TABLE_GET_MISSING_STATUS);
     RETURN_STATUS(StatusCode::K_NOT_FOUND, "Object does not exist.");
 }
 

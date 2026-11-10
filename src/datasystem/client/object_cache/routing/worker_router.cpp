@@ -27,6 +27,7 @@
 #include "datasystem/client/object_cache/routing/broken_filter.h"
 #include "datasystem/client/object_cache/routing/routing.h"
 #include "datasystem/client/object_cache/routing/state_filter.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include "datasystem/common/util/hash_ring_token.h"
 #include "datasystem/common/util/status_helper.h"
 
@@ -176,9 +177,13 @@ Status WorkerRouter::SelectWorkerByScheduling(const std::string &key, DataPlacem
                                               WorkerAccessAction action, HostPort &worker,
                                               const std::vector<HostPort> &exclude) const
 {
+    kvtest_profile::DetailFrame detailFrame(kvtest_profile::Stage::D_DS_DETAIL_SHARED_ROUTER_SELECT_TOTAL,
+                                            kvtest_profile::Stage::D_DS_DETAIL_SHARED_ROUTER_SELECT_VALIDATE);
     CHECK_FAIL_RETURN_STATUS(initialized_.load(std::memory_order_acquire), K_NOT_READY, "Routing is not initialized");
 
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_ROUTER_SELECT_SNAPSHOT);
     auto view = std::atomic_load(&ringView_);
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_ROUTER_SELECT_SELECT);
     auto status = SelectWorkerFromView(key, policy, action, worker, exclude, view);
     if (!bandwidthScheduler_ || !bandwidthScheduler_->Enabled()) {
         return status;
@@ -187,14 +192,17 @@ Status WorkerRouter::SelectWorkerByScheduling(const std::string &key, DataPlacem
     // UB port health steers selection only where the verdict is authoritative: GET consumes the registry snapshot,
     // passive hints included, while SET must ignore unverified hints so that only the verified exclusions of the
     // SET filter chain apply. A null snapshot leaves every worker's health unknown, which keeps affinity.
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_ROUTER_SELECT_HEALTH);
     std::shared_ptr<const UbRoutingHealthSnapshot> healthSnapshot =
         action == WorkerAccessAction::SET ? nullptr : ubHealthRegistry_->GetRoutingSnapshot();
     uint64_t taskId = 0;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_ROUTER_SELECT_AFFINITY);
     if (bandwidthScheduler_->ShouldKeepAffinity(worker, key, healthSnapshot, taskId)) {
         return status;
     }
 
     HostPort selected;
+    detailFrame.Next(kvtest_profile::Stage::D_DS_DETAIL_SHARED_ROUTER_SELECT_SCHEDULE);
     if (bandwidthScheduler_->SelectWorker(key, filters_, exclude, worker, healthSnapshot, taskId, selected, action)) {
         if (selected != worker) {
             worker = std::move(selected);
