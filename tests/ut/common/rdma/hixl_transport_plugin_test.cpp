@@ -16,6 +16,8 @@
 #include <cstdlib>
 #include <cstdint>
 #include <functional>
+#include <algorithm>
+#include <mutex>
 #include <set>
 #include <string>
 #include <vector>
@@ -53,6 +55,8 @@ struct FakeHixlState {
 };
 
 FakeHixlState g_state;
+std::mutex g_chunkMutex;
+std::vector<uint32_t> g_chunkCounts;
 
 DsHixlResult CreateEngine(DsHixlEngineHandle *engine)
 {
@@ -342,25 +346,100 @@ TEST_F(HixlTransportPluginTest, SixteenWorkerDevicesShareRoundRobinEndpoints)
     EXPECT_EQ(g_state.finalizeCalls, deviceCount);
     EXPECT_EQ(g_state.destroyCalls, deviceCount);
 }
+TEST_F(HixlTransportPluginTest, FabricMemChunksKeepObjectBlobsTogether)
+{
+    const bool savedFabricMem = FLAGS_remote_h2d_hccs_enable_fabric_mem;
+    const char *setting = std::getenv("DS_HIXL_TRANSFER_SYNC_CHUNK_COUNT");
+    const bool hadSetting = setting != nullptr;
+    const std::string savedSetting = setting == nullptr ? "" : setting;
+    Raii restore([&] {
+        FLAGS_remote_h2d_hccs_enable_fabric_mem = savedFabricMem;
+        if (hadSetting) {
+            setenv("DS_HIXL_TRANSFER_SYNC_CHUNK_COUNT", savedSetting.c_str(), 1);
+        } else {
+            unsetenv("DS_HIXL_TRANSFER_SYNC_CHUNK_COUNT");
+        }
+    });
+    FLAGS_remote_h2d_hccs_enable_fabric_mem = true;
+    DsHixlApi api = FAKE_API;
+    api.create_engine = [](DsHixlEngineHandle *engine) {
+        *engine = reinterpret_cast<DsHixlEngineHandle>(&g_state);
+        return DS_HIXL_OK;
+    };
+    api.destroy_engine = [](DsHixlEngineHandle) { return DS_HIXL_OK; };
+    api.transfer_sync = [](DsHixlEngineHandle, const DsHixlTransferRequest *request, uint32_t *) {
+        std::lock_guard<std::mutex> lock(g_chunkMutex);
+        g_chunkCounts.push_back(request->descriptorCount);
+        return DS_HIXL_OK;
+    };
+    HixlTransport transport(&api, true);
+    transport.SetLocalEndpoint("127.0.0.1");
+    ASSERT_TRUE(transport.Init({ 0 }).IsOk());
+    constexpr uintptr_t localAddress = 0x1000;
+    constexpr uintptr_t remoteAddress = 0x2000;
+    constexpr uint64_t blobBytes = 64;
+    constexpr size_t blobCount = 6;
+    void *destinations[blobCount];
+    uint64_t sizes[blobCount];
+    std::vector<HixlTransferDesc> writes;
+    for (size_t i = 0; i < blobCount; ++i) {
+        destinations[i] = reinterpret_cast<void *>(localAddress + i * blobBytes);
+        sizes[i] = blobBytes;
+        writes.push_back({ localAddress + i * blobBytes, remoteAddress + i * blobBytes, blobBytes,
+                           i == 1 || i == 4 || i == 5 });
+    }
+    P2pScatterEntry entries[] = {
+        { reinterpret_cast<void *>(remoteAddress), destinations, sizes, HCCL_DATA_TYPE_UINT8, 2 },
+        { reinterpret_cast<void *>(remoteAddress + 2 * blobBytes), destinations + 2, sizes + 2,
+          HCCL_DATA_TYPE_UINT8, 3 },
+        { reinterpret_cast<void *>(remoteAddress + 5 * blobBytes), destinations + 5, sizes + 5,
+          HCCL_DATA_TYPE_UINT8, 1 },
+    };
+    const auto verify = [&](const char *value, std::vector<uint32_t> expected) {
+        if (value == nullptr) {
+            ASSERT_EQ(unsetenv("DS_HIXL_TRANSFER_SYNC_CHUNK_COUNT"), 0);
+        } else {
+            ASSERT_EQ(setenv("DS_HIXL_TRANSFER_SYNC_CHUNK_COUNT", value, 1), 0);
+        }
+        std::sort(expected.begin(), expected.end());
+        for (bool read : { true, false }) {
+            g_chunkCounts.clear();
+            auto rc = read ? transport.ScatterBatch(entries, 3, "127.0.0.1:12345", nullptr)
+                           : transport.TransferBatch(HixlTransferOp::WRITE, writes, "127.0.0.1:12345", nullptr);
+            ASSERT_TRUE(rc.IsOk()) << rc.ToString();
+            std::sort(g_chunkCounts.begin(), g_chunkCounts.end());
+            EXPECT_EQ(g_chunkCounts, expected);
+        }
+    };
+    verify(nullptr, { 2, 3, 1 });
+    verify("1", { 2, 3, 1 });
+    verify("2", { 5, 1 });
+    verify("100", { 6 });
+    verify("0", { 2, 3, 1 });
+    verify("-1", { 2, 3, 1 });
+    writes.back().endOfObject = false;
+    EXPECT_EQ(transport.TransferBatch(HixlTransferOp::WRITE, writes, "127.0.0.1:12345", nullptr).GetCode(), K_INVALID);
+}
+
 #ifdef ENABLE_PERF
 TEST_F(HixlTransportPluginTest, FabricMemRecordsReadWriteStagesIncludingTransferFailure)
 {
     const bool savedFabricMem = FLAGS_remote_h2d_hccs_enable_fabric_mem;
-    const char *parallelism = std::getenv("DS_HIXL_TRANSFER_SYNC_PARALLELISM");
-    const bool hadParallelism = parallelism != nullptr;
-    const std::string savedParallelism = parallelism == nullptr ? "" : parallelism;
+    const char *chunkCount = std::getenv("DS_HIXL_TRANSFER_SYNC_CHUNK_COUNT");
+    const bool hadChunkCount = chunkCount != nullptr;
+    const std::string savedChunkCount = chunkCount == nullptr ? "" : chunkCount;
     Raii restore([&] {
         FLAGS_remote_h2d_hccs_enable_fabric_mem = savedFabricMem;
-        if (hadParallelism) {
-            setenv("DS_HIXL_TRANSFER_SYNC_PARALLELISM", savedParallelism.c_str(), 1);
+        if (hadChunkCount) {
+            setenv("DS_HIXL_TRANSFER_SYNC_CHUNK_COUNT", savedChunkCount.c_str(), 1);
         } else {
-            unsetenv("DS_HIXL_TRANSFER_SYNC_PARALLELISM");
+            unsetenv("DS_HIXL_TRANSFER_SYNC_CHUNK_COUNT");
         }
         PerfManager::Instance()->ResetPerfLog();
     });
     FLAGS_remote_h2d_hccs_enable_fabric_mem = true;
     ASSERT_EQ(unsetenv("HCCL_INTRA_ROCE_ENABLE"), 0);
-    ASSERT_EQ(setenv("DS_HIXL_TRANSFER_SYNC_PARALLELISM", "4", 1), 0);
+    ASSERT_EQ(setenv("DS_HIXL_TRANSFER_SYNC_CHUNK_COUNT", "1", 1), 0);
     DsHixlApi api = FAKE_API;
     // The fake engine borrows fixture state, so it needs neither ACL nor vendor resource cleanup.
     api.create_engine = [](DsHixlEngineHandle *engine) {

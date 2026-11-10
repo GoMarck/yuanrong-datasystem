@@ -81,12 +81,11 @@ constexpr uint64_t K_FABRIC_MEM_MAX_CAPACITY_TB = 32;
 const std::string K_HIXL_CS_LOCAL_COMM_RES = R"({"version":"1.3"})";
 const std::string K_WORKER_DEVICE_COMM_PORT_ENV = "DS_RH2D_HCCS_WORKER_DEVICE_COMM_PORT";
 const std::string K_FABRIC_MEM_AICPU_UNFOLD_ENV = "DS_RH2D_HCCS_ENABLE_AICPU_UNFOLD";
-const std::string K_HIXL_TRANSFER_SYNC_PARALLELISM_ENV = "DS_HIXL_TRANSFER_SYNC_PARALLELISM";
+const std::string K_HIXL_TRANSFER_SYNC_CHUNK_COUNT_ENV = "DS_HIXL_TRANSFER_SYNC_CHUNK_COUNT";
 const std::string K_HIXL_TRANSFER_SYNC_THREAD_NUM_ENV = "DS_HIXL_TRANSFER_SYNC_THREAD_NUM";
 constexpr uint32_t K_FABRIC_MEM_AICPU_TASK_STREAM_NUM = 1;
 constexpr uint32_t K_FABRIC_MEM_HOST_TASK_STREAM_NUM = 8;
-constexpr int32_t K_DEFAULT_HIXL_TRANSFER_SYNC_PARALLELISM = 4;
-constexpr int32_t K_MAX_HIXL_TRANSFER_SYNC_PARALLELISM = 16;
+constexpr int32_t K_DEFAULT_HIXL_TRANSFER_SYNC_CHUNK_COUNT = 1;
 constexpr int32_t K_DEFAULT_HIXL_TRANSFER_SYNC_THREAD_NUM = 4;
 constexpr int32_t K_MAX_HIXL_TRANSFER_SYNC_THREAD_NUM = 64;
 
@@ -258,15 +257,10 @@ bool IsFabricMemAicpuUnfoldEnabled()
     return datasystem::GetBoolFromEnv(K_FABRIC_MEM_AICPU_UNFOLD_ENV.c_str(), false);
 }
 
-int32_t GetHixlTransferSyncParallelism()
+size_t GetHixlTransferSyncChunkCount()
 {
-    int32_t parallelism =
-        datasystem::GetInt32FromEnv(K_HIXL_TRANSFER_SYNC_PARALLELISM_ENV.c_str(),
-                                    K_DEFAULT_HIXL_TRANSFER_SYNC_PARALLELISM);
-    if (parallelism < 1) {
-        return 1;
-    }
-    return std::min(parallelism, K_MAX_HIXL_TRANSFER_SYNC_PARALLELISM);
+    return static_cast<size_t>(std::max(1, datasystem::GetInt32FromEnv(
+        K_HIXL_TRANSFER_SYNC_CHUNK_COUNT_ENV.c_str(), K_DEFAULT_HIXL_TRANSFER_SYNC_CHUNK_COUNT)));
 }
 
 datasystem::ThreadPool &GetHixlTransferThreadPool()
@@ -279,19 +273,24 @@ datasystem::ThreadPool &GetHixlTransferThreadPool()
 }
 
 std::vector<HixlTransferChunk> BuildHixlTransferChunks(const std::vector<DsHixlTransferDesc> &descs,
-                                                       size_t maxChunkCount)
+                                                       const std::vector<datasystem::HixlTransferDesc> &objects,
+                                                       size_t objectsPerChunk)
 {
     std::vector<HixlTransferChunk> chunks;
-    if (descs.empty() || maxChunkCount == 0) {
+    if (descs.empty()) {
         return chunks;
     }
-    maxChunkCount = std::min(maxChunkCount, descs.size());
-    chunks.reserve(maxChunkCount);
-
-    const size_t chunkSize = (descs.size() + maxChunkCount - 1) / maxChunkCount;
-    for (size_t start = 0; start < descs.size(); start += chunkSize) {
-        size_t count = std::min(chunkSize, descs.size() - start);
-        chunks.push_back(HixlTransferChunk{ descs.data() + start, count });
+    const size_t objectCount = std::count_if(objects.begin(), objects.end(),
+                                           [](const auto &desc) { return desc.endOfObject; });
+    chunks.reserve(objectCount / objectsPerChunk + (objectCount % objectsPerChunk != 0));
+    size_t start = 0;
+    size_t count = 0;
+    for (size_t i = 0; i < objects.size(); ++i) {
+        if (objects[i].endOfObject && (++count == objectsPerChunk || i + 1 == objects.size())) {
+            chunks.push_back(HixlTransferChunk{ descs.data() + start, i + 1 - start });
+            start = i + 1;
+            count = 0;
+        }
     }
     return chunks;
 }
@@ -1473,6 +1472,8 @@ static Status FlushHixlDescriptors(Batch &batch, HixlTransferOp op, const DsHixl
 static Status BuildFabricMemTransferDescriptors(const std::vector<HixlTransferDesc> &descs, HixlTransferOp op,
                                                 std::vector<DsHixlTransferDesc> &hixlDescs)
 {
+    CHECK_FAIL_RETURN_STATUS(descs.empty() || descs.back().endOfObject, K_INVALID,
+                             "FabricMem transfer ends inside an object");
     hixlDescs.reserve(descs.size());
     for (const auto &desc : descs) {
         CHECK_FAIL_RETURN_STATUS(desc.localAddr != 0, StatusCode::K_INVALID, "HIXL local address cannot be null");
@@ -1614,14 +1615,13 @@ Status HixlTransport::TransferFabricMemBatchParallel(HixlTransferOp op, const st
     RETURN_IF_NOT_OK(BuildFabricMemTransferDescriptors(descs, op, hixlDescs));
     Batch batch(api_, engine, remoteEndpoint, 0, 0, transferFailed_);
 
-    size_t workerCount = static_cast<size_t>(GetHixlTransferSyncParallelism());
-    workerCount = std::min(workerCount, hixlDescs.size());
-    RETURN_OK_IF_TRUE(workerCount == 0);
-    auto chunks = BuildHixlTransferChunks(hixlDescs, workerCount);
+    RETURN_OK_IF_TRUE(hixlDescs.empty());
+    const auto objectsPerChunk = GetHixlTransferSyncChunkCount();
+    auto chunks = BuildHixlTransferChunks(hixlDescs, descs, objectsPerChunk);
     LOG(INFO) << "[HCCS] FabricMem parallel transfer, async=" << UseAsyncTransfer() << ", op="
               << (op == HixlTransferOp::WRITE ? "write" : "read") << ", endpoint=" << remoteEndpoint
               << ", descs=" << hixlDescs.size() << ", bytes=" << SumTransferBytes(descs)
-              << ", parallelism=" << chunks.size();
+              << ", objectsPerChunk=" << objectsPerChunk << ", chunks=" << chunks.size();
     if (UseAsyncTransfer()) {
         return TransferFabricChunksAsync(api_, engine, remoteEndpoint, op, chunks, transferFailed_);
     }
@@ -1688,7 +1688,7 @@ Status HixlTransport::TransferBatch(HixlTransferOp op, const std::vector<HixlTra
     std::shared_lock<std::shared_timed_mutex> lock(lifecycleMutex_);
     lockPoint.Record();
     RETURN_IF_NOT_OK(CheckReadyLocked());
-    if (IsHixlFabricMemMode() && (GetHixlTransferSyncParallelism() > 1 || UseAsyncTransfer())) {
+    if (IsHixlFabricMemMode()) {
         return TransferFabricMemBatchParallel(op, descs, remoteEndpoint);
     }
 
@@ -1738,7 +1738,7 @@ Status HixlTransport::ScatterBatch(P2pScatterEntry *entries, uint32_t count, con
             uintptr_t localAddr = reinterpret_cast<uintptr_t>(entry.dstBufs[j]);
             uintptr_t remoteAddr = remoteBase + entryOffset;
             uint64_t len = entry.counts[j];
-            descs.push_back(HixlTransferDesc{ localAddr, remoteAddr, len });
+            descs.push_back(HixlTransferDesc{ localAddr, remoteAddr, len, j + 1 == entry.numEl });
             entryOffset += entry.counts[j];
         }
     }

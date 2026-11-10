@@ -273,9 +273,10 @@ Status WriteFabricObjects(const std::vector<const DeviceBlobList *> &blobs, cons
         RETURN_IF_NOT_OK(manager.ImportHostSegment(group.comm->remoteEndpoint, seg));
         uint64_t offset = seg.seg_data_offset();
         for (const auto &blob : blobs[i]->blobs) {
-            group.writes.push_back({ reinterpret_cast<uintptr_t>(blob.pointer), seg.seg_va() + offset, blob.size });
+            group.writes.push_back({ reinterpret_cast<uintptr_t>(blob.pointer), seg.seg_va() + offset, blob.size, false });
             offset += blob.size;
         }
+        group.writes.back().endOfObject = true;
     }
     for (const auto &group : groups) {
         RETURN_IF_NOT_OK(ApiDeadline::Instance().CheckApiDeadline());

@@ -2237,7 +2237,7 @@ static Status AppendRemoteHostWriteDescs(const DeviceBlobList &devBlobList, Buff
         CHECK_FAIL_RETURN_STATUS(blobs[i].pointer != nullptr, K_INVALID, "Device blob pointer cannot be null.");
         CHECK_FAIL_RETURN_STATUS(remoteDataBase <= maxAddr - offset, K_RUNTIME_ERROR, "Remote blob address overflows.");
         batch.descs.push_back(HixlTransferDesc{ reinterpret_cast<uintptr_t>(blobs[i].pointer),
-                                                remoteDataBase + offset, len });
+                                                remoteDataBase + offset, len, i + 1 == blobs.size() });
     }
     return Status::OK();
 }

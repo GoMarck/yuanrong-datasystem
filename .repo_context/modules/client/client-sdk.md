@@ -13,10 +13,12 @@
   real DMA failure semantics and performance remain hardware verification requirements.
   SDK-independent coverage: `tests/ut/common/rdma/hixl_async_executor_test.cpp` (CMake/Bazel).
 - FabricMem descriptor chunking and executor capacity are independent:
-  `DS_HIXL_TRANSFER_SYNC_PARALLELISM` bounds chunks per source-group transfer (default 4, range 1–16);
+  `DS_HIXL_TRANSFER_SYNC_CHUNK_COUNT` bounds objects per chunk (default 1, positive int32).
+  The previous parallelism environment variable is no longer read. `HixlTransferDesc::endOfObject` preserves
+  object boundaries in reads and both write paths; one object's blobs never split across tasks.
   `DS_HIXL_TRANSFER_SYNC_THREAD_NUM` bounds the process-shared `hixl_transfer_sync` pool (default 4, range 1–64).
-  Pool capacity is captured on first use; configure it before process startup. Unset capacity no longer follows
-  an overridden chunk parallelism. Two groups with four chunks each can use eight pool threads, but other
+  Pool capacity is captured on first use; configure it before process startup. Two groups of 230 keys each
+  produce 460 tasks at the default chunk size, independently of the thread count. Other
   requests, communicator locks and device limits can still cause queueing. No throughput gain is asserted.
 - `HeteroClient` uses `BOUND_READ`: `enableLocalCache=true` (default) keeps synchronous device writes bound;
   false enables placement routing. `UseRoutedReads` explicitly keeps `MGetH2D` bound in both modes, independently

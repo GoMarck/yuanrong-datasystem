@@ -35,6 +35,8 @@ struct HixlTransferDesc {
     uintptr_t localAddr;
     uintptr_t remoteAddr;
     uint64_t len;
+    // Raw descriptor callers default to one object per descriptor; blob builders mark only the last blob.
+    bool endOfObject = true;
 };
 
 /**

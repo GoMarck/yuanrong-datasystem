@@ -275,7 +275,7 @@ export DS_ASCEND_USE_ASYNC_TRANSFER=1
 SDK 和 HiXL 插件需同步更新；缺少异步 ABI 回调时初始化返回不支持，不静默回退同步。
 CMake/Bazel 根据 SDK 头文件中的异步接口探测插件能力；真实 CANN 编译和硬件回归仍需执行。
 
-FabricMem 每个源端分组先按 `DS_HIXL_TRANSFER_SYNC_PARALLELISM` 拆 chunk，再直接提交全部 chunk，
+FabricMem 每个源端分组先按 `DS_HIXL_TRANSFER_SYNC_CHUNK_COUNT` 指定的每任务对象数拆 chunk，再直接提交，
 不使用 `hixl_transfer_sync` 线程池等待 DMA。因此异步模式下 `DS_HIXL_TRANSFER_SYNC_THREAD_NUM`
 不限制这些 chunk 的在途数；外层 `rh2d_groups` 调度和 communicator 锁仍有效。
 进程共享执行器最多接纳 128 个在途请求，满额时提交方等待空位，等待计入本次传输超时。
@@ -297,22 +297,27 @@ READ/WRITE 计数和成功字节指标保留；异步 chunk 延迟计入 admissi
 
 | 环境变量 | 控制范围 | 默认值 | 有效范围 |
 | --- | --- | --- | --- |
-| `DS_HIXL_TRANSFER_SYNC_PARALLELISM` | 每次源端分组传输最多拆成多少个 descriptor chunk | 4 | 1–16 |
+| `DS_HIXL_TRANSFER_SYNC_CHUNK_COUNT` | 每个任务最多包含的对象（key）数，保持对象的全部 blob 在同一任务 | 1 | 正 int32 |
 | `DS_HIXL_TRANSFER_SYNC_THREAD_NUM` | 进程共享 `hixl_transfer_sync` 线程池的最大线程数 | 4 | 1–64 |
 
-两个参数均将低于下限/高于上限的整数钳制到边界；无法解析的值使用默认值。
+对象数小于 1 时按 1 处理，无法解析时使用默认值。线程数钳制到 1–64。
 线程池在线程池首次使用时创建，之后修改环境变量不会调整已有线程池大小。
-`PARALLELISM=1` 时直接执行串行传输，不进入该线程池。
-新参数未设置时固定使用 4 个线程，不再随 `PARALLELISM` 增长；已有调优部署应显式配置线程数。
+旧的任务并行度环境变量已移除，不再读取。默认每个对象一个任务，而不是固定拆成四个任务。
+源端组的对象数不超过 CHUNK_COUNT 时，仅产生一个任务，同步模式直接在调用线程执行。
+这是内部对象边界元数据，不修改 HiXL 插件描述符 ABI。裸描述符调用方未标记边界时，
+默认每个描述符作为一个对象；MGetH2D、bound 和 routed MSetD2H 均保留真实对象边界。
 
-两个 Worker 各对应一个源端分组、每组拆成 4 个任务时，可以使用：
+460 个 key 均分到两个 Worker，每个 key 128 个 blob 时：
 
 ```bash
-export DS_HIXL_TRANSFER_SYNC_PARALLELISM=4
+export DS_HIXL_TRANSFER_SYNC_CHUNK_COUNT=1
 export DS_HIXL_TRANSFER_SYNC_THREAD_NUM=8
 ```
 
-这为合计 8 个任务提供线程容量，但并不保证没有排队：同进程其他请求也共享线程池，
+每个 Worker 产生 230 个任务，每任务 128 个描述符；合计 460 个任务共享最多 8 个同步线程。
+若 CHUNK_COUNT=58，每个 Worker 则产生 4 个任务，分别含 58、58、58、56 个对象。
+任务按对象数而不是按字节均衡；不同对象大小可能导致任务耗时不均。不能保证没有排队：
+同进程其他请求也共享线程池，
 外层分组调度、communicator 锁和设备资源仍可能限制实际并发。增加线程数需要结合 CPU、
 HiXL 并发能力及吞吐/尾延迟验证，不能直接视作性能提升。
 
