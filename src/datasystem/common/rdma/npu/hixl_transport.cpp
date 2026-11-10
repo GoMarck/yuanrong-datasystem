@@ -15,6 +15,7 @@
  */
 
 #include "datasystem/common/rdma/npu/hixl_transport.h"
+#include "datasystem/common/rdma/npu/hixl_async_executor.h"
 
 #include <algorithm>
 #include <chrono>
@@ -131,6 +132,29 @@ std::string HixlMemoryModeName(datasystem::HixlMemoryMode mode)
     }
 }
 
+bool UseAsyncTransfer()
+{
+    static const bool enabled = datasystem::GetBoolFromEnv("DS_ASCEND_USE_ASYNC_TRANSFER", false);
+    return enabled;
+}
+
+datasystem::HixlAsyncExecutor &GetHixlAsyncExecutor()
+{
+    static datasystem::HixlAsyncExecutor executor;
+    return executor;
+}
+
+DsHixlResult ExecuteTransfer(const DsHixlApi *api, DsHixlEngineHandle engine,
+                            const DsHixlTransferRequest &request, uint32_t &vendorStatus)
+{
+    if (!UseAsyncTransfer()) {
+        return api->transfer_sync(engine, &request, &vendorStatus);
+    }
+    const auto result = GetHixlAsyncExecutor().Submit(api, engine, request).get();
+    vendorStatus = result.vendorStatus;
+    return result.result;
+}
+
 datasystem::Status HixlResultToStatus(DsHixlResult result, uint32_t vendorStatus, const std::string &operation)
 {
     if (result == DS_HIXL_OK) {
@@ -144,6 +168,9 @@ datasystem::Status HixlResultToStatus(DsHixlResult result, uint32_t vendorStatus
     if (result == DS_HIXL_NOT_SUPPORTED) {
         return datasystem::Status(datasystem::StatusCode::K_NOT_SUPPORTED, message);
     }
+    if (result == DS_HIXL_TIMEOUT) {
+        return datasystem::Status(datasystem::StatusCode::K_RPC_DEADLINE_EXCEEDED, message);
+    }
     return datasystem::Status(datasystem::StatusCode::K_RUNTIME_ERROR, message);
 }
 
@@ -151,7 +178,7 @@ DsHixlResult TransferWithMetrics(const DsHixlApi *api, DsHixlEngineHandle engine
                                 const DsHixlTransferRequest &request, uint32_t &vendorStatus)
 {
     if (!FLAGS_log_monitor && !FLAGS_json_log_monitor) {
-        return api->transfer_sync(engine, &request, &vendorStatus);
+        return ExecuteTransfer(api, engine, request, vendorStatus);
     }
     using datasystem::metrics::KvMetricId;
     const bool write = request.operation == DS_HIXL_TRANSFER_WRITE;
@@ -163,7 +190,7 @@ DsHixlResult TransferWithMetrics(const DsHixlApi *api, DsHixlEngineHandle engine
     DsHixlResult result;
     {
         METRIC_TIMER(latency);
-        result = api->transfer_sync(engine, &request, &vendorStatus);
+        result = ExecuteTransfer(api, engine, request, vendorStatus);
     }
     if (result != DS_HIXL_OK) {
         METRIC_INC(errors);
@@ -563,6 +590,9 @@ Status HixlTransport::Init(const std::vector<int32_t> &deviceIds, const Options 
     if (api_ == nullptr) {
         RETURN_IF_NOT_OK(HixlPluginLoader::Instance().GetApi(api_));
     }
+    CHECK_FAIL_RETURN_STATUS(!UseAsyncTransfer() || HixlAsyncExecutor::Supported(api_), K_NOT_SUPPORTED,
+                             "DS_ASCEND_USE_ASYNC_TRANSFER requires an async-capable HIXL plugin");
+    LOG(INFO) << "[HCCS] native transfer mode=" << (UseAsyncTransfer() ? "async" : "sync");
 
     PerfPoint initPoint(PerfKey::HCCS_TRANSPORT_INIT);
     std::vector<int32_t> targetDevIds;
@@ -1509,6 +1539,67 @@ static Status AppendTransferDescToBatch(Batch &batch, HixlTransferOp op, const H
     return Status::OK();
 }
 
+static Status TransferFabricChunksAsync(const DsHixlApi *api, DsHixlEngineHandle engine,
+                                        const std::string &endpoint, HixlTransferOp op,
+                                        const std::vector<HixlTransferChunk> &chunks, std::atomic<bool> &failed)
+{
+    std::vector<std::future<HixlAsyncResult>> futures;
+    futures.reserve(chunks.size());
+    bool joined = false;
+    Raii drain([&] {
+        if (!joined) {
+            failed.store(true);
+            for (auto &future : futures) {
+                if (future.valid()) {
+                    future.wait();
+                }
+            }
+        }
+    });
+    const bool monitor = FLAGS_log_monitor || FLAGS_json_log_monitor;
+    const bool write = op == HixlTransferOp::WRITE;
+    using metrics::KvMetricId;
+    const auto requests = write ? KvMetricId::HIXL_D2RH_WRITE_REQUEST_TOTAL : KvMetricId::HIXL_RH2D_READ_REQUEST_TOTAL;
+    const auto errors = write ? KvMetricId::HIXL_D2RH_WRITE_ERROR_TOTAL : KvMetricId::HIXL_RH2D_READ_ERROR_TOTAL;
+    const auto bytes = write ? KvMetricId::HIXL_D2RH_WRITE_SUCCESS_BYTES : KvMetricId::HIXL_RH2D_READ_SUCCESS_BYTES;
+    const auto latency = write ? KvMetricId::HIXL_D2RH_WRITE_LATENCY : KvMetricId::HIXL_RH2D_READ_LATENCY;
+    for (const auto &chunk : chunks) {
+        CHECK_FAIL_RETURN_STATUS(chunk.count <= UINT32_MAX, K_INVALID, "HIXL async descriptor count exceeds uint32");
+        DsHixlTransferRequest request{ { endpoint.data(), endpoint.size() },
+                                       write ? DS_HIXL_TRANSFER_WRITE : DS_HIXL_TRANSFER_READ,
+                                       chunk.descs, static_cast<uint32_t>(chunk.count), K_HIXL_TRANSFER_TIMEOUT_MS };
+        futures.emplace_back(GetHixlAsyncExecutor().Submit(api, engine, request));
+        if (monitor) {
+            METRIC_INC(requests);
+        }
+    }
+    Status firstError;
+    for (size_t i = 0; i < futures.size(); ++i) {
+        const auto result = futures[i].get();
+        if (monitor) {
+            metrics::GetHistogram(static_cast<uint16_t>(latency)).Observe(result.elapsedUs);
+            if (result.result != DS_HIXL_OK) {
+                METRIC_INC(errors);
+            } else {
+                uint64_t transferred = 0;
+                for (size_t j = 0; j < chunks[i].count; ++j) {
+                    transferred += chunks[i].descs[j].length;
+                }
+                METRIC_ADD(bytes, transferred);
+            }
+        }
+        if (result.result != DS_HIXL_OK) {
+            failed.store(true);
+            if (firstError.IsOk()) {
+                firstError = HixlResultToStatus(result.result, result.vendorStatus, "TransferAsync/GetTransferStatus");
+            }
+        }
+    }
+    joined = true;
+    LOG_IF_ERROR(firstError, "HIXL async transfer failed; retain device arenas until process exit and restart the SDK");
+    return firstError;
+}
+
 Status HixlTransport::TransferFabricMemBatchParallel(HixlTransferOp op, const std::vector<HixlTransferDesc> &descs,
                                                      const std::string &remoteEndpoint)
 {
@@ -1527,10 +1618,13 @@ Status HixlTransport::TransferFabricMemBatchParallel(HixlTransferOp op, const st
     workerCount = std::min(workerCount, hixlDescs.size());
     RETURN_OK_IF_TRUE(workerCount == 0);
     auto chunks = BuildHixlTransferChunks(hixlDescs, workerCount);
-    LOG(INFO) << "[HCCS] FabricMem parallel TransferSync enabled, op="
+    LOG(INFO) << "[HCCS] FabricMem parallel transfer, async=" << UseAsyncTransfer() << ", op="
               << (op == HixlTransferOp::WRITE ? "write" : "read") << ", endpoint=" << remoteEndpoint
               << ", descs=" << hixlDescs.size() << ", bytes=" << SumTransferBytes(descs)
               << ", parallelism=" << chunks.size();
+    if (UseAsyncTransfer()) {
+        return TransferFabricChunksAsync(api_, engine, remoteEndpoint, op, chunks, transferFailed_);
+    }
     if (chunks.size() == 1) {
         stagePoint.RecordAndReset(op == HixlTransferOp::WRITE ? PerfKey::HCCS_FABRIC_BIND_DEVICE_WRITE
                                                               : PerfKey::HCCS_FABRIC_BIND_DEVICE_READ);
@@ -1594,7 +1688,7 @@ Status HixlTransport::TransferBatch(HixlTransferOp op, const std::vector<HixlTra
     std::shared_lock<std::shared_timed_mutex> lock(lifecycleMutex_);
     lockPoint.Record();
     RETURN_IF_NOT_OK(CheckReadyLocked());
-    if (IsHixlFabricMemMode() && GetHixlTransferSyncParallelism() > 1) {
+    if (IsHixlFabricMemMode() && (GetHixlTransferSyncParallelism() > 1 || UseAsyncTransfer())) {
         return TransferFabricMemBatchParallel(op, descs, remoteEndpoint);
     }
 

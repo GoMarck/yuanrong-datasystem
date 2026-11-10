@@ -88,6 +88,9 @@ const DsHixlApi VALID_API = {
     TransferSync,
     nullptr,
     nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
 };
 
 DsHixlApi MakeApi(uint32_t mode)

@@ -24,7 +24,8 @@ _Static_assert(sizeof(DsHixlTransferDesc) == 24, "DsHixlTransferDesc ABI changed
 _Static_assert(sizeof(DsHixlRegisterMemoryRequest) == 24, "DsHixlRegisterMemoryRequest ABI changed");
 _Static_assert(sizeof(DsHixlTransferRequest) == 40, "DsHixlTransferRequest ABI changed");
 _Static_assert(offsetof(DsHixlApi, create_engine) == 8, "DsHixlApi prefix ABI changed");
-_Static_assert(sizeof(DsHixlApi) == 96, "DsHixlApi v1 ABI changed");
+_Static_assert(offsetof(DsHixlApi, transfer_async) == 96, "DsHixlApi synchronous prefix ABI changed");
+_Static_assert(sizeof(DsHixlApi) == 120, "DsHixlApi async extension ABI changed");
 
 void HixlPluginApiCCompileTest(void)
 {

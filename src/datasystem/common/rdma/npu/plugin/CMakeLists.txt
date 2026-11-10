@@ -7,6 +7,9 @@ set_target_properties(ds_hixl_plugin PROPERTIES
     VISIBILITY_INLINES_HIDDEN YES
     LINK_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/hixl_plugin.map)
 target_include_directories(ds_hixl_plugin PRIVATE ${ASCEND_HIXL_INCLUDE_DIR})
+if (ASCEND_HIXL_ASYNC_SUPPORTED)
+    target_compile_definitions(ds_hixl_plugin PRIVATE ASCEND_HIXL_ASYNC_AVAILABLE)
+endif()
 if (ASCEND_HIXL_FABRIC_MEM_SUPPORTED)
     target_compile_definitions(ds_hixl_plugin PRIVATE ASCEND_HIXL_FABRIC_MEM_AVAILABLE)
 endif()

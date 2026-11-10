@@ -2,6 +2,16 @@
 
 ## Routed FabricMem device writes
 
+- `DS_ASCEND_USE_ASYNC_TRANSFER=1` opts HixlTransport into async vendor submission, default false.
+  The plugin ABI appends optional submit/query/release callbacks after its stable synchronous prefix;
+  unsupported plugins fail initialization without fallback. The plugin owns endpoint/descriptors until completion.
+  `hixl_async_executor.h` owns one bounded process-shared poller (128 in-flight requests, 50us polling interval).
+  FabricMem chunks submit directly and join their futures under the existing lifecycle lease, without occupying
+  `hixl_transfer_sync` threads. Admission consumes the transfer timeout. Query failure/timeouts retain uncertain
+  handles; the transport is quarantined and callers retain arenas as in the synchronous error contract.
+  Public device APIs remain synchronous, and writes publish only after completion. Native CANN compilation,
+  real DMA failure semantics and performance remain hardware verification requirements.
+  SDK-independent coverage: `tests/ut/common/rdma/hixl_async_executor_test.cpp` (CMake/Bazel).
 - FabricMem descriptor chunking and executor capacity are independent:
   `DS_HIXL_TRANSFER_SYNC_PARALLELISM` bounds chunks per source-group transfer (default 4, range 1–16);
   `DS_HIXL_TRANSFER_SYNC_THREAD_NUM` bounds the process-shared `hixl_transfer_sync` pool (default 4, range 1–64).

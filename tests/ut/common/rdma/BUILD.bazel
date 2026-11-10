@@ -34,6 +34,12 @@ ds_cc_test(
 )
 
 ds_cc_test(
+    name = "hixl_async_executor_test",
+    srcs = ["hixl_async_executor_test.cpp"],
+    deps = ["//src/datasystem/common/rdma/npu:hixl_plugin_api"],
+)
+
+ds_cc_test(
     name = "ub_port_health_test",
     srcs = ["ub_port_health_test.cpp"],
     deps = [

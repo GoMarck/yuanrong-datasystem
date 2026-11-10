@@ -29,6 +29,7 @@ typedef enum DsHixlResult {
     DS_HIXL_INVALID_ARGUMENT = 1,
     DS_HIXL_NOT_SUPPORTED = 2,
     DS_HIXL_RUNTIME_ERROR = 3,
+    DS_HIXL_TIMEOUT = 4,
 } DsHixlResult;
 
 #define DS_HIXL_MEMORY_DEVICE 0U
@@ -39,6 +40,11 @@ typedef enum DsHixlResult {
 
 typedef struct DsHixlEngine *DsHixlEngineHandle;
 typedef struct DsHixlMemory *DsHixlMemHandle;
+typedef struct DsHixlTransfer *DsHixlTransferHandle;
+
+#define DS_HIXL_TRANSFER_PENDING 0U
+#define DS_HIXL_TRANSFER_COMPLETED 1U
+#define DS_HIXL_TRANSFER_FAILED 2U
 
 typedef struct DsHixlStringView {
     const char *data;
@@ -92,6 +98,13 @@ typedef struct DsHixlApi {
                                   uint32_t *vendorStatus);
     DsHixlResult (*malloc_memory)(uint32_t memoryType, uint64_t length, void **ptr, uint32_t *vendorStatus);
     DsHixlResult (*free_memory)(void *ptr, uint32_t *vendorStatus);
+    /* Async submission owns copies of endpoint/descriptors. Release is valid only after COMPLETED.
+       Callers must check structSize before accessing these optional ABI extensions. */
+    DsHixlResult (*transfer_async)(DsHixlEngineHandle engine, const DsHixlTransferRequest *request,
+                                   DsHixlTransferHandle *handle, uint32_t *vendorStatus);
+    DsHixlResult (*query_transfer)(DsHixlEngineHandle engine, DsHixlTransferHandle handle,
+                                   uint32_t *state, uint32_t *vendorStatus);
+    DsHixlResult (*release_transfer)(DsHixlTransferHandle handle);
 } DsHixlApi;
 
 #if defined(__GNUC__)

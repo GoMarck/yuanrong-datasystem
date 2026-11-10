@@ -146,6 +146,9 @@ def _ascend_configure_impl(repository_ctx):
             "-Wl,--as-needed",
         ])
         hixl_defines.append("ASCEND_HIXL_AVAILABLE")
+        hixl_content = repository_ctx.read(hixl_header)
+        if "TransferAsync" in hixl_content and "GetTransferStatus" in hixl_content:
+            hixl_defines.append("ASCEND_HIXL_ASYNC_AVAILABLE")
         hixl_srcs.append("hixl_transport.cpp")
         hixl_srcs.append("hixl_plugin_loader.cpp")
         hixl_deps.append(":hixl_plugin_sha256_header")
@@ -153,6 +156,7 @@ def _ascend_configure_impl(repository_ctx):
             "hixl_plugin_api.h",
             "hixl_plugin_loader.h",
             "hixl_transport.h",
+            "hixl_async_executor.h",
         ])
         hixl_plugin_targets.append("//src/datasystem/common/rdma/npu/plugin:libds_hixl_plugin.so")
         if fabric_mem_available:

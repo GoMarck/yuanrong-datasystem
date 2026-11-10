@@ -264,6 +264,35 @@ owner 却只计少量字节。因此成功链路的批次也必须在此预算�
 
 ## FabricMem 传输并发配置
 
+### 异步 HiXL 提交
+
+```bash
+export DS_ASCEND_USE_ASYNC_TRANSFER=1
+```
+
+默认关闭，保留 `TransferSync`。开启后使用 `TransferAsync` 提交并由进程共享查询线程
+调用 `GetTransferStatus`。该配置首次读取后固定，应在进程启动前设置。
+SDK 和 HiXL 插件需同步更新；缺少异步 ABI 回调时初始化返回不支持，不静默回退同步。
+CMake/Bazel 根据 SDK 头文件中的异步接口探测插件能力；真实 CANN 编译和硬件回归仍需执行。
+
+FabricMem 每个源端分组先按 `DS_HIXL_TRANSFER_SYNC_PARALLELISM` 拆 chunk，再直接提交全部 chunk，
+不使用 `hixl_transfer_sync` 线程池等待 DMA。因此异步模式下 `DS_HIXL_TRANSFER_SYNC_THREAD_NUM`
+不限制这些 chunk 的在途数；外层 `rh2d_groups` 调度和 communicator 锁仍有效。
+进程共享执行器最多接纳 128 个在途请求，满额时提交方等待空位，等待计入本次传输超时。
+查询线程每轮检查所有已提交请求，轮间休眠 50 微秒；该值不是完成延迟保证。
+
+`MGetH2D`/`MSetD2H` 仍在传输完成后返回，WRITE 完成后才发布对象。
+描述符和 endpoint 由插件持有，engine/内存注册由调用方生命周期锁覆盖直到所有 future 完成；
+超时或查询失败不视为 DMA 已停止，不释放不确定的 native request，沿用传输隔离和源 arena
+保留至进程退出的规则。关闭执行器会等待已接纳请求完成或超时，不取消 native DMA。
+READ/WRITE 计数和成功字节指标保留；异步 chunk 延迟计入 admission、提交和查询检测完成时间。
+
+无硬件回归为 `HixlAsyncExecutorTest.SubmissionCompletionBackpressureFailureAndShutdown`。
+上线前需分别以环境变量 0/1 验证两 Worker 读写一致性、NX、传输失败、关闭等待和吞吐/尾延迟。
+异步接口本身不保证性能提升。
+
+### 同步拆分与线程池容量
+
 在客户端进程启动前设置以下两个独立参数：
 
 | 环境变量 | 控制范围 | 默认值 | 有效范围 |

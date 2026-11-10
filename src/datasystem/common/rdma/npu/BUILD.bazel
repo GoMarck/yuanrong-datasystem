@@ -11,7 +11,7 @@ package(default_visibility = ["//src/datasystem:__subpackages__"])
 
 ds_cc_library(
     name = "hixl_plugin_api",
-    hdrs = ["hixl_plugin_api.h"],
+    hdrs = ["hixl_plugin_api.h", "hixl_async_executor.h"],
     visibility = [
         "//src/datasystem:__subpackages__",
         "//tests:__subpackages__",

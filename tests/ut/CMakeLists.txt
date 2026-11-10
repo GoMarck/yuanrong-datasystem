@@ -94,6 +94,7 @@ list(FILTER DS_TEST_UT_SRCS EXCLUDE REGEX .*/common/rdma/urma_port_status_provid
 list(FILTER DS_TEST_UT_SRCS EXCLUDE REGEX .*/worker/data_worker_options_test\.cpp$)
 list(FILTER DS_TEST_UT_SRCS EXCLUDE REGEX .*/test_main\.cpp$)
 list(FILTER DS_TEST_UT_SRCS EXCLUDE REGEX .*/common/rdma/hixl_plugin_api_test\.cpp$)
+list(FILTER DS_TEST_UT_SRCS EXCLUDE REGEX .*/common/rdma/hixl_async_executor_test\.cpp$)
 list(FILTER DS_TEST_UT_SRCS EXCLUDE REGEX .*/common\\.cpp$)
 list(FILTER DS_TEST_UT_SRCS EXCLUDE REGEX .*/stream_cache/.*)
 list(FILTER DS_TEST_UT_SRCS EXCLUDE REGEX .*/object_cache/.*)
@@ -168,6 +169,11 @@ target_include_directories(hixl_plugin_api_c_compile_test PRIVATE ${PROJECT_DIR}
 add_executable(hixl_plugin_api_test common/rdma/hixl_plugin_api_test.cpp)
 target_link_libraries(hixl_plugin_api_test PRIVATE GTest::gtest GTest::gtest_main)
 gtest_discover_tests(hixl_plugin_api_test)
+
+add_executable(hixl_async_executor_test common/rdma/hixl_async_executor_test.cpp)
+target_include_directories(hixl_async_executor_test PRIVATE ${PROJECT_DIR}/src)
+target_link_libraries(hixl_async_executor_test PRIVATE GTest::gtest GTest::gtest_main pthread)
+gtest_discover_tests(hixl_async_executor_test)
 
 add_library(fake_hixl_plugin SHARED common/rdma/fake_hixl_plugin.cpp)
 target_include_directories(fake_hixl_plugin PRIVATE ${PROJECT_DIR}/src)

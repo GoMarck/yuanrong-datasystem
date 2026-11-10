@@ -136,6 +136,9 @@ const DsHixlApi FAKE_API = {
     TransferSync,
     nullptr,
     nullptr,
+    nullptr,
+    nullptr,
+    nullptr,
 };
 
 class HixlTransportPluginTest : public testing::Test {

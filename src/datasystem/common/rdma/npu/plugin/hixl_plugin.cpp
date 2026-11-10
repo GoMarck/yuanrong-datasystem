@@ -25,6 +25,7 @@
 #include <map>
 #include <memory>
 #include <new>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -344,6 +345,104 @@ DsHixlResult TransferSync(DsHixlEngineHandle engine, const DsHixlTransferRequest
     });
 }
 
+#ifdef ASCEND_HIXL_ASYNC_AVAILABLE
+struct AsyncTransfer {
+    std::string endpoint;
+    std::vector<hixl::TransferOpDesc> descriptors;
+    hixl::TransferReq request = nullptr;
+    bool completed = false;
+};
+
+DsHixlResult TransferAsync(DsHixlEngineHandle engine, const DsHixlTransferRequest *request,
+                           DsHixlTransferHandle *handle, uint32_t *vendorStatus) noexcept
+{
+    return InvokeNoexcept([=]() {
+        if (handle == nullptr) {
+            return DS_HIXL_INVALID_ARGUMENT;
+        }
+        *handle = nullptr;
+        auto *context = GetContext(engine);
+        if (context == nullptr || !context->initialized || request == nullptr
+            || !IsValidString(request->remoteEndpoint, false) || request->descriptors == nullptr
+            || request->descriptorCount == 0 || request->timeoutMs <= 0
+            || (request->operation != DS_HIXL_TRANSFER_READ && request->operation != DS_HIXL_TRANSFER_WRITE)) {
+            return DS_HIXL_INVALID_ARGUMENT;
+        }
+        DeviceContextGuard guard(context->deviceContext);
+        if (guard.GetStatus() != ACL_SUCCESS) {
+            SetVendorStatus(vendorStatus, guard.GetStatus());
+            return DS_HIXL_RUNTIME_ERROR;
+        }
+        auto transfer = std::make_unique<AsyncTransfer>();
+        transfer->endpoint.assign(request->remoteEndpoint.data, request->remoteEndpoint.size);
+        transfer->descriptors.reserve(request->descriptorCount);
+        for (uint32_t i = 0; i < request->descriptorCount; ++i) {
+            const auto &desc = request->descriptors[i];
+            if (desc.localAddr == 0 || desc.remoteAddr == 0 || desc.length == 0 || !FitsSizeT(desc.length)) {
+                return DS_HIXL_INVALID_ARGUMENT;
+            }
+            transfer->descriptors.push_back({ desc.localAddr, desc.remoteAddr, static_cast<size_t>(desc.length) });
+        }
+        const auto operation = request->operation == DS_HIXL_TRANSFER_READ ? hixl::READ : hixl::WRITE;
+        hixl::Status status;
+        try {
+            status = context->engine->TransferAsync(hixl::AscendString(transfer->endpoint.c_str()), operation,
+                                                    transfer->descriptors, hixl::TransferArgs(), transfer->request);
+        } catch (...) {
+            *handle = reinterpret_cast<DsHixlTransferHandle>(transfer.release());
+            throw;
+        }
+        SetVendorStatus(vendorStatus, status);
+        // Submission failure is not a proven DMA fence; retain request storage on every native error.
+        *handle = reinterpret_cast<DsHixlTransferHandle>(transfer.release());
+        return ToDsResult(status);
+    });
+}
+
+DsHixlResult QueryTransfer(DsHixlEngineHandle engine, DsHixlTransferHandle handle,
+                           uint32_t *state, uint32_t *vendorStatus) noexcept
+{
+    return InvokeNoexcept([=]() {
+        auto *context = GetContext(engine);
+        auto *transfer = reinterpret_cast<AsyncTransfer *>(handle);
+        if (context == nullptr || !context->initialized || transfer == nullptr || state == nullptr) {
+            return DS_HIXL_INVALID_ARGUMENT;
+        }
+        DeviceContextGuard guard(context->deviceContext);
+        if (guard.GetStatus() != ACL_SUCCESS) {
+            SetVendorStatus(vendorStatus, guard.GetStatus());
+            return DS_HIXL_RUNTIME_ERROR;
+        }
+        hixl::TransferStatus status = hixl::TransferStatus::WAITING;
+        auto rc = context->engine->GetTransferStatus(transfer->request, status);
+        SetVendorStatus(vendorStatus, rc);
+        if (rc != hixl::SUCCESS) {
+            return ToDsResult(rc);
+        }
+        *state = DS_HIXL_TRANSFER_PENDING;
+        if (status == hixl::TransferStatus::COMPLETED) {
+            transfer->completed = true;
+            *state = DS_HIXL_TRANSFER_COMPLETED;
+        } else if (status == hixl::TransferStatus::FAILED) {
+            *state = DS_HIXL_TRANSFER_FAILED;
+        } else if (status == hixl::TransferStatus::TIMEOUT) {
+            return DS_HIXL_TIMEOUT;
+        }
+        return DS_HIXL_OK;
+    });
+}
+
+DsHixlResult ReleaseTransfer(DsHixlTransferHandle handle) noexcept
+{
+    auto *transfer = reinterpret_cast<AsyncTransfer *>(handle);
+    if (transfer == nullptr || !transfer->completed) {
+        return DS_HIXL_INVALID_ARGUMENT;
+    }
+    delete transfer;
+    return DS_HIXL_OK;
+}
+#endif
+
 #ifdef ASCEND_HIXL_FABRIC_MEM_AVAILABLE
 DsHixlResult MallocMemory(uint32_t memoryType, uint64_t length, void **ptr, uint32_t *vendorStatus) noexcept
 {
@@ -399,6 +498,15 @@ const DsHixlApi HIXL_API_V1 = {
     &MallocMemory,
     &FreeMemory,
 #else
+    nullptr,
+    nullptr,
+#endif
+#ifdef ASCEND_HIXL_ASYNC_AVAILABLE
+    &TransferAsync,
+    &QueryTransfer,
+    &ReleaseTransfer,
+#else
+    nullptr,
     nullptr,
     nullptr,
 #endif
