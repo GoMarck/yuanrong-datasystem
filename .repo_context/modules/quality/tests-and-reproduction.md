@@ -41,6 +41,12 @@
 
 ## Test Layout
 
+- `tests/perf/rpc_compare/isolated` is an opt-in standalone CMake/Bazel TCP RPC diagnostic.
+  It returns a fixed byte body, separates handler/native/envelope time, and retains failures.
+  Its paired Mooncake harness shares the same runner. This is a framework+TCP baseline,
+  not a worker or TE benchmark; do not subtract it indiscriminately from live Set/Get.
+  `tests/kvtest/tests/cxx/test_benchmark_profile.cpp` covers RPC method and byte attributes.
+
 - `tests/kvtest/deploy_client.py collect --sdk-only` skips summary, case configs and kvtest outputs.
   Repeatable `--log-pattern` aliases the shared `--file-pattern` filter; use both switches to
   collect only matching SDK logs through the existing archive transport. Patterns are OR-combined

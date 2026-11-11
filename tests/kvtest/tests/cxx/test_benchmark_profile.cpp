@@ -2,7 +2,10 @@
 #include "vendor/nlohmann_json.hpp"
 
 #include <cstdlib>
-#define REQUIRE(condition) do { if (!(condition)) std::abort(); } while (false)
+#define REQUIRE(condition) do { if (!(condition)) { \
+    std::fprintf(stderr, "%s:%d: requirement failed: %s\n", __FILE__, __LINE__, #condition); \
+    std::abort(); \
+} } while (false)
 #include <fstream>
 #include <glob.h>
 #include <vector>
@@ -31,12 +34,12 @@ int main(int argc, char **argv)
     REQUIRE(kvtest_profile::RpcMethodId("datasystem.worker.WorkerOCService.QueryAndGet") == 3);
     REQUIRE(kvtest_profile::RpcMethodId("GetReplicaList") == 8);
     REQUIRE(kvtest_profile::RpcMethodId("UnrelatedMethod") == 0);
-    kvtest_profile::RecordDuration(kvtest_profile::Stage::DS_RPC_NATIVE_QUERY, 5000, false);
     {
         kvtest_profile::Span ignored(kvtest_profile::Stage::COUNT);
         ignored.Finish(true);
     }
     REQUIRE(findLogs().empty());
+    kvtest_profile::RecordDuration(kvtest_profile::Stage::DS_RPC_NATIVE_QUERY, 5000, false);
     std::vector<std::thread> threads;
     for (size_t i = 0; i < 32; ++i) {
         threads.emplace_back([] {
