@@ -46,6 +46,9 @@
   Its paired Mooncake harness shares the same runner. This is a framework+TCP baseline,
   not a worker or TE benchmark; do not subtract it indiscriminately from live Set/Get.
   `tests/kvtest/tests/cxx/test_benchmark_profile.cpp` covers RPC method and byte attributes.
+  Generated server adapter frames cover preparation, payload decoding, timeout setup,
+  dispatch, result handling and trace trailers. UnarySocket method IDs are emitted as constants;
+  its existing trace method string can be empty and is not used to classify sampled requests.
 
 - `tests/kvtest/deploy_client.py collect --sdk-only` skips summary, case configs and kvtest outputs.
   Repeatable `--log-pattern` aliases the shared `--file-pattern` filter; use both switches to

@@ -20,6 +20,7 @@
  * implement brpc::Service for brpc integration.
  */
 #include "datasystem/common/rpc/plugin_generator/rpc_generator.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 
 #include <google/protobuf/descriptor.h>
 
@@ -415,8 +416,15 @@ void RpcGenerator::ImplementBrpcCallMethodPlain(io::Printer &printer,
     vars["methodName"] = method.name();
     vars["inputTypeName"] = method.input_type()->name();
     vars["outputTypeName"] = method.output_type()->name();
+    vars["benchmarkMethodId"] = std::to_string(kvtest_profile::RpcMethodId(method.name().c_str()));
 
     std::string impl =
+        "$indent$::kvtest_profile::DetailFrame adapterFrame(\n"
+        "$indent$    ::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_TOTAL,\n"
+        "$indent$    ::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_PREPARE);\n"
+        "$indent$if (adapterFrame.Sampled()) {\n"
+        "$indent$    adapterFrame.Observe(::kvtest_profile::DetailAttribute::RPC_METHOD, $benchmarkMethodId$);\n"
+        "$indent$}\n"
         "$indent$auto* req = dynamic_cast<const $inputTypeName$*>(request);\n"
         "$indent$auto* rsp = dynamic_cast<$outputTypeName$*>(response);\n"
         "$indent$if (req == nullptr || rsp == nullptr) {\n"
@@ -432,23 +440,28 @@ void RpcGenerator::ImplementBrpcCallMethodPlain(io::Printer &printer,
         "$indent$                 BrpcTraceGetTid(), sched_getcpu(),\n"
         "$indent$                 static_cast<unsigned long long>(bthread_self())));\n"
         "$indent$";
+    impl += "$indent$adapterFrame.Next(::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_CONTEXT);\n";
     impl += BuildScTimeoutDurationInitSnippet();
     impl +=
+        "$indent$adapterFrame.Next(::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_DISPATCH);\n"
         "$indent$rpcTrace.MarkServerExecStart();\n"
         "$indent$::datasystem::Status st = impl_.$methodName$(*req, *rsp);\n"
         "$indent$rpcTrace.MarkServerExecEnd();\n"
+        "$indent$adapterFrame.Next(::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_RESULT);\n"
         "$indent$if (st.IsError()) {\n"
         "$indent$    cntl->SetFailed(st.GetMsg() + \"\\x01\" \"DS_ERR:\" + "
         "std::to_string(static_cast<int>(st.GetCode())) + \"\\x02\");\n"
         "$indent$}\n";
     impl +=
+        "$indent$adapterFrame.Next(::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_TRACE);\n"
         "$indent$rpcTrace.MarkServerSend();\n"
         "$indent$SLOW_LOG_IF_OR_VLOG(\n"
         "$indent$    INFO, FLAGS_enable_perf_trace_log, 1,\n"
         "$indent$    FormatString(\"ServerSend ts %llu tid %d cpu %d bid %llu\\n\", rpcTrace.ServerSendTs(),\n"
         "$indent$                 BrpcTraceGetTid(), sched_getcpu(),\n"
         "$indent$                 static_cast<unsigned long long>(bthread_self())));\n"
-        "$indent$::datasystem::AppendBrpcServerTraceTrailer(rpcTrace, cntl->response_attachment());\n";
+        "$indent$::datasystem::AppendBrpcServerTraceTrailer(rpcTrace, cntl->response_attachment());\n"
+        "$indent$adapterFrame.Next(::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_CLEANUP);\n";
     printer.Print(vars, impl.c_str());
 }
 
@@ -466,10 +479,17 @@ void RpcGenerator::ImplementBrpcCallMethodSendPayload(io::Printer &printer,
     vars["methodName"] = method.name();
     vars["inputTypeName"] = method.input_type()->name();
     vars["outputTypeName"] = method.output_type()->name();
+    vars["benchmarkMethodId"] = std::to_string(kvtest_profile::RpcMethodId(method.name().c_str()));
 
     // Wire format in IOBuf: [int64_t count][int64_t size1][data1][int64_t size2][data2]...
     // The brpc client stub writes payload in this same framing format.
     std::string impl =
+        "$indent$::kvtest_profile::DetailFrame adapterFrame(\n"
+        "$indent$    ::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_TOTAL,\n"
+        "$indent$    ::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_PREPARE);\n"
+        "$indent$if (adapterFrame.Sampled()) {\n"
+        "$indent$    adapterFrame.Observe(::kvtest_profile::DetailAttribute::RPC_METHOD, $benchmarkMethodId$);\n"
+        "$indent$}\n"
         "$indent$auto* req = dynamic_cast<const $inputTypeName$*>(request);\n"
         "$indent$auto* rsp = dynamic_cast<$outputTypeName$*>(response);\n"
         "$indent$if (req == nullptr || rsp == nullptr) {\n"
@@ -484,6 +504,7 @@ void RpcGenerator::ImplementBrpcCallMethodSendPayload(io::Printer &printer,
         "$indent$    FormatString(\"ServerRecv ts %llu tid %d cpu %d bid %llu\\n\", rpcTrace.ServerRecvTs(),\n"
         "$indent$                 BrpcTraceGetTid(), sched_getcpu(),\n"
         "$indent$                 static_cast<unsigned long long>(bthread_self())));\n"
+        "$indent$adapterFrame.Next(::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_DECODE);\n"
         "$indent$std::vector<::datasystem::RpcMessage> payload;\n"
         "$indent$butil::IOBuf &attachment = cntl->request_attachment();\n"
         "$indent$do {\n"
@@ -504,22 +525,27 @@ void RpcGenerator::ImplementBrpcCallMethodSendPayload(io::Printer &printer,
         "$indent$    }\n"
         "$indent$} while (false);\n"
         "$indent$";
+    impl += "$indent$adapterFrame.Next(::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_CONTEXT);\n";
     impl += BuildScTimeoutDurationInitSnippet();
     impl +=
+        "$indent$adapterFrame.Next(::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_DISPATCH);\n"
         "$indent$rpcTrace.MarkServerExecStart();\n"
         "$indent$::datasystem::Status st = impl_.$methodName$(*req, *rsp, std::move(payload));\n"
         "$indent$rpcTrace.MarkServerExecEnd();\n"
+        "$indent$adapterFrame.Next(::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_RESULT);\n"
         "$indent$if (st.IsError()) {\n"
         "$indent$    cntl->SetFailed(st.GetMsg() + \"\\x01\" \"DS_ERR:\" + "
         "std::to_string(static_cast<int>(st.GetCode())) + \"\\x02\");\n"
         "$indent$}\n"
+        "$indent$adapterFrame.Next(::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_TRACE);\n"
         "$indent$rpcTrace.MarkServerSend();\n"
         "$indent$SLOW_LOG_IF_OR_VLOG(\n"
         "$indent$    INFO, FLAGS_enable_perf_trace_log, 1,\n"
         "$indent$    FormatString(\"ServerSend ts %llu tid %d cpu %d bid %llu\\n\", rpcTrace.ServerSendTs(),\n"
         "$indent$                 BrpcTraceGetTid(), sched_getcpu(),\n"
         "$indent$                 static_cast<unsigned long long>(bthread_self())));\n"
-        "$indent$::datasystem::AppendBrpcServerTraceTrailer(rpcTrace, cntl->response_attachment());\n";
+        "$indent$::datasystem::AppendBrpcServerTraceTrailer(rpcTrace, cntl->response_attachment());\n"
+        "$indent$adapterFrame.Next(::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_CLEANUP);\n";
     printer.Print(vars, impl.c_str());
 }
 
@@ -665,26 +691,36 @@ void RpcGenerator::ImplementBrpcCallMethodUnarySocket(io::Printer &printer,
     vars["methodName"] = method.name();
     vars["inputTypeName"] = method.input_type()->name();
     vars["outputTypeName"] = method.output_type()->name();
+    vars["benchmarkMethodId"] = std::to_string(kvtest_profile::RpcMethodId(method.name().c_str()));
 
     std::string impl =
+        "$indent$::kvtest_profile::DetailFrame adapterFrame(\n"
+        "$indent$    ::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_TOTAL,\n"
+        "$indent$    ::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_PREPARE);\n"
+        "$indent$if (adapterFrame.Sampled()) {\n"
+        "$indent$    adapterFrame.Observe(::kvtest_profile::DetailAttribute::RPC_METHOD, $benchmarkMethodId$);\n"
+        "$indent$}\n"
         "$indent$// UnarySocket pattern: async completion via done closure.\n"
         "$indent$// Release done from ClosureGuard so serverApi owns it.\n"
         "$indent$google::protobuf::Closure* asyncDone = done_guard.release();\n"
         "$indent$auto serverApi =\n"
         "$indent$    std::make_shared<::datasystem::BrpcServerUnaryWriterReader<$outputTypeName$, $inputTypeName$>>(\n"
-        "$indent$        cntl, request, response, asyncDone, \"$methodFullName$\");\n";
+        "$indent$        cntl, request, response, asyncDone, \"$methodFullName$\", $benchmarkMethodId$);\n";
     if (HasPayloadRecvOption(method)) {
         impl +=
         "$indent$// Defer done_->Run() so SendPayload()/SendAndTagPayload() can write\n"
         "$indent$// payload to response_attachment before brpc serializes the response.\n"
         "$indent$serverApi->SetHasRecvPayload(true);\n";
     }
+    impl += "$indent$adapterFrame.Next(::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_CONTEXT);\n";
     impl += BuildScTimeoutDurationInitSnippet();
     impl +=
         "$indent$// Keep both request timeout domains aligned with the brpc deadline.\n"
         "$indent$::datasystem::GetRequestContext()->reqTimeoutDuration = serverApi->GetScTimeoutDuration();\n"
         "$indent$::datasystem::GetRequestContext()->scTimeoutDuration = serverApi->GetScTimeoutDuration();\n"
+        "$indent$adapterFrame.Next(::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_DISPATCH);\n"
         "$indent$::datasystem::Status st = impl_.$methodName$(serverApi);\n"
+        "$indent$adapterFrame.Next(::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_RESULT);\n"
         "$indent$if (st.IsError()) {\n"
         "$indent$    VLOG(1) << \"[BRPC_UNARY_SOCKET_SET_FAILED] method=$methodName$\"\n"
         "$indent$            << \", status=\" << st.ToString()\n"
@@ -703,6 +739,7 @@ void RpcGenerator::ImplementBrpcCallMethodUnarySocket(io::Printer &printer,
         "$indent$// If st.IsOk(), done->Run() will be called by Write()/SendStatus()\n"
         "$indent$// (or by SendPayload()/SendAndTagPayload() when SetHasRecvPayload(true)).\n"
         "$indent$// Falls back to ~BrpcServerUnaryWriterReader() if none are called.\n";
+    impl += "$indent$adapterFrame.Next(::kvtest_profile::Stage::D_DS_RPC_SERVER_ADAPTER_CLEANUP);\n";
     printer.Print(vars, impl.c_str());
 }
 

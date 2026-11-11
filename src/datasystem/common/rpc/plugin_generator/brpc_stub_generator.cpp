@@ -359,6 +359,7 @@ std::string RpcGenerator::BuildBrpcStubNoStreamImpl(const google::protobuf::Meth
     const std::unordered_map<std::string, std::string> nativeStages{
         {"Create", "DS_RPC_NATIVE_CREATE"}, {"Publish", "DS_RPC_NATIVE_PUBLISH"},
         {"QueryAndGet", "DS_RPC_NATIVE_QUERY"}, {"Release", "DS_RPC_NATIVE_RELEASE"},
+        {"DecreaseReference", "DS_RPC_NATIVE_RELEASE"},
         {"CreateMeta", "DS_RPC_NATIVE_CREATE_META"}
     };
     const auto nativeStage = nativeStages.find(method.name());

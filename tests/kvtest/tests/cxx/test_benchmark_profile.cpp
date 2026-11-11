@@ -34,6 +34,7 @@ int main(int argc, char **argv)
     REQUIRE(kvtest_profile::RpcMethodId("datasystem.worker.WorkerOCService.QueryAndGet") == 3);
     REQUIRE(kvtest_profile::RpcMethodId("GetReplicaList") == 8);
     REQUIRE(kvtest_profile::RpcMethodId("UnrelatedMethod") == 0);
+    REQUIRE(kvtest_profile::RpcMethodId("WorkerOCService.DecreaseReference") == 4);
     {
         kvtest_profile::Span ignored(kvtest_profile::Stage::COUNT);
         ignored.Finish(true);

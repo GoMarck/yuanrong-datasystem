@@ -329,3 +329,5 @@ interval. Its server helper frame separates metrics from the business callback.
 The `rpc_method`/byte attributes and standalone no-op experiment are documented in
 `tests/perf/rpc_compare/isolated/README.md`. Keep Set/Get separate, compare full matched
 frames, and report measurement-on/off controls before attributing small differences.
+
+Generation 6 additionally records `ds.detail.rpc.server.adapter.*` for plain, send-payload and unary-socket KV calls. `dispatch` includes the invoked worker/master function and is not pure RPC framework time. UnarySocket Read/Write/attachment frames use a generated numeric method identifier, independent of its trace string. Method 4 includes the actual `DecreaseReference` RPC; its native interval is `ds.rpc_native.release`.

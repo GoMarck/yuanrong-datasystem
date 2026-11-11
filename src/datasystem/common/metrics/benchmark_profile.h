@@ -738,6 +738,14 @@ enum class Stage : size_t {
     D_DS_RPC_SERVER_DECODE_VALIDATE,
     D_DS_RPC_SERVER_DECODE_PARSE_COPY,
     D_DS_RPC_SERVER_DECODE_TOTAL,
+    D_DS_RPC_SERVER_ADAPTER_PREPARE,
+    D_DS_RPC_SERVER_ADAPTER_DECODE,
+    D_DS_RPC_SERVER_ADAPTER_CONTEXT,
+    D_DS_RPC_SERVER_ADAPTER_DISPATCH,
+    D_DS_RPC_SERVER_ADAPTER_RESULT,
+    D_DS_RPC_SERVER_ADAPTER_TRACE,
+    D_DS_RPC_SERVER_ADAPTER_CLEANUP,
+    D_DS_RPC_SERVER_ADAPTER_TOTAL,
     COUNT
 };
 inline constexpr const char *STAGE_NAMES[] = {
@@ -1443,6 +1451,14 @@ inline constexpr const char *STAGE_NAMES[] = {
     "ds.detail.rpc.server.decode.validate",
     "ds.detail.rpc.server.decode.parse_copy",
     "ds.detail.rpc.server.decode.total",
+    "ds.detail.rpc.server.adapter.prepare",
+    "ds.detail.rpc.server.adapter.decode",
+    "ds.detail.rpc.server.adapter.context",
+    "ds.detail.rpc.server.adapter.dispatch",
+    "ds.detail.rpc.server.adapter.result",
+    "ds.detail.rpc.server.adapter.trace",
+    "ds.detail.rpc.server.adapter.cleanup",
+    "ds.detail.rpc.server.adapter.total",
 };
 inline constexpr std::array<uint64_t, 22> BUCKET_NS = {
     100, 250, 500, 1000, 2000, 4000, 8000, 16000, 32000, 64000, 128000, 256000,
@@ -1464,6 +1480,7 @@ inline uint64_t RpcMethodId(const char *name)
 {
     const char *method = std::strrchr(name, '.');
     method = method == nullptr ? name : method + 1;
+    if (std::strcmp(method, "DecreaseReference") == 0) return 4;
     constexpr const char *methods[] = {"", "Create", "Publish", "QueryAndGet", "Release", "CreateMeta",
                                         "PutStart", "PutEnd", "GetReplicaList"};
     for (size_t i = 1; i < sizeof(methods) / sizeof(*methods); ++i) {

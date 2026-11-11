@@ -84,7 +84,7 @@ public:
      */
     BrpcServerUnaryWriterReader(brpc::Controller *cntl, const google::protobuf::Message *request,
                                 google::protobuf::Message *response, google::protobuf::Closure *done,
-                                std::string methodName)
+                                std::string methodName, uint64_t benchmarkMethodId = 0)
         : cntl_(cntl),
           request_(nullptr),
           response_(nullptr),
@@ -94,7 +94,8 @@ public:
           doneConsumed_(false),
           recvPayloadOp_(false),
           traceRecorded_(false),
-          trace_(Trace::Instance().GetTraceID(), std::move(methodName))
+          trace_(Trace::Instance().GetTraceID(), std::move(methodName)),
+          benchmarkMethodId_(benchmarkMethodId)
     {
         trace_.MarkServerRecv();
         SLOW_LOG_IF_OR_VLOG(INFO, FLAGS_enable_perf_trace_log, 1,
@@ -175,7 +176,7 @@ public:
                                           kvtest_profile::Stage::D_DS_RPC_SERVER_READ_VALIDATE);
         if (frame.Sampled()) {
             frame.Observe(kvtest_profile::DetailAttribute::RPC_METHOD,
-                          kvtest_profile::RpcMethodId(trace_.MethodName().c_str()));
+                          benchmarkMethodId_);
         }
         bool expected = false;
         if (readOnce_.compare_exchange_strong(expected, true)) {
@@ -204,7 +205,7 @@ public:
                                           kvtest_profile::Stage::D_DS_RPC_SERVER_WRITE_VALIDATE);
         if (frame.Sampled()) {
             frame.Observe(kvtest_profile::DetailAttribute::RPC_METHOD,
-                          kvtest_profile::RpcMethodId(trace_.MethodName().c_str()));
+                          benchmarkMethodId_);
         }
         bool expected = false;
         if (writeOnce_.compare_exchange_strong(expected, true)) {
@@ -469,7 +470,7 @@ private:
                                           kvtest_profile::Stage::D_DS_RPC_SERVER_COMPLETE_VALIDATE);
         if (frame.Sampled()) {
             frame.Observe(kvtest_profile::DetailAttribute::RPC_METHOD,
-                          kvtest_profile::RpcMethodId(trace_.MethodName().c_str()));
+                          benchmarkMethodId_);
         }
         bool expected = false;
         if (doneConsumed_.compare_exchange_strong(expected, true) && done_ != nullptr) {
@@ -497,7 +498,7 @@ private:
                                           kvtest_profile::Stage::D_DS_RPC_SERVER_ENCODE_VALIDATE);
         if (frame.Sampled()) {
             frame.Observe(kvtest_profile::DetailAttribute::RPC_METHOD,
-                          kvtest_profile::RpcMethodId(trace_.MethodName().c_str()));
+                          benchmarkMethodId_);
         }
         if (cntl_ == nullptr) {
             RETURN_STATUS(StatusCode::K_RUNTIME_ERROR, "Controller is null");
@@ -523,7 +524,7 @@ private:
                                           kvtest_profile::Stage::D_DS_RPC_SERVER_ENCODE_VALIDATE);
         if (frame.Sampled()) {
             frame.Observe(kvtest_profile::DetailAttribute::RPC_METHOD,
-                          kvtest_profile::RpcMethodId(trace_.MethodName().c_str()));
+                          benchmarkMethodId_);
         }
         if (cntl_ == nullptr) {
             RETURN_STATUS(StatusCode::K_RUNTIME_ERROR, "Controller is null");
@@ -550,7 +551,7 @@ private:
                                           kvtest_profile::Stage::D_DS_RPC_SERVER_DECODE_VALIDATE);
         if (frame.Sampled()) {
             frame.Observe(kvtest_profile::DetailAttribute::RPC_METHOD,
-                          kvtest_profile::RpcMethodId(trace_.MethodName().c_str()));
+                          benchmarkMethodId_);
         }
         const butil::IOBuf &attach = cntl_->request_attachment();
         if (attach.empty()) {
@@ -599,6 +600,7 @@ private:
     TimeoutDuration scTimeoutDuration_;
     std::atomic<bool> traceRecorded_;
     BrpcPerfTrace trace_;
+    const uint64_t benchmarkMethodId_;
 };
 
 }  // namespace datasystem
