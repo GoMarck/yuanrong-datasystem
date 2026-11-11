@@ -317,6 +317,7 @@ Status HixlTransporter::MSetDevice(const std::shared_ptr<WorkerRpcClient> &rpc,
                                      K_INVALID, "FabricMem batch requires nonempty blobs on one device");
         }
     }
+    LOG(INFO) << "MSetDevice deviceId from blobs: " << blobs.front()->deviceIdx << ", deviceId_: " << deviceId_;
     RETURN_IF_NOT_OK(acl::AclDeviceManager::Instance()->SetDeviceIdx(fabricMem ? blobs.front()->deviceIdx : deviceId_));
     MultiCreateReqPb request;
     std::vector<ShmKey> allocations;

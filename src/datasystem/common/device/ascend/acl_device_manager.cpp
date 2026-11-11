@@ -294,6 +294,7 @@ Status AclDeviceManager::GetPhysicalDeviceId(int32_t logicDeviceIdx, int32_t &ph
 
 Status AclDeviceManager::SetDeviceIdx(int32_t deviceId)
 {
+    LOG(INFO) << "SetDeviceIdx deviceId: " << deviceId;
     RETURN_IF_NOT_OK(CheckPluginOk());
     RETURN_RUNTIME_ERROR_IF_NULL(SetDeviceIdxFunc_);
     RETURN_ACL_RESULT(SetDeviceIdxFunc_(deviceId));
