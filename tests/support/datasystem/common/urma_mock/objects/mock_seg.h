@@ -185,6 +185,9 @@ public:
      */
     void SetRemotePort(int v);
 
+    bool IsRemoteTcp() const { return remoteTcp_; }
+    void SetRemoteTcp(bool value) { remoteTcp_ = value; }
+
 private:
     uint64_t id_;
     MockContext *ctx_;
@@ -202,6 +205,7 @@ private:
     std::string remoteClientId_;
     std::string remoteHost_;
     int remotePort_ = -1;
+    bool remoteTcp_ = false;
 };
 
 }  // namespace urma_mock

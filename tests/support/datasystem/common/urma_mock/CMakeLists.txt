@@ -2,6 +2,7 @@ set(URMA_MOCK_SRCS
     abi/mock_abi.cpp
     abi/mock_dlopen_resolver.cpp
     transport/uds_endpoint_service.cpp
+    transport/tcp_endpoint_service.cpp
     registry/import_endpoint_registry.cpp
     segment/memfd_resolver.cpp
     segment/segment_identity.cpp
@@ -42,3 +43,6 @@ foreach(_target datasystem_static datasystem datasystem_worker_static datasystem
         target_link_libraries(${_target} PRIVATE common_urma_mock_obj)
     endif()
 endforeach()
+
+add_executable(urma_mock_tcp_probe EXCLUDE_FROM_ALL transport/tcp_probe.cpp)
+target_link_libraries(urma_mock_tcp_probe PRIVATE common_urma_mock)

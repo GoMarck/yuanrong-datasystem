@@ -746,6 +746,7 @@ enum class Stage : size_t {
     D_DS_RPC_SERVER_ADAPTER_TRACE,
     D_DS_RPC_SERVER_ADAPTER_CLEANUP,
     D_DS_RPC_SERVER_ADAPTER_TOTAL,
+    DS_MOCK_URMA_POST,
     COUNT
 };
 inline constexpr const char *STAGE_NAMES[] = {
@@ -1459,6 +1460,7 @@ inline constexpr const char *STAGE_NAMES[] = {
     "ds.detail.rpc.server.adapter.trace",
     "ds.detail.rpc.server.adapter.cleanup",
     "ds.detail.rpc.server.adapter.total",
+    "ds.mock_urma.post",
 };
 inline constexpr std::array<uint64_t, 22> BUCKET_NS = {
     100, 250, 500, 1000, 2000, 4000, 8000, 16000, 32000, 64000, 128000, 256000,

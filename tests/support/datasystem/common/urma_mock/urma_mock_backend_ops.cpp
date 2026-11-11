@@ -135,6 +135,7 @@ MockSeg *CreateRemotePlaceholder(MockUrmaBackend &backend, MockContext *ctx, uin
     seg->SetRemoteClientId(ep.clientId);
     seg->SetRemoteHost(ep.host);
     seg->SetRemotePort(ep.port);
+    seg->SetRemoteTcp(ep.tcp);
     auto *segPtr = seg.get();
     ctx->RegisterSeg(seg);
     auto *raw = new urma_target_seg_t{};
@@ -471,10 +472,14 @@ void MockUrmaBackend::UnimportJetty(MockTjetty *tjetty)
 // ----- Seg import (cross-process / UDS) -----
 
 MockSeg *MockUrmaBackend::ImportSeg(MockContext *ctx, uint64_t size, const std::string &token, const std::string &key,
-                                    uint64_t remoteVa, urma_target_seg_t **rawOut)
+                                    uint64_t remoteVa, urma_target_seg_t **rawOut,
+                                    const ImportEndpoint *tcpEndpoint)
 {
     if (ctx == nullptr || size == 0) {
         return nullptr;
+    }
+    if (tcpEndpoint != nullptr && tcpEndpoint->tcp) {
+        return CreateRemotePlaceholder(*this, ctx, size, key, remoteVa, *tcpEndpoint, rawOut);
     }
     SegmentImportRequest request{ size, token, remoteVa };
     auto importResult = SegmentImporter::Instance().Resolve(request);

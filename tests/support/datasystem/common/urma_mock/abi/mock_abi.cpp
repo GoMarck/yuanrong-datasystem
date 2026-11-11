@@ -45,6 +45,8 @@
 #include "datasystem/common/urma_mock/post_send/post_send_wr.h"
 #include "datasystem/common/urma_mock/segment/segment_endpoint_registry.h"
 #include "datasystem/common/urma_mock/transport/uds_endpoint_service.h"
+#include "datasystem/common/urma_mock/transport/tcp_endpoint_service.h"
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include "datasystem/common/urma_mock/urma_mock_backend.h"
 
 namespace {
@@ -787,6 +789,11 @@ urma_target_seg_t *ds_urma_mock_register_seg(urma_context_t *context, const urma
     // by reverse-engineering it from /proc/self/maps.
     urma_target_seg_t *rawSeg = nullptr;
     auto *seg = backend.RegisterSeg(ctx, config->len, key, config->va, &rawSeg);
+    if (seg != nullptr && rawSeg != nullptr
+        && !datasystem::urma_mock::TcpEndpointService::ConfigureSegment(rawSeg->seg)) {
+        backend.UnregisterSeg(seg);
+        return nullptr;
+    }
     // spin up the UDS listener so peers can HELLO_ACK against us.
     if (seg != nullptr) {
         auto &endpointService = datasystem::urma_mock::UdsEndpointService::Instance();
@@ -825,6 +832,12 @@ urma_target_seg_t *ds_urma_mock_import_seg(urma_context_t *context, urma_seg_t *
     // Token may be 0 for "import any"; allocate a fresh seg of default size.
     uint64_t size = seg ? seg->len : K_DEFAULT_IMPORT_SEG_SIZE;
     uint64_t remoteVa = seg ? seg->ubva.va : 0;
+    datasystem::urma_mock::ImportEndpoint tcpEndpoint;
+    if (seg != nullptr && datasystem::urma_mock::TcpEndpointService::DecodeEndpoint(*seg, tcpEndpoint)) {
+        urma_target_seg_t *rawSeg = nullptr;
+        backend.ImportSeg(ctx, size, tok, tok, remoteVa, &rawSeg, &tcpEndpoint);
+        return rawSeg;
+    }
     if (seg != nullptr) {
         uint64_t tokenValue = token != nullptr ? token->value : seg->token_id;
         auto &endpointService = datasystem::urma_mock::UdsEndpointService::Instance();
@@ -900,6 +913,7 @@ urma_status_t ds_urma_mock_unimport_seg(urma_target_seg_t *seg)
 
 urma_status_t ds_urma_mock_post_jetty_send_wr(urma_jetty_t *jetty, urma_jfs_wr_t *wr, urma_jfs_wr_t **badWr)
 {
+    kvtest_profile::Span mockPost(kvtest_profile::Stage::DS_MOCK_URMA_POST);
     INJECT_POINT("UrmaMock.ProviderLog", []() -> urma_status_t {
         char error[] = "URMA_LOG_E2E level=0x00000001 post_jetty_send_wr";
         char warning[] = "URMA_LOG_E2E level=0x00000002 post_jetty_send_wr";

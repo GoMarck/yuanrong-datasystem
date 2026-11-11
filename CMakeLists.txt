@@ -206,11 +206,12 @@ endif ()
 add_subdirectory(src/datasystem)
 add_subdirectory(dsbench)
 
+if (BUILD_WITH_URMA_MOCK)
+    add_subdirectory(tests/support)
+endif()
+
 if (WITH_TESTS)
     enable_testing()
-    if (BUILD_WITH_URMA_MOCK)
-        add_subdirectory(tests/support)
-    endif()
     add_subdirectory(tests)
 endif ()
 

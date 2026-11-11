@@ -1,9 +1,9 @@
 diff --git a/mooncake-common/include/kvtest_benchmark_profile.h b/mooncake-common/include/kvtest_benchmark_profile.h
 new file mode 100644
-index 00000000..6862de8a
+index 00000000..ef06b6af
 --- /dev/null
 +++ b/mooncake-common/include/kvtest_benchmark_profile.h
-@@ -0,0 +1,2183 @@
+@@ -0,0 +1,2185 @@
 +/**
 + * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 + * Licensed under the Apache License, Version 2.0 (the "License");
@@ -752,6 +752,7 @@ index 00000000..6862de8a
 +    D_DS_RPC_SERVER_ADAPTER_TRACE,
 +    D_DS_RPC_SERVER_ADAPTER_CLEANUP,
 +    D_DS_RPC_SERVER_ADAPTER_TOTAL,
++    DS_MOCK_URMA_POST,
 +    COUNT
 +};
 +inline constexpr const char *STAGE_NAMES[] = {
@@ -1465,6 +1466,7 @@ index 00000000..6862de8a
 +    "ds.detail.rpc.server.adapter.trace",
 +    "ds.detail.rpc.server.adapter.cleanup",
 +    "ds.detail.rpc.server.adapter.total",
++    "ds.mock_urma.post",
 +};
 +inline constexpr std::array<uint64_t, 22> BUCKET_NS = {
 +    100, 250, 500, 1000, 2000, 4000, 8000, 16000, 32000, 64000, 128000, 256000,

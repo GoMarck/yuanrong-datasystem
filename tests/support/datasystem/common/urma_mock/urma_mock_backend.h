@@ -41,6 +41,7 @@
 
 namespace datasystem {
 namespace urma_mock {
+struct ImportEndpoint;
 
 /**
  * @brief In-process URMA transport used when Datasystem is built with URMA mock support.
@@ -179,7 +180,8 @@ public:
      * @return Imported segment, or nullptr on failure.
      */
     MockSeg *ImportSeg(MockContext *ctx, uint64_t size, const std::string &token, const std::string &key,
-                       uint64_t remoteVa = 0, urma_target_seg_t **rawOut = nullptr);
+                       uint64_t remoteVa = 0, urma_target_seg_t **rawOut = nullptr,
+                       const ImportEndpoint *tcpEndpoint = nullptr);
 
     /**
      * @brief Unimport a target segment.

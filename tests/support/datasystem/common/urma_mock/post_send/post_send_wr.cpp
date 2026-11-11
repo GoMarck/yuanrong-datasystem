@@ -34,6 +34,7 @@
 #include "datasystem/common/urma_mock/objects/mock_tjetty.h"
 #include "datasystem/common/urma_mock/post_send/mock_thread_pool.h"
 #include "datasystem/common/urma_mock/segment/segment_view.h"
+#include "datasystem/common/urma_mock/transport/tcp_endpoint_service.h"
 #include "datasystem/common/urma_mock/urma_mock_backend.h"
 
 namespace datasystem {
@@ -92,6 +93,21 @@ public:
     bool IsRead() const
     {
         return isRead_;
+    }
+
+    bool ExecuteRemote(const MockSeg &seg, uint32_t &totalBytes) const
+    {
+        totalBytes = 0;
+        for (const auto &entry : entries_) {
+            if (entry.copyLen == 0) { continue; }
+            void *data = isRead_ ? reinterpret_cast<void *>(entry.localAddr)
+                                : const_cast<uint8_t *>(entry.srcData.data());
+            if (!TcpEndpointService::Transfer(seg, entry.remoteOffset, data, entry.copyLen, isRead_)) {
+                return false;
+            }
+            totalBytes += static_cast<uint32_t>(entry.copyLen);
+        }
+        return true;
     }
 
 private:
@@ -161,7 +177,8 @@ std::shared_ptr<MockSeg> FindWrTargetSeg(SideTables &tables, const urma_sg_t &re
         return nullptr;
     }
     for (auto &[raw, mockSeg] : tables.tseg) {
-        if (raw != wrRemoteSeg || mockSeg == nullptr || mockSeg->GetPtr() == nullptr) {
+        if (raw != wrRemoteSeg || mockSeg == nullptr
+            || (mockSeg->GetPtr() == nullptr && !mockSeg->IsRemoteTcp())) {
             continue;
         }
         fallbackBase = GetSegmentAddressBase(mockSeg);
@@ -328,8 +345,11 @@ private:
     {
         auto dstBase = reinterpret_cast<uintptr_t>(lookup.seg->GetPtr());
         uint32_t totalBytes = dstBase == 0 ? 0 : lookup.snap->transfer.Execute(dstBase);
+        const bool success = lookup.seg->IsRemoteTcp()
+                                 ? lookup.snap->transfer.ExecuteRemote(*lookup.seg, totalBytes)
+                                 : lookup.remoteMapped;
         MockCr cr;
-        cr.status = static_cast<urma_status_t>(lookup.remoteMapped ? URMA_CR_SUCCESS : URMA_CR_REM_ACCESS_ABORT_ERR);
+        cr.status = static_cast<urma_status_t>(success ? URMA_CR_SUCCESS : URMA_CR_REM_ACCESS_ABORT_ERR);
         cr.userCtx = lookup.snap->userCtx;
         cr.byteCnt = totalBytes;
         cr.localId = lookup.snap->localId;

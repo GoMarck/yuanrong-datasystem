@@ -40,6 +40,7 @@
 #include "datasystem/common/urma_mock/registry/import_endpoint_registry.h"
 #include "datasystem/common/urma_mock/segment/memfd_resolver.h"
 #include "datasystem/common/urma_mock/transport/uds_endpoint_service.h"
+#include "datasystem/common/urma_mock/transport/tcp_endpoint_service.h"
 #include "datasystem/common/urma_mock/transport/uds_transport.h"
 #include "datasystem/common/urma_mock/inject/fault_inject.h"
 #include "datasystem/common/urma_mock/mock_registry.h"
@@ -195,6 +196,7 @@ void MockUrmaBackend::Cleanup()
     // Tear down the endpoint listener if it was spawned during this process's
     // lifetime. Tests that only call ds_urma_mock_uninit otherwise leave the
     // accept thread alive at exit.
+    TcpEndpointService::Shutdown();
     UdsEndpointService::Instance().ShutdownListener();
     {
         std::lock_guard<std::mutex> plk(MockPoolMutex());

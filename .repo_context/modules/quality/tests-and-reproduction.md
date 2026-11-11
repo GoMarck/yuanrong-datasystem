@@ -710,3 +710,11 @@ Second-level Set/Get and the per-process PollJFC sleep experiment are described 
 SDK and Worker sleep controls must be varied independently and CPU demand collected with latency.
 The switch and new service instrumentation require deployment validation; standalone observer checks
 do not exercise URMA completion behavior.
+
+## Cross-host fake URMA workflow measurements
+
+- `BUILD_WITH_URMA_MOCK=ON` links the test provider independently of `WITH_TESTS`; use `WITH_TESTS=OFF` when measuring application processing without injection hooks.
+- Set `URMA_MOCK_TCP_ENDPOINT=<private-IPv4>:<unique-port>` in each worker/SDK process to advertise a mock segment endpoint and transfer registered bytes across physical hosts. Default UDS behavior is unchanged.
+- Source: `tests/support/datasystem/common/urma_mock/transport/tcp_endpoint_service.cpp`, `abi/mock_abi.cpp`, `post_send/post_send_wr.cpp`, and the mock `CMakeLists.txt`.
+- `cmake --build <build> --target urma_mock_tcp_probe` builds a bounded test server; pair raw token/range/disconnect checks with actual verified Set/Get. Maximum transfer16MiB; launch separate processes rather than forking after listener startup.
+- Exclude `ds.mock_urma.post` and completion waiting when attributing non-transport work; those intervals are nested, not additional API time. Isolate SHM and fake-URMA cases, verify path counters, and record notification/placement differences.

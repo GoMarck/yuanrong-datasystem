@@ -34,6 +34,7 @@ struct ImportEndpoint {
     uint64_t len = 0;        ///< Peer segment length.
     std::string host;        ///< Peer host parsed from a backend wire address.
     int port = -1;           ///< Peer port parsed from a backend wire address.
+    bool tcp = false;
 };
 
 /**
