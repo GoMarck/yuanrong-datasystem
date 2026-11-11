@@ -114,6 +114,8 @@ std::vector<DeviceBlobList> BuildDeviceBlobLists(const std::vector<std::string> 
     // while the GIL is held (the call does not touch Python) and stamp it into every blob list.
     int32_t deviceIdx = ResolveCurrentDeviceIdx();
 
+    LOG(INFO) << "BuildDeviceBlobLists deviceIdx: " << deviceIdx;
+
     std::vector<DeviceBlobList> devBlobLists;
     devBlobLists.reserve(objectKeys.size());
     for (size_t i = 0; i < objectKeys.size(); ++i) {
