@@ -1,0 +1,24 @@
+load("//bazel:cc_proto_library.bzl", "cc_proto_library")
+load("@rules_proto//proto:defs.bzl", "proto_library")
+
+package(default_visibility = ["//visibility:public"])
+
+proto_library(
+    name = "rpc_isolation_proto",
+    srcs = ["rpc_isolation.proto"],
+    strip_import_prefix = "/tests/perf/rpc_compare/isolated",
+)
+
+cc_proto_library(
+    name = "rpc_isolation_cc_proto",
+    deps = [":rpc_isolation_proto"],
+)
+
+cc_binary(
+    name = "brpc_isolation_bench",
+    srcs = ["brpc_isolation_bench.cpp", "bench_common.h"],
+    deps = [
+        ":rpc_isolation_cc_proto",
+        "@com_github_apache_brpc//:brpc",
+    ],
+)

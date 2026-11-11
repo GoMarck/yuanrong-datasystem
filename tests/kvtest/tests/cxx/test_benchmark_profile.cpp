@@ -28,6 +28,10 @@ int main(int argc, char **argv)
         return paths;
     };
     REQUIRE(kvtest_profile::Enabled() == enabled);
+    REQUIRE(kvtest_profile::RpcMethodId("datasystem.worker.WorkerOCService.QueryAndGet") == 3);
+    REQUIRE(kvtest_profile::RpcMethodId("GetReplicaList") == 8);
+    REQUIRE(kvtest_profile::RpcMethodId("UnrelatedMethod") == 0);
+    kvtest_profile::RecordDuration(kvtest_profile::Stage::DS_RPC_NATIVE_QUERY, 5000, false);
     {
         kvtest_profile::Span ignored(kvtest_profile::Stage::COUNT);
         ignored.Finish(true);
@@ -61,6 +65,10 @@ int main(int argc, char **argv)
         kvtest_profile::DetailFrame frame(kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_TOTAL,
                                           kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_CONTEXT);
         frame.Observe(kvtest_profile::DetailAttribute::TABLE_SIZE, 17);
+        frame.Observe(kvtest_profile::DetailAttribute::RPC_METHOD, 3);
+        frame.Observe(kvtest_profile::DetailAttribute::REQUEST_BYTES, 128);
+        frame.Observe(kvtest_profile::DetailAttribute::RESPONSE_BYTES, 256);
+        frame.Observe(kvtest_profile::DetailAttribute::ATTACHMENT_BYTES, 64);
         frame.Next(kvtest_profile::Stage::D_DS_DETAIL_SET_SDK_COPY);
         frame.Finish(1);
         frame.Finish(0);
@@ -95,6 +103,12 @@ int main(int argc, char **argv)
             REQUIRE(sum == row["duration_ns"]);
             const bool migrated = row["attributes"]["table_size"] == 99;
             REQUIRE(row["attributes"]["table_size"] == (migrated ? 99 : 17));
+            if (!migrated) {
+                REQUIRE(row["attributes"]["rpc_method"] == 3);
+                REQUIRE(row["attributes"]["request_bytes"] == 128);
+                REQUIRE(row["attributes"]["response_bytes"] == 256);
+                REQUIRE(row["attributes"]["attachment_bytes"] == 64);
+            }
             REQUIRE(row["steps"].size() == (migrated ? 1 : 2));
             for (const auto &step : row["steps"]) {
                 if (cpu) {
@@ -117,6 +131,10 @@ int main(int argc, char **argv)
             REQUIRE(row["unknown"] == 0);
             REQUIRE(row["max_ns"] == 1500);
             REQUIRE(row["buckets"][4] == 32000);
+        } else if (row["phase"] == "ds.rpc_native.query") {
+            REQUIRE(row["count"] == 1);
+            REQUIRE(row["sum_ns"] == 5000);
+            REQUIRE(row["failed"] == 1);
         } else if (row["phase"] == "ds.copy") {
             REQUIRE(row["count"] == 1);
             REQUIRE(row["requested_bytes"] == 7);
@@ -140,7 +158,7 @@ int main(int argc, char **argv)
         }
         ++stages;
     }
-    REQUIRE(stages == 9);
+    REQUIRE(stages == 10);
     REQUIRE(samples == (cpu ? 2 : 1));
     kvtest_profile::RecordDuration(kvtest_profile::Stage::DS_RPC_QUERY, 1000, true);
     std::remove(path.c_str());

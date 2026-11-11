@@ -22,6 +22,7 @@
 #include "datasystem/common/rpc/plugin_generator/rpc_generator.h"
 
 #include <google/protobuf/descriptor.h>
+#include <unordered_map>
 
 namespace datasystem {
 
@@ -355,11 +356,26 @@ void RpcGenerator::ImplementBrpcStubNoStreamDef(io::Printer &printer,
 
 std::string RpcGenerator::BuildBrpcStubNoStreamImpl(const google::protobuf::MethodDescriptor &method)
 {
+    const std::unordered_map<std::string, std::string> nativeStages{
+        {"Create", "DS_RPC_NATIVE_CREATE"}, {"Publish", "DS_RPC_NATIVE_PUBLISH"},
+        {"QueryAndGet", "DS_RPC_NATIVE_QUERY"}, {"Release", "DS_RPC_NATIVE_RELEASE"},
+        {"CreateMeta", "DS_RPC_NATIVE_CREATE_META"}
+    };
+    const auto nativeStage = nativeStages.find(method.name());
     std::string impl =
         "::datasystem::Status $stub$::$methodName$(const ::datasystem::RpcOptions &opt,\n"
         "                                          const $inputTypeName$& rq,\n"
         "                                          $outputTypeName$& reply"
         "$optSendPayload1$$optRecvPayload1$) {\n"
+        "    ::kvtest_profile::DetailFrame kvtestRpcFrame(\n"
+        "        ::kvtest_profile::Stage::D_DS_RPC_STUB_TOTAL,\n"
+        "        ::kvtest_profile::Stage::D_DS_RPC_STUB_PROFILE_METADATA);\n"
+        "    if (kvtestRpcFrame.Sampled()) {\n"
+        "        kvtestRpcFrame.Observe(::kvtest_profile::DetailAttribute::RPC_METHOD,\n"
+        "            ::kvtest_profile::RpcMethodId(\"$methodName$\"));\n"
+        "        kvtestRpcFrame.Observe(::kvtest_profile::DetailAttribute::REQUEST_BYTES, rq.ByteSizeLong());\n"
+        "    }\n"
+        "    kvtestRpcFrame.Next(::kvtest_profile::Stage::D_DS_RPC_STUB_CONTROLLER);\n"
         "    brpc::Controller cntl;\n"
         "    if (timeoutMs_ > 0) {\n"
         "        cntl.set_timeout_ms(timeoutMs_);\n"
@@ -368,11 +384,16 @@ std::string RpcGenerator::BuildBrpcStubNoStreamImpl(const google::protobuf::Meth
         "    if (overrideMs > 0) {\n"
         "        cntl.set_timeout_ms(overrideMs);\n"
         "    }\n";
+    impl += "    constexpr auto kvtestNativeStage = ::kvtest_profile::Stage::"
+            + (nativeStage == nativeStages.end() ? std::string("COUNT") : nativeStage->second) + ";\n";
+    impl += "    kvtestRpcFrame.Next(::kvtest_profile::Stage::D_DS_RPC_STUB_TRACE);\n";
     impl += BuildTraceIDAttachSnippet();
+    impl += "    kvtestRpcFrame.Next(::kvtest_profile::Stage::D_DS_RPC_STUB_SEND_FRAMING);\n";
     if (HasPayloadSendOption(method)) {
         impl += BuildSendPayloadFramingSnippet();
     }
     impl += BuildCallMethodAndDiagnosticsSnippet();
+    impl += "    kvtestRpcFrame.Next(::kvtest_profile::Stage::D_DS_RPC_STUB_RECV_FRAMING);\n";
     if (HasPayloadRecvOption(method)) {
         impl += BuildRecvPayloadFramingSnippet();
     }
@@ -383,6 +404,7 @@ std::string RpcGenerator::BuildBrpcStubNoStreamImpl(const google::protobuf::Meth
 std::string RpcGenerator::BuildCallMethodAndDiagnosticsSnippet()
 {
     return
+        "    kvtestRpcFrame.Next(::kvtest_profile::Stage::D_DS_RPC_STUB_DIAGNOSTICS_BEFORE);\n"
         "    ::datasystem::BrpcPerfTrace rpcTrace(::datasystem::Trace::Instance().GetTraceID(),\n"
         "        svcDesc_->method($methodIndex$)->full_name());\n"
         "    rpcTrace.MarkClientStart();\n"
@@ -392,8 +414,14 @@ std::string RpcGenerator::BuildCallMethodAndDiagnosticsSnippet()
         "        FormatString(\"ClientSend ts %llu tid %d cpu %d bid %llu\\n\", rpcTrace.ClientSendTs(),\n"
         "                     BrpcTraceGetTid(), sched_getcpu(),\n"
         "                     static_cast<unsigned long long>(bthread_self())));\n"
+        "    kvtestRpcFrame.Next(::kvtest_profile::Stage::D_DS_RPC_STUB_NATIVE_CALL);\n"
+        "    {\n"
+        "    ::kvtest_profile::Span kvtestNativeCall(kvtestNativeStage);\n"
         "    channel_->CallMethod(svcDesc_->method($methodIndex$),\n"
         "                         &cntl, &rq, &reply, nullptr);\n"
+        "    kvtestNativeCall.Finish(!cntl.Failed());\n"
+        "    }\n"
+        "    kvtestRpcFrame.Next(::kvtest_profile::Stage::D_DS_RPC_STUB_DIAGNOSTICS_AFTER);\n"
         "    rpcTrace.MarkClientRecv();\n"
         "    SLOW_LOG_IF_OR_VLOG(\n"
         "        INFO, FLAGS_enable_perf_trace_log, 1,\n"
@@ -407,12 +435,20 @@ std::string RpcGenerator::BuildCallMethodAndDiagnosticsSnippet()
         "    rpcTrace.SetCntlDiagnostics(cntl.timeout_ms(), cntl.deadline_us(),\n"
         "                               cntl.ErrorCode(), cntl.Failed(),\n"
         "                               static_cast<uint64_t>(cntl.response_attachment().size()));\n"
+        "    kvtestRpcFrame.Next(::kvtest_profile::Stage::D_DS_RPC_STUB_PROFILE_METADATA);\n"
+        "    if (kvtestRpcFrame.Sampled()) {\n"
+        "        kvtestRpcFrame.Observe(::kvtest_profile::DetailAttribute::RESPONSE_BYTES, reply.ByteSizeLong());\n"
+        "        kvtestRpcFrame.Observe(::kvtest_profile::DetailAttribute::ATTACHMENT_BYTES,\n"
+        "            cntl.response_attachment().size());\n"
+        "    }\n"
+        "    kvtestRpcFrame.Next(::kvtest_profile::Stage::D_DS_RPC_STUB_DIAGNOSTICS_AFTER);\n"
         "    ::datasystem::MergeBrpcServerTraceTrailer(cntl.response_attachment(), rpcTrace);\n";
 }
 
 std::string RpcGenerator::BuildPostCallDeadlineCheckSnippet()
 {
     return
+        "    kvtestRpcFrame.Next(::kvtest_profile::Stage::D_DS_RPC_STUB_METRICS_DEADLINE);\n"
         "    rpcTrace.MarkClientEnd();\n"
         "    if (cntl.Failed()) {\n"
         "        ::datasystem::Status status = ::datasystem::TryExtractStatusFromResponse(reply);\n"

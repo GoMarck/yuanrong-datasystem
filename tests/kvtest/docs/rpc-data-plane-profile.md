@@ -314,3 +314,18 @@ API 计时不含返回 Buffer 的验证和析构，与 KVTest 主用例一致；
 Get 默认在某阶段出现 API 失败时终止。诊断过载/重试时可显式设置 `fail_on_api_error:false`，
 程序保留失败计数并继续后续阶段；平均耗时及分位数包含失败调用，报告必须同时呈现失败率。
 种子 Set 失败、数据验证失败、空样本和采样容量溢出仍然终止，不能把失败样本或无效对象规模当成成功结果。
+
+## RPC implementation isolation
+
+`ds.rpc_native.create/publish/query/release/create_meta` bracket only the native brpc
+`CallMethod`. `ds.detail.rpc.stub.*` separates controller/options, Trace, framing,
+diagnostics and metrics/deadline handling. Read/Write adapter frames distinguish
+protobuf copying, Trace/trailer work and native completion. Existing E2E/server-exec
+marks retain their original boundaries. These native intervals still contain remote
+business/data and are not pure framework CPU.
+
+Mooncake `mc.rpc_native.*` excludes its metric updates from the library pool/send/wait
+interval. Its server helper frame separates metrics from the business callback.
+The `rpc_method`/byte attributes and standalone no-op experiment are documented in
+`tests/perf/rpc_compare/isolated/README.md`. Keep Set/Get separate, compare full matched
+frames, and report measurement-on/off controls before attributing small differences.

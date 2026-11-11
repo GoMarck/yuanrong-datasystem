@@ -1,10 +1,10 @@
 {
   "revision": "719735896c86b56fabec6cf3e825fb2ea640597a",
-  "profile_generation": 4,
+  "profile_generation": 5,
   "files": {
     "mooncake-common/include/kvtest_benchmark_profile.h": {
       "base": null,
-      "profile": "d0d30f403eb06df41b032a0b3413d8805914dcf2688fd6879283c8c68ad7b65c"
+      "profile": "a5bcd3bac18a83b4c6c0a395f96166898dcc16ddbb729341c3d505de8bbecc82"
     },
     "mooncake-store/include/benchmark_profile.h": {
       "base": null,
@@ -24,7 +24,7 @@
     },
     "mooncake-store/src/master_client.cpp": {
       "base": "174b74fb2209591449a0d1d82a61a77c6ec91de9d4cb5f3c352ff6cd98e67384",
-      "profile": "a72d8fb97240a0f2ccd8d3665f3d45d947b8b251934952b136fff0ee49fc2d08"
+      "profile": "f5294d8ab2e99203c8e14ed279a96d15b573630c2d1a84f63c7b5d6eb518e27f"
     },
     "mooncake-store/src/master_service.cpp": {
       "base": "9face0294209e17423f51ea73f3c37dda7d1d25d4c86901b1d48e99485397967",
@@ -49,7 +49,11 @@
     "mooncake-transfer-engine/src/transport/rdma_transport/endpoint_store.cpp": {
       "base": "829766f04e4db99a184ba68a6757e6847196b965e176a3917f39c9e972491ee0",
       "profile": "b611974af3b1a452c96172c99c2dcf07601e4072586894627956916c673d2726"
+    },
+    "mooncake-store/include/rpc_helper.h": {
+      "base": "b9ecb8dd7de8d8f85afbd7cd0a53c9a5e94bd903d6a8e59050b3627cad9f8a93",
+      "profile": "8c2b8a24eb399db89c8391569c1bfae140a4796d53cc3205e6d5728ccf8e0dc5"
     }
   },
-  "patch_sha256": "97193ee089e670fae3eb6a45b6d9599a982a7d445f18a41667c1f1c901d837ab"
+  "patch_sha256": "6786e67771cfbf3b22fc537fc358bd1dff7fb2c2a4f31a9be1a86ef7fa74180b"
 }

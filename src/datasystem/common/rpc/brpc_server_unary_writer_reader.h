@@ -171,13 +171,21 @@ public:
      */
     Status Read(R &pb) override
     {
+        kvtest_profile::DetailFrame frame(kvtest_profile::Stage::D_DS_RPC_SERVER_READ_TOTAL,
+                                          kvtest_profile::Stage::D_DS_RPC_SERVER_READ_VALIDATE);
+        if (frame.Sampled()) {
+            frame.Observe(kvtest_profile::DetailAttribute::RPC_METHOD,
+                          kvtest_profile::RpcMethodId(trace_.MethodName().c_str()));
+        }
         bool expected = false;
         if (readOnce_.compare_exchange_strong(expected, true)) {
             if (request_ == nullptr) {
                 RETURN_STATUS(StatusCode::K_RUNTIME_ERROR, "Request protobuf is null (type mismatch?)");
             }
             trace_.MarkServerExecStart();
+            frame.Next(kvtest_profile::Stage::D_DS_RPC_SERVER_READ_COPY);
             pb.CopyFrom(*request_);
+            frame.Next(kvtest_profile::Stage::D_DS_RPC_SERVER_READ_RESULT);
         } else {
             RETURN_STATUS(StatusCode::K_RUNTIME_ERROR,
                 "The Read method of BrpcServerUnaryWriterReader is only supposed to be used once!");
@@ -192,12 +200,20 @@ public:
      */
     Status Write(const W &pb) override
     {
+        kvtest_profile::DetailFrame frame(kvtest_profile::Stage::D_DS_RPC_SERVER_WRITE_TOTAL,
+                                          kvtest_profile::Stage::D_DS_RPC_SERVER_WRITE_VALIDATE);
+        if (frame.Sampled()) {
+            frame.Observe(kvtest_profile::DetailAttribute::RPC_METHOD,
+                          kvtest_profile::RpcMethodId(trace_.MethodName().c_str()));
+        }
         bool expected = false;
         if (writeOnce_.compare_exchange_strong(expected, true)) {
             trace_.MarkServerExecEnd();
+            frame.Next(kvtest_profile::Stage::D_DS_RPC_SERVER_WRITE_COPY);
             if (response_ != nullptr) {
                 response_->CopyFrom(pb);
             }
+            frame.Next(kvtest_profile::Stage::D_DS_RPC_SERVER_WRITE_TRACE);
             if (!recvPayloadOp_) {
                 trace_.MarkServerSend();
                 SLOW_LOG_IF_OR_VLOG(INFO, FLAGS_enable_perf_trace_log, 1,
@@ -206,10 +222,12 @@ public:
                                                  static_cast<unsigned long long>(bthread_self())));
                 RecordTraceOnce();
                 doneConsumed_.store(true, std::memory_order_release);
+                frame.Next(kvtest_profile::Stage::D_DS_RPC_SERVER_WRITE_NATIVE_COMPLETE);
                 if (done_ != nullptr) {
                     done_->Run();
                     done_ = nullptr;
                 }
+                frame.Next(kvtest_profile::Stage::D_DS_RPC_SERVER_WRITE_RESULT);
             }
         } else {
             RETURN_STATUS(StatusCode::K_RUNTIME_ERROR,

@@ -691,6 +691,42 @@ enum class Stage : size_t {
     D_DS_DETAIL_SET_TCP_PUBLISH_RESULT,
     D_DS_DETAIL_SET_TCP_PUBLISH_TOTAL,
     D_DS_DETAIL_SET_TCP_PUBLISH_TOTAL_CALLS,
+    DS_RPC_NATIVE_CREATE,
+    DS_RPC_NATIVE_PUBLISH,
+    DS_RPC_NATIVE_QUERY,
+    DS_RPC_NATIVE_RELEASE,
+    DS_RPC_NATIVE_CREATE_META,
+    MC_RPC_NATIVE_PUT_START,
+    MC_RPC_NATIVE_PUT_END,
+    MC_RPC_NATIVE_QUERY,
+    D_DS_RPC_STUB_CONTROLLER,
+    D_DS_RPC_STUB_TRACE,
+    D_DS_RPC_STUB_SEND_FRAMING,
+    D_DS_RPC_STUB_DIAGNOSTICS_BEFORE,
+    D_DS_RPC_STUB_NATIVE_CALL,
+    D_DS_RPC_STUB_DIAGNOSTICS_AFTER,
+    D_DS_RPC_STUB_RECV_FRAMING,
+    D_DS_RPC_STUB_METRICS_DEADLINE,
+    D_DS_RPC_STUB_TOTAL,
+    D_DS_RPC_SERVER_READ_VALIDATE,
+    D_DS_RPC_SERVER_READ_COPY,
+    D_DS_RPC_SERVER_READ_RESULT,
+    D_DS_RPC_SERVER_READ_TOTAL,
+    D_DS_RPC_SERVER_WRITE_VALIDATE,
+    D_DS_RPC_SERVER_WRITE_COPY,
+    D_DS_RPC_SERVER_WRITE_TRACE,
+    D_DS_RPC_SERVER_WRITE_NATIVE_COMPLETE,
+    D_DS_RPC_SERVER_WRITE_RESULT,
+    D_DS_RPC_SERVER_WRITE_TOTAL,
+    D_MC_RPC_SERVER_PREPARE,
+    D_MC_RPC_SERVER_REQUEST_METRICS,
+    D_MC_RPC_SERVER_BUSINESS,
+    D_MC_RPC_SERVER_RESULT_METRICS,
+    D_MC_RPC_SERVER_TOTAL,
+    D_MC_DETAIL_SHARED_RPC_COROUTINE_METRICS,
+    D_MC_DETAIL_SHARED_RPC_COROUTINE_RETURN,
+    D_MC_DETAIL_SHARED_RPC_FINISH,
+    D_DS_RPC_STUB_PROFILE_METADATA,
     COUNT
 };
 inline constexpr const char *STAGE_NAMES[] = {
@@ -1348,7 +1384,43 @@ inline constexpr const char *STAGE_NAMES[] = {
     "ds.detail.set.tcp.publish.rpc",
     "ds.detail.set.tcp.publish.result",
     "ds.detail.set.tcp.publish.total",
-    "ds.detail.set.tcp.publish.total.calls"
+    "ds.detail.set.tcp.publish.total.calls",
+    "ds.rpc_native.create",
+    "ds.rpc_native.publish",
+    "ds.rpc_native.query",
+    "ds.rpc_native.release",
+    "ds.rpc_native.create_meta",
+    "mc.rpc_native.put_start",
+    "mc.rpc_native.put_end",
+    "mc.rpc_native.query",
+    "ds.detail.rpc.stub.controller",
+    "ds.detail.rpc.stub.trace",
+    "ds.detail.rpc.stub.send_framing",
+    "ds.detail.rpc.stub.diagnostics_before",
+    "ds.detail.rpc.stub.native_call",
+    "ds.detail.rpc.stub.diagnostics_after",
+    "ds.detail.rpc.stub.recv_framing",
+    "ds.detail.rpc.stub.metrics_deadline",
+    "ds.detail.rpc.stub.total",
+    "ds.detail.rpc.server.read.validate",
+    "ds.detail.rpc.server.read.copy",
+    "ds.detail.rpc.server.read.result",
+    "ds.detail.rpc.server.read.total",
+    "ds.detail.rpc.server.write.validate",
+    "ds.detail.rpc.server.write.copy",
+    "ds.detail.rpc.server.write.trace",
+    "ds.detail.rpc.server.write.native_complete",
+    "ds.detail.rpc.server.write.result",
+    "ds.detail.rpc.server.write.total",
+    "mc.detail.rpc.server.prepare",
+    "mc.detail.rpc.server.request_metrics",
+    "mc.detail.rpc.server.business",
+    "mc.detail.rpc.server.result_metrics",
+    "mc.detail.rpc.server.total",
+    "mc.detail.shared.rpc.coroutine.metrics",
+    "mc.detail.shared.rpc.coroutine.return",
+    "mc.detail.shared.rpc.finish",
+    "ds.detail.rpc.stub.profile_metadata",
 };
 inline constexpr std::array<uint64_t, 22> BUCKET_NS = {
     100, 250, 500, 1000, 2000, 4000, 8000, 16000, 32000, 64000, 128000, 256000,
@@ -1366,6 +1438,18 @@ inline bool Enabled()
     return enabled;
 }
 
+inline uint64_t RpcMethodId(const char *name)
+{
+    const char *method = std::strrchr(name, '.');
+    method = method == nullptr ? name : method + 1;
+    constexpr const char *methods[] = {"", "Create", "Publish", "QueryAndGet", "Release", "CreateMeta",
+                                        "PutStart", "PutEnd", "GetReplicaList"};
+    for (size_t i = 1; i < sizeof(methods) / sizeof(*methods); ++i) {
+        if (std::strcmp(method, methods[i]) == 0) return i;
+    }
+    return 0;
+}
+
 inline uint64_t DetailSampleEvery();
 
 namespace detail {
@@ -1380,9 +1464,13 @@ struct alignas(64) Slot {
     std::array<std::atomic<uint64_t>, BUCKET_NS.size()> buckets{};
 };
 
-enum class DetailAttribute : size_t { TABLE_SIZE, SHARD_SIZE, KEY_BYTES, HIT, ITEM_COUNT, BUCKET_COUNT, SHARD_INDEX, COUNT };
+enum class DetailAttribute : size_t {
+    TABLE_SIZE, SHARD_SIZE, KEY_BYTES, HIT, ITEM_COUNT, BUCKET_COUNT, SHARD_INDEX,
+    RPC_METHOD, REQUEST_BYTES, RESPONSE_BYTES, ATTACHMENT_BYTES, COUNT
+};
 inline constexpr std::array<const char *, static_cast<size_t>(DetailAttribute::COUNT)> ATTRIBUTE_NAMES{
-    "table_size", "shard_size", "key_bytes", "hit", "item_count", "bucket_count", "shard_index"
+    "table_size", "shard_size", "key_bytes", "hit", "item_count", "bucket_count", "shard_index",
+    "rpc_method", "request_bytes", "response_bytes", "attachment_bytes"
 };
 
 struct ThreadClock {
