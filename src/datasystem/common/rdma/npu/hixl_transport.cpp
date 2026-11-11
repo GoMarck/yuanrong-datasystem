@@ -1482,8 +1482,10 @@ static Status BuildFabricMemTransferDescriptors(const std::vector<HixlTransferDe
         CHECK_FAIL_RETURN_STATUS(desc.localAddr != 0, StatusCode::K_INVALID, "HIXL local address cannot be null");
         CHECK_FAIL_RETURN_STATUS(desc.remoteAddr != 0, StatusCode::K_INVALID, "HIXL remote address cannot be null");
         CHECK_FAIL_RETURN_STATUS(desc.len > 0, StatusCode::K_INVALID, "HIXL transfer length must be greater than 0");
-        PerfPoint::RecordElapsed(HixlRegisteredDeviceMemoryPerfKey(op, true), 1);
         hixlDescs.push_back(DsHixlTransferDesc{ desc.localAddr, desc.remoteAddr, desc.len });
+    }
+    if (!descs.empty()) {
+        PerfPoint::RecordElapsed(HixlRegisteredDeviceMemoryPerfKey(op, true), descs.size());
     }
     return Status::OK();
 }
