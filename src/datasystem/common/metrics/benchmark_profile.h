@@ -727,6 +727,17 @@ enum class Stage : size_t {
     D_MC_DETAIL_SHARED_RPC_COROUTINE_RETURN,
     D_MC_DETAIL_SHARED_RPC_FINISH,
     D_DS_RPC_STUB_PROFILE_METADATA,
+    D_DS_RPC_SERVER_COMPLETE_VALIDATE,
+    D_DS_RPC_SERVER_COMPLETE_TRACE,
+    D_DS_RPC_SERVER_COMPLETE_NATIVE,
+    D_DS_RPC_SERVER_COMPLETE_RESULT,
+    D_DS_RPC_SERVER_COMPLETE_TOTAL,
+    D_DS_RPC_SERVER_ENCODE_VALIDATE,
+    D_DS_RPC_SERVER_ENCODE_APPEND,
+    D_DS_RPC_SERVER_ENCODE_TOTAL,
+    D_DS_RPC_SERVER_DECODE_VALIDATE,
+    D_DS_RPC_SERVER_DECODE_PARSE_COPY,
+    D_DS_RPC_SERVER_DECODE_TOTAL,
     COUNT
 };
 inline constexpr const char *STAGE_NAMES[] = {
@@ -1421,6 +1432,17 @@ inline constexpr const char *STAGE_NAMES[] = {
     "mc.detail.shared.rpc.coroutine.return",
     "mc.detail.shared.rpc.finish",
     "ds.detail.rpc.stub.profile_metadata",
+    "ds.detail.rpc.server.complete.validate",
+    "ds.detail.rpc.server.complete.trace",
+    "ds.detail.rpc.server.complete.native",
+    "ds.detail.rpc.server.complete.result",
+    "ds.detail.rpc.server.complete.total",
+    "ds.detail.rpc.server.encode.validate",
+    "ds.detail.rpc.server.encode.append",
+    "ds.detail.rpc.server.encode.total",
+    "ds.detail.rpc.server.decode.validate",
+    "ds.detail.rpc.server.decode.parse_copy",
+    "ds.detail.rpc.server.decode.total",
 };
 inline constexpr std::array<uint64_t, 22> BUCKET_NS = {
     100, 250, 500, 1000, 2000, 4000, 8000, 16000, 32000, 64000, 128000, 256000,

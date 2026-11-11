@@ -6,6 +6,7 @@
 #include <brpc/channel.h>
 #include <brpc/controller.h>
 #include <brpc/server.h>
+#include <bthread/bthread.h>
 
 namespace rpc_isolation {
 class EchoServiceImpl final : public EchoService {
@@ -70,6 +71,8 @@ int main(int argc, char **argv)
             server.RunUntilAskedToQuit();
             return 0;
         }
+        if (bthread_setconcurrency(config.ioThreads) != 0)
+            throw std::runtime_error("brpc worker concurrency configuration failed");
         return Run(config, "brpc", [&](int) { return std::make_unique<Client>(config); });
     } catch (const std::exception &e) { std::cerr << e.what() << std::endl; return 1; }
 }

@@ -465,16 +465,25 @@ private:
      */
     void TryCompleteDeferred()
     {
+        kvtest_profile::DetailFrame frame(kvtest_profile::Stage::D_DS_RPC_SERVER_COMPLETE_TOTAL,
+                                          kvtest_profile::Stage::D_DS_RPC_SERVER_COMPLETE_VALIDATE);
+        if (frame.Sampled()) {
+            frame.Observe(kvtest_profile::DetailAttribute::RPC_METHOD,
+                          kvtest_profile::RpcMethodId(trace_.MethodName().c_str()));
+        }
         bool expected = false;
         if (doneConsumed_.compare_exchange_strong(expected, true) && done_ != nullptr) {
+            frame.Next(kvtest_profile::Stage::D_DS_RPC_SERVER_COMPLETE_TRACE);
             trace_.MarkServerSend();
             SLOW_LOG_IF_OR_VLOG(INFO, FLAGS_enable_perf_trace_log, 1,
                                 FormatString("ServerSend ts %llu tid %d cpu %d bid %llu\n", trace_.ServerSendTs(),
                                              BrpcTraceGetTid(), sched_getcpu(),
                                              static_cast<unsigned long long>(bthread_self())));
             RecordTraceOnce();
+            frame.Next(kvtest_profile::Stage::D_DS_RPC_SERVER_COMPLETE_NATIVE);
             done_->Run();
             done_ = nullptr;
+            frame.Next(kvtest_profile::Stage::D_DS_RPC_SERVER_COMPLETE_RESULT);
         }
     }
 
@@ -484,9 +493,16 @@ private:
      */
     Status AppendToResponseAttachment(const std::vector<RpcMessage> &buffer)
     {
+        kvtest_profile::DetailFrame frame(kvtest_profile::Stage::D_DS_RPC_SERVER_ENCODE_TOTAL,
+                                          kvtest_profile::Stage::D_DS_RPC_SERVER_ENCODE_VALIDATE);
+        if (frame.Sampled()) {
+            frame.Observe(kvtest_profile::DetailAttribute::RPC_METHOD,
+                          kvtest_profile::RpcMethodId(trace_.MethodName().c_str()));
+        }
         if (cntl_ == nullptr) {
             RETURN_STATUS(StatusCode::K_RUNTIME_ERROR, "Controller is null");
         }
+        frame.Next(kvtest_profile::Stage::D_DS_RPC_SERVER_ENCODE_APPEND);
         butil::IOBuf &attach = cntl_->response_attachment();
         int64_t count = static_cast<int64_t>(buffer.size());
         attach.append(reinterpret_cast<const char *>(&count), sizeof(count));
@@ -503,9 +519,16 @@ private:
      */
     Status AppendMemViewToResponseAttachment(const std::vector<MemView> &payload)
     {
+        kvtest_profile::DetailFrame frame(kvtest_profile::Stage::D_DS_RPC_SERVER_ENCODE_TOTAL,
+                                          kvtest_profile::Stage::D_DS_RPC_SERVER_ENCODE_VALIDATE);
+        if (frame.Sampled()) {
+            frame.Observe(kvtest_profile::DetailAttribute::RPC_METHOD,
+                          kvtest_profile::RpcMethodId(trace_.MethodName().c_str()));
+        }
         if (cntl_ == nullptr) {
             RETURN_STATUS(StatusCode::K_RUNTIME_ERROR, "Controller is null");
         }
+        frame.Next(kvtest_profile::Stage::D_DS_RPC_SERVER_ENCODE_APPEND);
         butil::IOBuf &attach = cntl_->response_attachment();
         int64_t count = static_cast<int64_t>(payload.size());
         attach.append(reinterpret_cast<const char *>(&count), sizeof(count));
@@ -523,6 +546,12 @@ private:
      */
     Status ParseFromRequestAttachment(std::vector<RpcMessage> &payload)
     {
+        kvtest_profile::DetailFrame frame(kvtest_profile::Stage::D_DS_RPC_SERVER_DECODE_TOTAL,
+                                          kvtest_profile::Stage::D_DS_RPC_SERVER_DECODE_VALIDATE);
+        if (frame.Sampled()) {
+            frame.Observe(kvtest_profile::DetailAttribute::RPC_METHOD,
+                          kvtest_profile::RpcMethodId(trace_.MethodName().c_str()));
+        }
         const butil::IOBuf &attach = cntl_->request_attachment();
         if (attach.empty()) {
             return Status::OK();
@@ -537,6 +566,7 @@ private:
         attach.copy_to(reinterpret_cast<char *>(&count), sizeof(count), offset);
         offset += sizeof(count);
 
+        frame.Next(kvtest_profile::Stage::D_DS_RPC_SERVER_DECODE_PARSE_COPY);
         for (int64_t i = 0; i < count; ++i) {
             CHECK_FAIL_RETURN_STATUS(offset + sizeof(int64_t) <= remaining, StatusCode::K_RUNTIME_ERROR,
                 "Malformed payload: truncated size header");

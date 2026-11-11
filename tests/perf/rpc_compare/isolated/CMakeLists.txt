@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.18)
 project(rpc_isolation_bench LANGUAGES CXX)
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(Threads REQUIRED)
 find_package(Protobuf CONFIG REQUIRED)
@@ -13,4 +13,4 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/rpc_isolation.pb.cc" "${C
     DEPENDS rpc_isolation.proto)
 add_executable(brpc_isolation_bench brpc_isolation_bench.cpp "${CMAKE_CURRENT_BINARY_DIR}/rpc_isolation.pb.cc")
 target_include_directories(brpc_isolation_bench PRIVATE "${BRPC_INCLUDE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
-target_link_libraries(brpc_isolation_bench PRIVATE "${BRPC_LIBRARY}" protobuf::libprotobuf gflags::gflags Threads::Threads)
+target_link_libraries(brpc_isolation_bench PRIVATE "${BRPC_LIBRARY}" protobuf::libprotobuf ${GFLAGS_LIBRARIES} Threads::Threads)
