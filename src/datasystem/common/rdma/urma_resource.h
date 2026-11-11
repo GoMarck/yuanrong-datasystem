@@ -141,7 +141,7 @@ public:
     ~UrmaEvent() override
     {
         if (srcChipInflightCounter_ != nullptr) {
-            const auto previous = srcChipInflightCounter_->fetch_sub(1, std::memory_order_relaxed);
+            [[maybe_unused]] const auto previous = srcChipInflightCounter_->fetch_sub(1, std::memory_order_relaxed);
 #ifdef WITH_TESTS
             if (observeGatherInflightDrain_ && previous == 1) {
                 INJECT_POINT_NO_RETURN("UrmaManager.GatherInflightCountersDrained");
