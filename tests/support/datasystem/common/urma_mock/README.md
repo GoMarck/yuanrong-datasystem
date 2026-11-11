@@ -13,5 +13,6 @@ There is no connection pool or transport performance guarantee. `ds.mock_urma.po
 it is nested within URMA submission and must not be counted again as business logic. Completion waiting is separate.
 
 Build `urma_mock_tcp_probe` to expose a 4096-byte registered region for read/write, range, token, and disconnect checks.
+Run `python3 transport/tcp_probe_test.py <server-IPv4>:<port> '<JSON-line-from-probe>'` on the peer host.
 It prints the region metadata as JSON and exits after 45 seconds. Run real Set/Get integration with data verification
 before using this backend for workflow attribution; require no payload fallback and keep SHM/non-SHM results separate.
