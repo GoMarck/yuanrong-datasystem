@@ -499,8 +499,8 @@ public:
      */
     Status RemoveClient(const ClientKey &clientId);
 
-    static constexpr uint64_t MAX_HIXL_WRITE_BYTES = 256ULL * 1024 * 1024;
-    static constexpr size_t MAX_HIXL_WRITE_ALLOCATIONS = 1024;
+    static constexpr uint64_t MAX_HIXL_WRITE_BYTES = 1024ULL * 1024 * 1024;
+    static constexpr size_t MAX_HIXL_WRITE_ALLOCATIONS = 4096;
     Status ReserveHixlWriteBudget(uint64_t bytes, size_t count);
     void ReleaseHixlWriteBudget(uint64_t bytes, size_t count);
     // Protect consumes the reservation only on success; the caller releases it on failure.
