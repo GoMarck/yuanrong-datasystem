@@ -499,8 +499,14 @@ public:
      */
     Status RemoveClient(const ClientKey &clientId);
 
-    static constexpr uint64_t MAX_HIXL_WRITE_BYTES = 256ULL * 1024 * 1024;
+    static constexpr uint64_t DEFAULT_MAX_HIXL_WRITE_BYTES = 256ULL * 1024 * 1024;
     static constexpr size_t MAX_HIXL_WRITE_ALLOCATIONS = 1024;
+    // Configure before publishing this table to request handlers; the limit stays immutable while serving.
+    Status InitHixlWriteBudget();
+    uint64_t GetHixlWriteLimitBytes() const
+    {
+        return hixlWriteLimitBytes_;
+    }
     Status ReserveHixlWriteBudget(uint64_t bytes, size_t count);
     void ReleaseHixlWriteBudget(uint64_t bytes, size_t count);
     // Protect consumes the reservation only on success; the caller releases it on failure.
@@ -614,6 +620,7 @@ private:
     };
     std::mutex hixlWriteMutex_;
     std::unordered_map<ShmKey, HixlWriteOwner> hixlWrites_;
+    uint64_t hixlWriteLimitBytes_ = DEFAULT_MAX_HIXL_WRITE_BYTES;
     uint64_t hixlWriteBytes_ = 0;
     size_t hixlWriteAllocations_ = 0;
     struct MaybeExpiredShmItemCmp {

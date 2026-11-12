@@ -761,6 +761,7 @@ void WorkerOCServiceImpl::ConfigureDataMigrator(DataMigrator &migrator)
 
 Status WorkerOCServiceImpl::Init()
 {
+    RETURN_IF_NOT_OK(memoryRefTable_->InitHixlWriteBudget());
     InitMetaSize();
     RETURN_IF_NOT_OK(ResetHealthProbe());
     RETURN_IF_NOT_OK(StartTopologyHealthCoordinator());

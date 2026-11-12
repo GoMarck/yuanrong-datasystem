@@ -386,8 +386,10 @@ Status WorkerOcServiceCreateImpl::PrepareHixlWrite(MultiCreateReqPb &req, MultiC
         uint64_t size = 0;
         RETURN_IF_NOT_OK(BuildComposedBufferHeader({ sizes.begin(), sizes.end() }, FLAGS_memory_alignment,
                                                    header, size));
-        CHECK_FAIL_RETURN_STATUS(size <= SharedMemoryRefTable::MAX_HIXL_WRITE_BYTES - batchBytes, K_INVALID,
-                                 "HIXL batch exceeds the protected memory budget");
+        const auto limit = memoryRefTable_->GetHixlWriteLimitBytes();
+        CHECK_FAIL_RETURN_STATUS(size <= limit - batchBytes, K_INVALID,
+                                 FormatString("HIXL batch exceeds the protected memory budget: accumulated_bytes=%llu, "
+                                              "next_bytes=%llu, limit_bytes=%llu", batchBytes, size, limit));
         batchBytes += size;
         req.set_data_size(i, size);
     }
@@ -443,9 +445,16 @@ Status WorkerOcServiceCreateImpl::MultiCreateImpl(const MultiCreateReqPb &req, c
             if (!req.skip_check_existence() && resp.exists(i)) {
                 continue;
             }
-            const auto size = req.data_size(i) + GetMetadataSize();
-            CHECK_FAIL_RETURN_STATUS(size <= SharedMemoryRefTable::MAX_HIXL_WRITE_BYTES - hixlBudgetBytes,
-                                     K_OUT_OF_MEMORY, "HIXL batch exceeds the protected memory budget");
+            const auto metadataSize = GetMetadataSize();
+            const auto limit = memoryRefTable_->GetHixlWriteLimitBytes();
+            CHECK_FAIL_RETURN_STATUS(metadataSize <= limit - hixlBudgetBytes
+                                         && req.data_size(i) <= limit - hixlBudgetBytes - metadataSize,
+                                     K_OUT_OF_MEMORY,
+                                     FormatString("HIXL batch exceeds the protected memory budget: "
+                                                  "accumulated_bytes=%llu, next_data_bytes=%llu, "
+                                                  "metadata_bytes=%llu, limit_bytes=%llu",
+                                                  hixlBudgetBytes, req.data_size(i), metadataSize, limit));
+            const auto size = req.data_size(i) + metadataSize;
             hixlBudgetBytes += size;
             ++hixlBudgetCount;
         }
