@@ -13,6 +13,8 @@ def main():
                           ctypes.c_int, ctypes.c_long]
     libc.mmap.restype = ctypes.c_void_p
     libc.munmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+    libc.memfd_create.argtypes = [ctypes.c_char_p, ctypes.c_uint]
+    libc.memfd_create.restype = ctypes.c_int
     libc.mincore.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_ubyte)]
     numa.numa_move_pages.argtypes = [ctypes.c_int, ctypes.c_ulong,
                                    ctypes.POINTER(ctypes.c_void_p), ctypes.POINTER(ctypes.c_int),
@@ -44,7 +46,9 @@ def main():
 
         touch()
         before = observe()
-        fd = os.memfd_create("ub-numa-remap-probe", os.MFD_CLOEXEC)
+        fd = libc.memfd_create(b"ub-numa-remap-probe", 1)
+        if fd < 0:
+            raise OSError(ctypes.get_errno(), "memfd_create")
         os.ftruncate(fd, size)
         mapped = libc.mmap(address, size, 3, 0x11, fd, 0)
         if mapped != address:
