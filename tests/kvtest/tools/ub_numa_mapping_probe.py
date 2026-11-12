@@ -64,7 +64,7 @@ def main():
                           "after_remap": after, "after_touch": restored, "passed": True}))
     finally:
         libc.munmap(address, size)
-        if fd is not None:
+        if fd is not None and fd >= 0:
             os.close(fd)
 
 
