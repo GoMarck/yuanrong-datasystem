@@ -765,7 +765,7 @@
     },
     "remote_h2d_device_ids": {
         "value": "",
-        "description": "The NPU device ids to be used for Remote H2D purposes given as a list of comma separated values, default is none. Assigning values enables RemoteH2D. In HCCS FabricMem mode, the first id is used for the single HIXL engine and the full list is used for FabricMem arena placement."
+        "description": "The NPU device ids to be used for Remote H2D purposes given as a list of comma separated values, default is none. Assigning values enables RemoteH2D. In HCCS FabricMem mode, the first id is used for a single HIXL engine by default; remote_h2d_hccs_fabric_mem_multi_engine=true creates one engine per listed device. The full list is always used for FabricMem arena placement."
     },
     "remote_h2d_link_type": {
         "value": "ROCE",
@@ -778,6 +778,10 @@
     "remote_h2d_hccs_enable_fabric_mem": {
         "value": "false",
         "description": "Enable HIXL FabricMem mode for HCCS RH2D. Requires CANN 9.0.0+ and HDK 26.0.0+. This mode is mutually exclusive with HIXL buffer-pool mode."
+    },
+    "remote_h2d_hccs_fabric_mem_multi_engine": {
+        "value": "false",
+        "description": "Worker startup-only option for HCCS FabricMem. False creates one HIXL engine on the first remote_h2d_device_ids entry; true creates one per listed device. Does not change arena placement, client engine count, or non-FabricMem behavior. Restart the worker to change."
     },
     "urma_failover_success_rate_ratio": {
         "value": "0.5",

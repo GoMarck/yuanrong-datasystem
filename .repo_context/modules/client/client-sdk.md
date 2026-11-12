@@ -2,6 +2,11 @@
 
 ## Routed FabricMem device writes
 
+- Worker HCCS FabricMem defaults to one HiXL engine on the first configured device.
+  Startup flag `remote_h2d_hccs_fabric_mem_multi_engine=true` retains the complete effective device list,
+  creating one engine per listed device. The existing communicator UUID hash selects a stable engine;
+  arena placement continues using the full configured list regardless of this flag. SDK engine count and
+  non-FabricMem behavior are unchanged. Changing the flag requires Worker restart and connection rebuild.
 - `HeteroClient::Init` eagerly calls `InitRemoteH2D` only when `DS_HETERO_EAGER_INIT_REMOTE_H2D=1`
   and base initialization succeeds. Default false leaves device transport initialization to the existing
   preregistration/read/write paths. Eager initialization errors still flow through CompleteHandler and Init's

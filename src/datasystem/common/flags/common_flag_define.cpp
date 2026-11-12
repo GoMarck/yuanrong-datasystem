@@ -105,6 +105,10 @@ DS_DEFINE_bool(remote_h2d_hccs_enable_fabric_mem, false,
                "Enable HIXL FabricMem mode for HCCS RH2D. In this mode workers allocate physical-backed shared-memory "
                "arenas and transfer data through HIXL host_info. This option is mutually exclusive with HIXL "
                "buffer-pool mode.");
+DS_DEFINE_bool(remote_h2d_hccs_fabric_mem_multi_engine, false,
+               "Create one worker HIXL engine per remote_h2d_device_ids entry in HCCS FabricMem mode. "
+               "Default false uses only the first device for the engine. Arena placement is unchanged. "
+               "Startup-only; restart the worker to change.");
 DS_DEFINE_string(urma_mode, "UB", "[DEPRECATED] This flag is no longer used and will be removed in a future version.");
 DS_DEFINE_bool(enable_urma, false, "Option to turn on urma for OC worker to worker data transfer, default false.");
 DS_DEFINE_bool(enable_ub_fault_isolation, GetBoolFromEnv("DATASYSTEM_ENABLE_UB_FAULT_ISOLATION", true),
