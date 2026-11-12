@@ -18,6 +18,7 @@
  * Description: Define Jemalloc allocator class, Jemalloc is used to manage
  *              memory allocate and free.
  */
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include "datasystem/common/shared_memory/jemalloc.h"
 
 #define JEMALLOC_NO_DEMANGLE
@@ -120,12 +121,17 @@ void Jemalloc::DestroyHandler(void *handler)
 
 Status Jemalloc::Allocate(unsigned arenaInd, uint64_t &bytes, void *&pointer)
 {
+    kvtest_profile::DetailFrame allocationFrame(
+        kvtest_profile::AllocationDetailStage(kvtest_profile::Stage::D_DS_ALLOC_JEMALLOC_TOTAL, bytes),
+        kvtest_profile::Stage::D_DS_ALLOC_JEMALLOC_VALIDATE, bytes);
     CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(bytes > 0, StatusCode::K_INVALID,
                                          "The value of bytes should be greater than 0");
+    allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_JEMALLOC_MALLOCX);
     pointer = datasystem_mallocx(bytes, GetAllocxFlags(arenaInd));
     if (pointer == nullptr) {
         RETURN_STATUS(StatusCode::K_OUT_OF_MEMORY, "Allocate memory failed in arena: " + std::to_string(arenaInd));
     }
+    allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_JEMALLOC_USABLE_SIZE);
     bytes = GetAllocatedSize(pointer, arenaInd);
     return Status::OK();
 }

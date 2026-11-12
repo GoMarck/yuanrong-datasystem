@@ -41,6 +41,11 @@
 
 ## Test Layout
 
+- Opt-in UB receive allocation diagnosis uses `KVTEST_ALLOC_DETAIL_BYTES` and
+  `ds.alloc.detail.*` frames from provider through jemalloc and NUMA handling.
+  `KVTEST_ALLOC_NUMA_EXPERIMENT` is an explicit profiler-gated experiment, not a production default.
+  Boundaries, size filtering and rollback are in `tests/kvtest/docs/rpc-data-plane-profile.md`.
+
 - `tests/perf/rpc_compare/isolated` is an opt-in standalone CMake/Bazel TCP RPC diagnostic.
   It returns a fixed byte body, separates handler/native/envelope time, and retains failures.
   Its paired Mooncake harness shares the same runner. This is a framework+TCP baseline,

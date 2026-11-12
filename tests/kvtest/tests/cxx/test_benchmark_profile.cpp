@@ -21,6 +21,8 @@ int main(int argc, char **argv)
     setenv("KVTEST_DETAIL_SAMPLE_EVERY", "1", 1);
     setenv("KVTEST_DETAIL_SAMPLES", "1", 1);
     setenv("KVTEST_DETAIL_CPU", cpu ? "1" : "0", 1);
+    setenv("KVTEST_ALLOC_DETAIL_BYTES", "10485760", 1);
+    setenv("KVTEST_ALLOC_NUMA_EXPERIMENT", "skip_empty", 1);
     auto findLogs = [&prefix]() {
         glob_t found{};
         std::vector<std::string> paths;
@@ -31,6 +33,11 @@ int main(int argc, char **argv)
         return paths;
     };
     REQUIRE(kvtest_profile::Enabled() == enabled);
+    REQUIRE(kvtest_profile::AllocationDetailStage(kvtest_profile::Stage::D_DS_ALLOC_PROVIDER_TOTAL, 10485760)
+            == (enabled ? kvtest_profile::Stage::D_DS_ALLOC_PROVIDER_TOTAL : kvtest_profile::Stage::COUNT));
+    REQUIRE(kvtest_profile::AllocationDetailStage(kvtest_profile::Stage::D_DS_ALLOC_PROVIDER_TOTAL, 1)
+            == kvtest_profile::Stage::COUNT);
+    REQUIRE(kvtest_profile::AllocationNumaExperiment() == (enabled ? 2 : 0));
     REQUIRE(kvtest_profile::RpcMethodId("datasystem.worker.WorkerOCService.QueryAndGet") == 3);
     REQUIRE(kvtest_profile::RpcMethodId("GetReplicaList") == 8);
     REQUIRE(kvtest_profile::RpcMethodId("UnrelatedMethod") == 0);

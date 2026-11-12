@@ -1,10 +1,10 @@
 {
   "revision": "719735896c86b56fabec6cf3e825fb2ea640597a",
-  "profile_generation": 7,
+  "profile_generation": 8,
   "files": {
     "mooncake-common/include/kvtest_benchmark_profile.h": {
       "base": null,
-      "profile": "2372d98539c5c61800b1ba13228c2aa0547b3770fc811a8e60b2d01764e7342c"
+      "profile": "555304328eedebda0df62b34533f676cc769da3ae4039a4a18ee9f994f406d72"
     },
     "mooncake-store/include/benchmark_profile.h": {
       "base": null,
@@ -55,5 +55,5 @@
       "profile": "8c2b8a24eb399db89c8391569c1bfae140a4796d53cc3205e6d5728ccf8e0dc5"
     }
   },
-  "patch_sha256": "613facbe8610b45b4e54bf4f6f24573bb1885d09484a965dd41e9c6dcbe2c743"
+  "patch_sha256": "f31cfb057ce8167875622f8ec88012a58e5021f56b64c4716350258320f7c0f6"
 }

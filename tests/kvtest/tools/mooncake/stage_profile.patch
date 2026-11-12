@@ -3,7 +3,7 @@ new file mode 100644
 index 00000000..ef06b6af
 --- /dev/null
 +++ b/mooncake-common/include/kvtest_benchmark_profile.h
-@@ -0,0 +1,2185 @@
+@@ -0,0 +1,2291 @@
 +/**
 + * Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 + * Licensed under the Apache License, Version 2.0 (the "License");
@@ -753,6 +753,44 @@ index 00000000..ef06b6af
 +    D_DS_RPC_SERVER_ADAPTER_CLEANUP,
 +    D_DS_RPC_SERVER_ADAPTER_TOTAL,
 +    DS_MOCK_URMA_POST,
++    D_DS_ALLOC_PROVIDER_TOTAL,
++    D_DS_ALLOC_PROVIDER_INSTANCE,
++    D_DS_ALLOC_PROVIDER_HANDLE,
++    D_DS_ALLOC_PROVIDER_INFO,
++    D_DS_ALLOC_PROVIDER_OWNER,
++    D_DS_ALLOC_HANDLE_TOTAL,
++    D_DS_ALLOC_HANDLE_PREPARE,
++    D_DS_ALLOC_HANDLE_UNIT,
++    D_DS_ALLOC_HANDLE_ALLOCATE,
++    D_DS_ALLOC_HANDLE_RESULT,
++    D_DS_ALLOC_SHM_TOTAL,
++    D_DS_ALLOC_SHM_PREPARE,
++    D_DS_ALLOC_SHM_ALLOCATE,
++    D_DS_ALLOC_SHM_RESULT,
++    D_DS_ALLOC_ALLOCATOR_TOTAL,
++    D_DS_ALLOC_ALLOCATOR_QUOTA,
++    D_DS_ALLOC_ALLOCATOR_ARENA_LOOKUP,
++    D_DS_ALLOC_ALLOCATOR_ARENA_ALLOCATE,
++    D_DS_ALLOC_ALLOCATOR_VALIDATE,
++    D_DS_ALLOC_ALLOCATOR_CANCEL_EXPIRY,
++    D_DS_ALLOC_ALLOCATOR_STATS,
++    D_DS_ALLOC_ARENA_TOTAL,
++    D_DS_ALLOC_ARENA_PREPARE,
++    D_DS_ALLOC_ARENA_ALLOCATE,
++    D_DS_ALLOC_ARENA_MAP,
++    D_DS_ALLOC_ARENA_RECORD_LOCK,
++    D_DS_ALLOC_ARENA_RECORD_INSERT,
++    D_DS_ALLOC_ARENA_USAGE,
++    D_DS_ALLOC_ARENA_NUMA,
++    D_DS_ALLOC_ARENA_LOG,
++    D_DS_ALLOC_JEMALLOC_TOTAL,
++    D_DS_ALLOC_JEMALLOC_VALIDATE,
++    D_DS_ALLOC_JEMALLOC_MALLOCX,
++    D_DS_ALLOC_JEMALLOC_USABLE_SIZE,
++    D_DS_ALLOC_NUMA_TOTAL,
++    D_DS_ALLOC_NUMA_QUERY,
++    D_DS_ALLOC_NUMA_WARNING,
++    D_DS_ALLOC_NUMA_RESULT,
 +    COUNT
 +};
 +inline constexpr const char *STAGE_NAMES[] = {
@@ -1467,6 +1505,44 @@ index 00000000..ef06b6af
 +    "ds.detail.rpc.server.adapter.cleanup",
 +    "ds.detail.rpc.server.adapter.total",
 +    "ds.mock_urma.post",
++    "ds.alloc.detail.provider.total",
++    "ds.alloc.detail.provider.instance",
++    "ds.alloc.detail.provider.handle",
++    "ds.alloc.detail.provider.info",
++    "ds.alloc.detail.provider.owner",
++    "ds.alloc.detail.handle.total",
++    "ds.alloc.detail.handle.prepare",
++    "ds.alloc.detail.handle.unit",
++    "ds.alloc.detail.handle.allocate",
++    "ds.alloc.detail.handle.result",
++    "ds.alloc.detail.shm.total",
++    "ds.alloc.detail.shm.prepare",
++    "ds.alloc.detail.shm.allocate",
++    "ds.alloc.detail.shm.result",
++    "ds.alloc.detail.allocator.total",
++    "ds.alloc.detail.allocator.quota",
++    "ds.alloc.detail.allocator.arena_lookup",
++    "ds.alloc.detail.allocator.arena_allocate",
++    "ds.alloc.detail.allocator.validate",
++    "ds.alloc.detail.allocator.cancel_expiry",
++    "ds.alloc.detail.allocator.stats",
++    "ds.alloc.detail.arena.total",
++    "ds.alloc.detail.arena.prepare",
++    "ds.alloc.detail.arena.allocate",
++    "ds.alloc.detail.arena.map",
++    "ds.alloc.detail.arena.record_lock",
++    "ds.alloc.detail.arena.record_insert",
++    "ds.alloc.detail.arena.usage",
++    "ds.alloc.detail.arena.numa",
++    "ds.alloc.detail.arena.log",
++    "ds.alloc.detail.jemalloc.total",
++    "ds.alloc.detail.jemalloc.validate",
++    "ds.alloc.detail.jemalloc.mallocx",
++    "ds.alloc.detail.jemalloc.usable_size",
++    "ds.alloc.detail.numa.total",
++    "ds.alloc.detail.numa.query",
++    "ds.alloc.detail.numa.warning",
++    "ds.alloc.detail.numa.result",
 +};
 +inline constexpr std::array<uint64_t, 22> BUCKET_NS = {
 +    100, 250, 500, 1000, 2000, 4000, 8000, 16000, 32000, 64000, 128000, 256000,
@@ -1991,6 +2067,36 @@ index 00000000..ef06b6af
 +    return every;
 +}
 +
++inline uint64_t AllocationDetailBytes()
++{
++    static const uint64_t bytes = [] {
++        const char *value = std::getenv("KVTEST_ALLOC_DETAIL_BYTES");
++        if (value == nullptr) return uint64_t{0};
++        char *end = nullptr;
++        const auto parsed = std::strtoull(value, &end, 10);
++        return end != value && *end == '\0' ? static_cast<uint64_t>(parsed) : uint64_t{0};
++    }();
++    return bytes;
++}
++
++inline Stage AllocationDetailStage(Stage stage, uint64_t bytes)
++{
++    const auto selected = AllocationDetailBytes();
++    return Enabled() && selected != 0 && selected == bytes ? stage : Stage::COUNT;
++}
++
++inline int AllocationNumaExperiment()
++{
++    static const int mode = [] {
++        if (!Enabled()) return 0;
++        const char *value = std::getenv("KVTEST_ALLOC_NUMA_EXPERIMENT");
++        if (value != nullptr && std::strcmp(value, "no_warning") == 0) return 1;
++        if (value != nullptr && std::strcmp(value, "skip_empty") == 0) return 2;
++        return 0;
++    }();
++    return mode;
++}
++
 +inline bool DetailSelected(Stage stage)
 +{
 +    const auto every = DetailSampleEvery();
@@ -2189,6 +2295,7 @@ index 00000000..ef06b6af
 +}  // namespace v2
 +}  // namespace kvtest_profile
 +#endif
+
 diff --git a/mooncake-store/include/benchmark_profile.h b/mooncake-store/include/benchmark_profile.h
 new file mode 100644
 index 00000000..d796d974

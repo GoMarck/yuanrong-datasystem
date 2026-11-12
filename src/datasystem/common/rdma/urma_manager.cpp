@@ -624,14 +624,21 @@ Status UrmaManager::EnsureClientPipelineH2DEnv()
 Status UrmaManager::GetMemoryBufferHandle(std::shared_ptr<BufferHandle> &handle, uint64_t size)
 {
     kvtest_profile::Span benchmarkSpan(kvtest_profile::Stage::DS_UB_ALLOC, size);
+    kvtest_profile::DetailFrame allocationFrame(
+        kvtest_profile::AllocationDetailStage(kvtest_profile::Stage::D_DS_ALLOC_HANDLE_TOTAL, size),
+        kvtest_profile::Stage::D_DS_ALLOC_HANDLE_PREPARE, size);
+
     if (size == 0) {
         return Status(K_INVALID, "UB Get buffer size is 0");
     }
     INJECT_POINT("UrmaManager.GetMemoryBufferHandle");
+    allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_HANDLE_UNIT);
     std::shared_ptr<ShmUnit> unit = std::make_shared<ShmUnit>();
+    allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_HANDLE_ALLOCATE);
     RETURN_IF_NOT_OK(
         unit->AllocateMemory(DEFAULT_TENANTID, size, false, ServiceType::OBJECT, AllocateType::UB_TRANSPORT));
 
+    allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_HANDLE_RESULT);
     handle = std::make_shared<BufferHandle>(unit, memoryBuffer_, size);
     return Status::OK();
 }

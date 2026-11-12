@@ -331,3 +331,9 @@ The `rpc_method`/byte attributes and standalone no-op experiment are documented 
 frames, and report measurement-on/off controls before attributing small differences.
 
 Generation 6 additionally records `ds.detail.rpc.server.adapter.*` for plain, send-payload and unary-socket KV calls. `dispatch` includes the invoked worker/master function and is not pure RPC framework time. UnarySocket Read/Write/attachment frames use a generated numeric method identifier, independent of its trace string. Method 4 includes the actual `DecreaseReference` RPC; its native interval is `ds.rpc_native.release`.
+
+## UB接收内存分配诊断
+
+保持原KVTEST开关，另设`KVTEST_ALLOC_DETAIL_BYTES=10485760`仅抽样指定大小的分配（0或未设关闭），新增`ds.alloc.detail.*`记录provider、handle、ShmUnit、Allocator、ArenaGroup、jemalloc和NUMA查询。NUMA子帧不按大小筛选，覆盖进程所有分配；Get归因以按大小筛选的Arena NUMA阶段为准。各子帧独立抽样，禁止直接相减成严格预算。
+
+仅用于进程级诊断的`KVTEST_ALLOC_NUMA_EXPERIMENT`要求`KVTEST_STAGE_PROFILE=1`：未设或`normal`保持原逻辑；`no_warning`仅跳过NUMA查询失败WARNING；`skip_empty`使空NUMA表直接返回INVALID_NUMA_ID且成功，避免重复构造Status，非空表照常查询。显式记录实验模式，不作为生产优化或公平基线。移除变量恢复原行为。必须对照`KVTEST_ALLOC_DETAIL_BYTES=0`评估细打点扰动；接收容量、监控、调度、日志级别及SHM/UB比例不变。

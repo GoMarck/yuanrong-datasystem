@@ -17,6 +17,7 @@
 /**
  * Description: Define shared memory allocator class.
  */
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include "datasystem/common/shared_memory/allocator.h"
 
 #include <atomic>
@@ -396,19 +397,25 @@ Status Allocator::AllocateMemory(const std::string &tenantId, uint64_t needSize,
         }
     }
 
+    kvtest_profile::DetailFrame allocationFrame(
+        kvtest_profile::AllocationDetailStage(kvtest_profile::Stage::D_DS_ALLOC_ALLOCATOR_TOTAL, needSize),
+        kvtest_profile::Stage::D_DS_ALLOC_ALLOCATOR_QUOTA, needSize);
     Status incrementRc = IncrementMemoryUsage(needSize, serviceType, cacheType);
     if (incrementRc.GetCode() == StatusCode::K_OUT_OF_MEMORY) {
         incrementRc.AppendMsg("reason=logical_size_limit_reached");
     }
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(incrementRc, "ADD failed");
     std::shared_ptr<ArenaGroup> arenaGroup;
+    allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_ALLOCATOR_ARENA_LOOKUP);
     Status rc = arenaManager_->GetOrCreateArenaGroup({ tenantId, cacheType }, GetMaxMemoryLimit(cacheType), arenaGroup);
     uint64_t realSize;
     if (rc.IsOk()) {
         RETURN_RUNTIME_ERROR_IF_NULL(arenaGroup);
+        allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_ALLOCATOR_ARENA_ALLOCATE);
         rc = arenaGroup->AllocateMemory(needSize, populate, realSize, pointer, fd, offset, mmapSize, numaId,
                                         serviceType);
     }
+    allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_ALLOCATOR_VALIDATE);
     auto stats = GetResourcePoolByType(serviceType, cacheType);
     if (rc.IsError()) {
         stats->SubUsage(needSize);
@@ -417,7 +424,9 @@ Status Allocator::AllocateMemory(const std::string &tenantId, uint64_t needSize,
 
     CHECK_FAIL_RETURN_STATUS_PRINT_ERROR(arenaGroup->GetMemoryUsage() != 0, K_RUNTIME_ERROR,
                                          "Memory is allocated, but statistics are not growing");
+    allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_ALLOCATOR_CANCEL_EXPIRY);
     arenaManager_->CancelExpiredTenantTimer({ tenantId, cacheType });
+    allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_ALLOCATOR_STATS);
 
     // Still counting tenant's arena so we can know the total stats of memory usage
     (void)noRefPageCount_.fetch_add(1, std::memory_order_relaxed);

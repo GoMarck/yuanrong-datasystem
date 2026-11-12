@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include "datasystem/common/shared_memory/arena.h"
 
 #include <algorithm>
@@ -114,6 +115,9 @@ Status ArenaGroup::AllocateMemory(uint64_t size, bool populate, uint64_t &realSi
 Status ArenaGroup::AllocateMemory(uint64_t size, bool populate, uint64_t &realSize, void *&pointer, int &fd,
                                   ptrdiff_t &offset, uint64_t &mmapSize, uint8_t &numaId, ServiceType type)
 {
+    kvtest_profile::DetailFrame allocationFrame(
+        kvtest_profile::AllocationDetailStage(kvtest_profile::Stage::D_DS_ALLOC_ARENA_TOTAL, size),
+        kvtest_profile::Stage::D_DS_ALLOC_ARENA_PREPARE, size);
     CHECK_FAIL_RETURN_STATUS(!destroyed_.load(), StatusCode::K_RUNTIME_ERROR, "ArenaGroup destroyed");
     CHECK_FAIL_RETURN_STATUS(!arenas_.empty(), StatusCode::K_RUNTIME_ERROR, "arenas_ is empty");
 
@@ -127,13 +131,15 @@ Status ArenaGroup::AllocateMemory(uint64_t size, bool populate, uint64_t &realSi
 
     auto index = nextId_.fetch_add(1) % arenas_.size();
 
-    auto func = [&index, this](bool populate, uint64_t &size, void *&pointer, int &fd, ptrdiff_t &offset,
+    auto func = [&index, &allocationFrame, this](bool populate, uint64_t &size, void *&pointer, int &fd, ptrdiff_t &offset,
                                uint64_t &mmapSize) {
         bool freshExtentUnavailable = false;
         RETURN_IF_NOT_OK(AllocateMemoryImpl(true, populate, size, index, pointer, freshExtentUnavailable));
+        allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_ARENA_MAP);
         return arenas_[index]->GetAllocInfo(pointer, fd, offset, mmapSize);
     };
     realSize = size;
+    allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_ARENA_ALLOCATE);
     Status status = func(populate, realSize, pointer, fd, offset, mmapSize);
     if (status.IsError()) {
         (void)memoryUsage_.fetch_sub(size, std::memory_order_relaxed);
@@ -149,14 +155,20 @@ Status ArenaGroup::AllocateMemory(uint64_t size, bool populate, uint64_t &realSi
         return status;
     }
 
+    allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_ARENA_RECORD_LOCK);
     {
         std::lock_guard<SharedMutex> l(allocatedMutex_);
+        allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_ARENA_RECORD_INSERT);
         allocatedTable_.emplace(pointer, AllocRecord{ size, realSize, index });
     }
+    allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_ARENA_USAGE);
     auto arena = arenas_[index];
     arena->AddRealMemoryUsage(realSize);
     (void)realMemoryUsage_.fetch_add(realSize, std::memory_order_relaxed);
+    allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_ARENA_NUMA);
     QueryAllocNumaId(arena, pointer, numaId);
+    allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_ARENA_LOG);
+
     VLOG(1) << "[Allocator] Arena " << arena->GetArenaId() << " allocate require size: " << size
             << ", real size: " << realSize << ", offset: " << offset;
     if (FLAGS_enable_perf_trace_log) {
@@ -168,10 +180,18 @@ Status ArenaGroup::AllocateMemory(uint64_t size, bool populate, uint64_t &realSi
 
 void ArenaGroup::QueryAllocNumaId(const std::shared_ptr<Arena> &arena, void *pointer, uint8_t &numaId)
 {
+    kvtest_profile::DetailFrame allocationFrame(
+        kvtest_profile::AllocationDetailStage(kvtest_profile::Stage::D_DS_ALLOC_NUMA_TOTAL,
+                                              kvtest_profile::AllocationDetailBytes()),
+        kvtest_profile::Stage::D_DS_ALLOC_NUMA_QUERY);
     if (NeedRegisterWholeArena()) {
         Status queryRc = arena->QueryNumaId(pointer, numaId);
+        allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_NUMA_WARNING);
         if (queryRc.IsError()) {
-            LOG(WARNING) << "QueryNumaId failed for pointer " << pointer << ": " << queryRc.ToString();
+            if (kvtest_profile::AllocationNumaExperiment() == 0) {
+                LOG(WARNING) << "QueryNumaId failed for pointer " << pointer << ": " << queryRc.ToString();
+            }
+            allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_NUMA_RESULT);
             numaId = std::numeric_limits<uint8_t>::max();
         }
     } else {
@@ -1156,6 +1176,10 @@ Status Arena::BuildNumaRangeTable()
 Status Arena::QueryNumaId(void *ptr, uint8_t &numaId) const
 {
     CHECK_FAIL_RETURN_STATUS(ptr != nullptr, K_INVALID, "Input pointer is null");
+    if (numaRanges_.empty() && kvtest_profile::AllocationNumaExperiment() == 2) {
+        numaId = std::numeric_limits<uint8_t>::max();
+        return Status::OK();
+    }
     CHECK_FAIL_RETURN_STATUS(!numaRanges_.empty(), K_NOT_FOUND, "NUMA range table is empty");
     auto addr = reinterpret_cast<uintptr_t>(ptr);
     auto it = numaRanges_.upper_bound(addr);

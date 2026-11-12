@@ -188,13 +188,19 @@ public:
     Status Allocate(uint64_t requiredSize, UbReceiveBuffer &buffer) override
     {
         buffer = UbReceiveBuffer{};
+        kvtest_profile::DetailFrame allocationFrame(
+            kvtest_profile::AllocationDetailStage(kvtest_profile::Stage::D_DS_ALLOC_PROVIDER_TOTAL, requiredSize),
+            kvtest_profile::Stage::D_DS_ALLOC_PROVIDER_INSTANCE, requiredSize);
 #ifdef USE_URMA
         RETURN_IF_NOT_OK(GetLocalTransportInstanceId(buffer.transportInstanceId));
+        allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_PROVIDER_HANDLE);
         std::shared_ptr<UrmaManager::BufferHandle> handle;
         RETURN_IF_NOT_OK(UrmaManager::Instance().GetMemoryBufferHandle(handle, requiredSize));
         CHECK_FAIL_RETURN_STATUS(handle != nullptr, K_RUNTIME_ERROR, "UB receive buffer handle is null");
+        allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_PROVIDER_INFO);
         RETURN_IF_NOT_OK(
             UrmaManager::Instance().GetMemoryBufferInfo(handle, buffer.data, buffer.size, buffer.remoteAddr));
+        allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_PROVIDER_OWNER);
         buffer.owner = std::make_shared<UbReceiveBufferOwner>(std::move(handle));
         return Status::OK();
 #else

@@ -19,6 +19,7 @@
  * Support allocate and free shared memory.
  */
 
+#include "datasystem/common/metrics/benchmark_profile.h"
 #include "datasystem/common/shared_memory/shm_unit.h"
 
 #include <utility>
@@ -126,10 +127,15 @@ Status ShmUnit::FreeMemory()
 Status ShmUnit::AllocateMemory(const std::string &tenantId, uint64_t needSize, bool populate, ServiceType serviceType,
                                memory::CacheType cacheType)
 {
+    kvtest_profile::DetailFrame allocationFrame(
+        kvtest_profile::AllocationDetailStage(kvtest_profile::Stage::D_DS_ALLOC_SHM_TOTAL, needSize),
+        kvtest_profile::Stage::D_DS_ALLOC_SHM_PREPARE, needSize);
     serviceType_ = serviceType;
     cacheType_ = cacheType;
+    allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_SHM_ALLOCATE);
     RETURN_IF_NOT_OK(datasystem::memory::Allocator::Instance()->AllocateMemory(
         tenantId, needSize, populate, pointer, fd, offset, mmapSize, numaId, serviceType_, cacheType_));
+    allocationFrame.Next(kvtest_profile::Stage::D_DS_ALLOC_SHM_RESULT);
     size = needSize;
     tenantId_ = tenantId;
     VLOG(1) << "[ShmUnit] AllocateMemory, Tenant: " << (tenantId.empty() ? "Default" : tenantId)
