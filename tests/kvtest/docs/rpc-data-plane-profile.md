@@ -337,3 +337,5 @@ Generation 6 additionally records `ds.detail.rpc.server.adapter.*` for plain, se
 保持原KVTEST开关，另设`KVTEST_ALLOC_DETAIL_BYTES=10485760`仅抽样指定大小的分配（0或未设关闭），新增`ds.alloc.detail.*`记录provider、handle、ShmUnit、Allocator、ArenaGroup、jemalloc和NUMA查询。NUMA子帧不按大小筛选，覆盖进程所有分配；Get归因以按大小筛选的Arena NUMA阶段为准。各子帧独立抽样，禁止直接相减成严格预算。
 
 仅用于进程级诊断的`KVTEST_ALLOC_NUMA_EXPERIMENT`要求`KVTEST_STAGE_PROFILE=1`：未设或`normal`保持原逻辑；`no_warning`仅跳过NUMA查询失败WARNING；`skip_empty`使空NUMA表直接返回INVALID_NUMA_ID且成功，避免重复构造Status，非空表照常查询。显式记录实验模式，不作为生产优化或公平基线。移除变量恢复原行为。必须对照`KVTEST_ALLOC_DETAIL_BYTES=0`评估细打点扰动；接收容量、监控、调度、日志级别及SHM/UB比例不变。
+
+`python3 tests/kvtest/tools/ub_numa_mapping_probe.py`在Linux目标上用4MB独立映射复现mock的MAP_FIXED替换：先触页并查询NUMA，替换为新memfd后查询，再触页查询。同时输出mincore驻留页数；它只验证初始化失败的触发机制，不计入API时延或模拟传输性能。
