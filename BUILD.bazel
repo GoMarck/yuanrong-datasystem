@@ -7,6 +7,7 @@ load("@local_ascend//:ascend_config.bzl", "ASCEND_HIXL_PLUGIN_TARGETS")
 load("@rules_cc//cc:defs.bzl", "cc_shared_library")
 load("//bazel:cann_dependency_audit.bzl", "cann_dependency_audit")
 load("//bazel:optional_copy_file.bzl", "optional_copy_file")
+load("//bazel:packaged_shared_libraries.bzl", "packaged_shared_libraries")
 
 licenses(["notice"])
 
@@ -381,13 +382,17 @@ copy_file(
     ],
 )
 
-copy_file(
+packaged_shared_libraries(
     name = "libjemalloc_shared_file",
-    src = select({
-        ":enable_jemalloc_prof": "@jemalloc_kvc//:prof/libjemalloc.so.2",
-        "//conditions:default": "@jemalloc_kvc//:shared/libjemalloc.so.2",
+    srcs = select({
+        ":enable_jemalloc_prof": ["@jemalloc_kvc//:prof/libjemalloc.so.2"],
+        "//conditions:default": ["@jemalloc_kvc//:shared/libjemalloc.so.2"],
     }),
     out = "yr/datasystem/lib/libjemalloc.so.2",
+    strip_symbols = select({
+        ":retain_symbols": False,
+        "//conditions:default": True,
+    }),
 )
 
 copy_file(
@@ -437,10 +442,14 @@ copy_file(
 )
 
 # --- Worker shared library ---
-copy_file(
+packaged_shared_libraries(
     name = "libdatasystem_worker_shared_file",
-    src = "//src/datasystem/worker:datasystem_worker_shared",
+    srcs = ["//src/datasystem/worker:datasystem_worker_shared"],
     out = "yr/datasystem/lib/libdatasystem_worker.so",
+    strip_symbols = select({
+        ":retain_symbols": False,
+        "//conditions:default": True,
+    }),
     visibility = [
         "//bazel:__pkg__",
     ],
@@ -464,10 +473,14 @@ cann_dependency_audit(
 )
 
 # --- Coordinator shared library ---
-copy_file(
+packaged_shared_libraries(
     name = "libdatasystem_coordinator_shared_file",
-    src = "//src/datasystem/coordinator:datasystem_coordinator_shared",
+    srcs = ["//src/datasystem/coordinator:datasystem_coordinator_shared"],
     out = "yr/datasystem/lib/libdatasystem_coordinator.so",
+    strip_symbols = select({
+        ":retain_symbols": False,
+        "//conditions:default": True,
+    }),
     visibility = [
         "//bazel:__pkg__",
     ],
@@ -585,11 +598,18 @@ copy_file(
     ],
 )
 
-# URMA shared libraries are now shipped via @local_urma//:urma_libs directly
-# (urma_pkg_repo.bzl places them at yr/datasystem/lib/, matching the wheel's
-# package layout, so py_wheel picks them up via _path_inside_wheel with no
-# genrule/static-outs relay). Any .so.N variant the package ships is included
-# automatically — no enumeration, future-proof against URMA SONAME bumps.
+packaged_shared_libraries(
+    name = "urma_shared_files",
+    srcs = select({
+        ":enable_urma": ["@local_urma//:urma_libs"],
+        "//conditions:default": [],
+    }),
+    strip_symbols = select({
+        ":retain_symbols": False,
+        "//conditions:default": True,
+    }),
+    visibility = ["//bazel:__pkg__"],
+)
 
 copy_file(
     name = "libdatasystem_sym_file",

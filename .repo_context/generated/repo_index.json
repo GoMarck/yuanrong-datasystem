@@ -1,6 +1,6 @@
 {
   "repo_root": ".",
-  "generated_at_utc": "2026-09-07T12:27:44+00:00",
+  "generated_at_utc": "2026-11-12T13:16:26+00:00",
   "root_files": [
     "README.md",
     "build.sh",
@@ -346,6 +346,8 @@
         "  - BUILD.bazel",
         "  - jemalloc_build_config_test.sh",
         "  - jemalloc_profile_config_test.cpp",
+        "  - package_strip_fixture.c",
+        "  - packaged_shared_libraries_test.sh",
         "  - worker_jemalloc_link_test.sh",
         "- benchmark/",
         "  - hetero_h2d_d2h_benchmark.py",

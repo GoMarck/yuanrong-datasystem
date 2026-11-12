@@ -1,4 +1,54 @@
+load("//bazel:packaged_shared_libraries.bzl", "packaged_shared_libraries")
+
 package(default_visibility = ["//visibility:public"])
+
+genrule(
+    name = "package_strip_fixture",
+    srcs = ["package_strip_fixture.c"],
+    outs = [
+        "fixture/libpackage_strip_fixture.so",
+        "fixture/libpackage_strip_fixture.so.1",
+    ],
+    cmd = """
+cc -g -fPIC -shared -Wl,-soname,libpackage_strip_fixture.so.1 $(location package_strip_fixture.c) -o $(location fixture/libpackage_strip_fixture.so.1)
+ln -s libpackage_strip_fixture.so.1 $(location fixture/libpackage_strip_fixture.so)
+""",
+    tags = ["manual"],
+)
+
+packaged_shared_libraries(
+    name = "packaged_strip_fixture",
+    srcs = [":package_strip_fixture"],
+    out_dir = "packaged",
+    strip_symbols = select({
+        "//:retain_symbols": False,
+        "//conditions:default": True,
+    }),
+    tags = ["manual"],
+)
+
+packaged_shared_libraries(
+    name = "packaged_empty_fixture",
+    srcs = [],
+    tags = ["manual"],
+)
+
+sh_test(
+    name = "packaged_shared_libraries_test",
+    srcs = ["packaged_shared_libraries_test.sh"],
+    args = select({
+        "//:retain_symbols": ["retained"],
+        "//conditions:default": ["stripped"],
+    }) + [
+        "$(location :fixture/libpackage_strip_fixture.so.1)",
+        "$(locations :packaged_strip_fixture)",
+    ],
+    data = [
+        ":fixture/libpackage_strip_fixture.so.1",
+        ":packaged_strip_fixture",
+        ":packaged_empty_fixture",
+    ],
+)
 
 sh_test(
     name = "jemalloc_build_config_test",

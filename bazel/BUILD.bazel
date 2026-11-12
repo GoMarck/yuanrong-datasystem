@@ -67,10 +67,7 @@ datasystem_sdk_tree(
     libworker = "//:libdatasystem_worker_shared_file",
     libcoordinator = "//:libdatasystem_coordinator_shared_file",
     hixl_plugins = ASCEND_HIXL_PLUGIN_TARGETS,
-    urma_libs = select({
-        "//:enable_urma": ["@local_urma//:urma_libs"],
-        "//conditions:default": [],
-    }),
+    urma_libs = ["//:urma_shared_files"],
 )
 
 datasystem_cmake_config(
@@ -201,11 +198,9 @@ py_wheel(
         "//:hixl_plugin_file",
         "//:jemalloc_build_config",
         "//:libjemalloc_shared_file",
+        "//:urma_shared_files",
         "//:readme_file",
         "//:version_file",
         "//:worker_config_file",
-    ] + select({
-        "//:enable_urma": ["@local_urma//:urma_libs"],
-        "//conditions:default": [],
-    }),
+    ],
 )

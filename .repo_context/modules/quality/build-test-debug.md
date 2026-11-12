@@ -108,6 +108,17 @@ Common labels:
 
 ## Debug And Safety-Relevant Build Facts
 
+- Bazel package inputs for worker/coordinator shared libraries, jemalloc, and URMA use
+  `bazel/packaged_shared_libraries.bzl` to run `objcopy --strip-all` on package copies. Original build artifacts
+  are unchanged. Root `BUILD.bazel` selects byte-preserving copies with `retain_symbols`, including
+  `build.sh -s off` and jemalloc profiling (`-x on`). Existing client/Python strip rules and symbol sidecars remain
+  in place. The same packaged worker/coordinator and URMA outputs feed the wheel and C++ SDK.
+- The helper preserves every supplied URMA `.so`/versioned `.so.*` basename and accepts an empty file set for
+  builds without URMA. It does not change plugin packaging or CMake behavior.
+- Regression: `bazel test //tests/bazel:packaged_shared_libraries_test` checks debug/symbol section removal,
+  smaller output size, SONAME preservation, library loading, versioned library aliases, and unmodified originals.
+  Run again with `--config=retain_symbols` and `--config=jeprof` to check byte-preserving packaging.
+
 Backed by `CMakeLists.txt`:
 
 - warnings are treated as errors with `-Werror`;
