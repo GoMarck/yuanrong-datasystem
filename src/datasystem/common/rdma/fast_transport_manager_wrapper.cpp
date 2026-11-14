@@ -292,9 +292,10 @@ void GetSegmentInfoFromShmUnit(std::shared_ptr<ShmUnit> shmUnit, uint64_t memory
 }
 
 Status FillRemoteH2DHostInfoFromShm(const std::string &commId, const std::shared_ptr<ShmUnit> &shmUnit,
-                                    uint64_t metadataSize, bool fillDataInfo, RemoteH2DHostInfoPb &hostInfo,
+                                    uint64_t metadataSize, bool fillDataInfo, RemoteH2DHostInfo &hostInfo,
                                     const RemoteH2DClientDeviceInfoPb *clientDeviceInfo,
-                                    const std::vector<uint64_t> *blobSizes, bool avoidClientDeviceForSameNode)
+                                    const std::vector<uint64_t> *blobSizes, bool avoidClientDeviceForSameNode,
+                                    std::shared_ptr<ThreadPool> communicatorThreadPool, int32_t preparedDeviceId)
 {
     (void)commId;
     (void)shmUnit;
@@ -304,27 +305,32 @@ Status FillRemoteH2DHostInfoFromShm(const std::string &commId, const std::shared
     (void)clientDeviceInfo;
     (void)blobSizes;
     (void)avoidClientDeviceForSameNode;
+    (void)communicatorThreadPool;
+    (void)preparedDeviceId;
 #ifdef USE_NPU
     RETURN_OK_IF_TRUE(commId.empty() || !IsRemoteH2DEnabled());
     RETURN_RUNTIME_ERROR_IF_NULL(shmUnit);
 
     PerfPoint totalPoint(PerfKey::WORKER_RH2D_HOST_INFO_TOTAL);
     PerfPoint stagePoint(PerfKey::WORKER_RH2D_HOST_INFO_DEVICE);
-    int32_t devId = -1;
-    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().GetDevIdForComm(commId, devId, clientDeviceInfo,
-                                                                  avoidClientDeviceForSameNode));
-    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().SetDeviceIdx(devId));
-
-    stagePoint.RecordAndReset(PerfKey::WORKER_RH2D_HOST_INFO_ROOT);
-    auto *rootInfo = hostInfo.mutable_root_info();
-    if (rootInfo->internal().empty()) {
-        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().P2PGetRootInfo(commId, rootInfo, clientDeviceInfo,
-                                                                     avoidClientDeviceForSameNode));
+    auto &manager = RemoteH2DManager::Instance();
+    int32_t devId = preparedDeviceId;
+    if (UsePhysicalFabricArena()) {
+        RETURN_IF_NOT_OK(manager.GetFabricRootInfo(shmUnit->GetHixlEngineIndex(), hostInfo, devId));
+    } else {
+        if (devId < 0) {
+            RETURN_IF_NOT_OK(manager.GetDevIdForComm(commId, devId, clientDeviceInfo, avoidClientDeviceForSameNode));
+            RETURN_IF_NOT_OK(manager.SetDeviceIdx(devId));
+        }
+        stagePoint.RecordAndReset(PerfKey::WORKER_RH2D_HOST_INFO_ROOT);
+        SharedRemoteH2DRootInfoTable roots;
+        RETURN_IF_NOT_OK(manager.P2PGetRootInfo(commId, roots, clientDeviceInfo, avoidClientDeviceForSameNode));
+        RETURN_IF_NOT_OK(hostInfo.SetRootInfo(std::move(roots), 0));
+        stagePoint.RecordAndReset(PerfKey::WORKER_RH2D_HOST_INFO_COMM);
+        std::shared_ptr<RemoteH2DContext> p2pComm;
+        RETURN_IF_NOT_OK(manager.P2PCommInitRootInfo(commId, hostInfo.root_info(), P2P_SENDER, p2pComm, devId,
+                                                    std::move(communicatorThreadPool)));
     }
-
-    stagePoint.RecordAndReset(PerfKey::WORKER_RH2D_HOST_INFO_COMM);
-    std::shared_ptr<RemoteH2DContext> p2pComm;
-    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().P2PCommInitRootInfo(commId, *rootInfo, P2P_SENDER, p2pComm, devId));
 
     stagePoint.RecordAndReset(PerfKey::WORKER_RH2D_HOST_INFO_DATA);
     const uint64_t localObjectAddress = reinterpret_cast<uint64_t>(shmUnit->GetPointer());
@@ -334,6 +340,7 @@ Status FillRemoteH2DHostInfoFromShm(const std::string &commId, const std::shared
     const uint64_t objectOffsetInSegment = localObjectAddress - localSegAddress;
     const uint64_t segDataOffset = objectOffsetInSegment + metadataSize;
     uint64_t dataOffset = 0;
+    CHECK_FAIL_RETURN_STATUS(metadataSize <= shmUnit->GetSize(), K_INVALID, "Remote H2D metadata exceeds allocation");
     uint64_t dataSize = shmUnit->GetSize() - metadataSize;
     if (fillDataInfo) {
         auto *dataInfoPb = hostInfo.mutable_data_info();
@@ -346,6 +353,7 @@ Status FillRemoteH2DHostInfoFromShm(const std::string &commId, const std::shared
         dataOffset = hostInfo.data_info().offset();
         dataSize = 0;
         for (const auto size : hostInfo.data_info().sizes()) {
+            CHECK_FAIL_RETURN_STATUS(size <= UINT64_MAX - dataSize, K_INVALID, "Remote H2D data size overflow");
             dataSize += size;
         }
     }

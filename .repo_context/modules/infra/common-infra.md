@@ -104,6 +104,13 @@ Detailed follow-up docs now exist for:
     `MEM_HOST`, while local/remote H2D and local D2H use HIXL READ/WRITE with payload-only blob metadata.
     Worker startup rejects legacy SHM queues, metadata headers, and pipeline H2D in this mode.
     Multiple FabricMem arenas divide the configured total capacity and require 1 GiB alignment per arena.
+    `remote_h2d_hccs_fabric_mem_multi_engine` is a worker startup-only opt-in (default false). Enabled workers
+    initialize one engine per configured device and register each arena only on its allocation device's engine;
+    disabled workers register every arena on the first configured device's single engine.
+    `MemMmap::GetHixlEngineIndex` follows the actual allocation through Arena/Allocator into ShmUnit and its
+    ShmOwner slices. This worker-local index is not an ACL device id or a response root-table index.
+    FabricMem workers expose immutable per-engine roots without per-client communicator initialization.
+    Registrations and metadata preparation share the transport lifecycle lease; teardown takes it exclusively.
     `fabricmem_physical_memory_usage` records eager backing separately from allocation/eviction accounting.
     See `docs/source_zh_cn/best_practices/best_practices_for_rh2d.md` for dependencies and configuration.
     Hardware ST cases in `tests/st/device/dev_object_hetero_rh2d_test.cpp` are explicitly disabled by default;

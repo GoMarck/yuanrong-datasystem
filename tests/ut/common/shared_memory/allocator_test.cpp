@@ -815,6 +815,43 @@ TEST_F(AllocatorTest, TestReuseArena)
     ASSERT_EQ(allocator->GetArenaManager()->GetArenaCounts(), 0ul);
 }
 
+TEST_F(AllocatorTest, HixlEngineIndexFollowsAllocationAndOwnerSlices)
+{
+    constexpr uint64_t poolSize = 8 * 1024 * 1024;
+    constexpr uint64_t ownerSize = 1024;
+    constexpr uint64_t sliceSize = 128;
+    constexpr int32_t firstEngine = 3;
+    constexpr int32_t secondEngine = 7;
+    const auto oldArenaCount = FLAGS_arena_per_tenant;
+    Raii restore([oldArenaCount] {
+        inject::Clear("MemMmap.Initialize.hixlEngineIndex");
+        FLAGS_arena_per_tenant = oldArenaCount;
+    });
+    FLAGS_arena_per_tenant = 1;
+    DS_ASSERT_OK(Init(AllocatorConfig(poolSize)));
+    DS_ASSERT_OK(inject::Set("MemMmap.Initialize.hixlEngineIndex", FormatString("call(%d)", firstEngine)));
+    auto owner = std::make_shared<ShmOwner>();
+    DS_ASSERT_OK(owner->AllocateMemory("engine-index-first", ownerSize, false));
+    EXPECT_EQ(owner->GetHixlEngineIndex(), firstEngine);
+    ShmUnit slice;
+    EXPECT_EQ(slice.GetHixlEngineIndex(), -1);
+    DS_ASSERT_OK(owner->DistributeMemory(sliceSize, slice));
+    EXPECT_EQ(slice.GetHixlEngineIndex(), firstEngine);
+
+    DS_ASSERT_OK(inject::Set("MemMmap.Initialize.hixlEngineIndex", FormatString("call(%d)", secondEngine)));
+    ShmUnit other;
+    DS_ASSERT_OK(other.AllocateMemory("engine-index-second", ownerSize, false));
+    EXPECT_EQ(other.GetHixlEngineIndex(), secondEngine);
+    EXPECT_NE(owner->GetFd(), other.GetFd());
+    EXPECT_EQ(slice.GetHixlEngineIndex(), firstEngine);
+    DS_ASSERT_OK(slice.FreeMemory());
+    EXPECT_EQ(slice.GetHixlEngineIndex(), -1);
+    EXPECT_EQ(slice.GetPointer(), nullptr);
+    DS_ASSERT_OK(slice.FreeMemory());
+    DS_ASSERT_OK(other.FreeMemory());
+    EXPECT_EQ(other.GetHixlEngineIndex(), -1);
+}
+
 TEST_F(AllocatorTest, UbTransportCreatesEqualArenasAndAllocatesRoundRobin)
 {
     const uint32_t oldArenaNum = FLAGS_ub_transport_arena_num;

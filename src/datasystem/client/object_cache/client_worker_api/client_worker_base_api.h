@@ -90,10 +90,10 @@ protected:
                         DeviceObjectMetaPb *metaPb);
 
     bool CheckUseTransferForMultiCreateRsp(const MultiCreateRspPb &rsp, bool skipCheckExistence) const;
-    void FillCreateParamsFromMultiCreateRsp(const MultiCreateRspPb &rsp, bool skipCheckExistence,
+    Status FillCreateParamsFromMultiCreateRsp(const MultiCreateRspPb &rsp, bool skipCheckExistence,
                                             std::vector<MultiCreateParam> &createParams,
                                             const std::vector<bool> &exists);
-    void PostMultiCreate(bool skipCheckExistence, const MultiCreateRspPb &rsp,
+    Status PostMultiCreate(bool skipCheckExistence, const MultiCreateRspPb &rsp,
                          std::vector<MultiCreateParam> &createParams, bool &useShmTransfer, PerfPoint &point,
                          uint32_t &version, std::vector<bool> &exists);
 

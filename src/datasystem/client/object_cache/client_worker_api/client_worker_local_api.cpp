@@ -622,7 +622,7 @@ Status ClientWorkerLocalApi::MultiCreate(bool skipCheckExistence, std::vector<Mu
         exists.assign(rsp.exists().begin(), rsp.exists().end());
     }
     PerfPoint point(PerfKey::CLIENT_MULTI_CREATE_FILL_PARAM);
-    PostMultiCreate(skipCheckExistence, rsp, createParams, useShmTransfer, point, version, exists);
+    RETURN_IF_NOT_OK(PostMultiCreate(skipCheckExistence, rsp, createParams, useShmTransfer, point, version, exists));
     return Status::OK();
 }
 

@@ -18,11 +18,11 @@ openYuanrong datasystem 支持 RH2D over P2P-Transfer RoCE（RDMA over Converged
 
 1. 同一个 RH2D 通信链路两端必须使用相同的 `remote_h2d_link_type`；HIXL 场景的 buffer-pool 参数、`HCCL_INTRA_ROCE_ENABLE` 和 FabricMem 开关等内存模式配置也应保持一致。
 2. 链路类型是进程级配置，必须在 Worker 启动前或 Client 第一次 RH2D 操作前设置，运行期间不能动态切换。
-3. Client 进程仅使用一个 NPU device id。Worker 可以配置多个 device id，并按 Client 连接轮询分配。
+3. Client 进程仅使用一个 NPU device id。Worker 可以配置多个 device id；FabricMem 按对象内存所属 engine 返回 endpoint，其他 HIXL 模式按 Client communicator 固定选择 engine，原有 P2P-Transfer 后端按连接分配设备。
 4. HCCS 场景要求构建产物包含 HIXL 支持，且使用的 `cann_hixl` 需支持 `comm_resource_config.listen_port`。构建时未发现 HIXL 头文件、`libcann_hixl.so` 或 `libmetadef.so`，将无法使用 `HCCS` 链路。
 5. HCCS 使用 Worker 地址以及 Client 所连接本地 Worker 的地址作为 HIXL endpoint IP。请配置 HCCS 环境中可达的实际 IP，避免使用 `127.0.0.1` 或 `0.0.0.0`。
 6. HIXL 在未设置 `HCCL_INTRA_ROCE_ENABLE` 时由平台选择默认协议：Atlas A2 使用 RoCE，Atlas A3 使用 HCCS；设置为 `1` 时 HIXL 使用 RoCE 链路。`remote_h2d_hccs_buffer_pool`/`DS_RH2D_HCCS_BUFFER_POOL` 为 `0:0` 时使用 RoCE direct，配置正数值时使用 RoCE buffer-pool relay；设置 `remote_h2d_hccs_enable_fabric_mem`/`DS_RH2D_HCCS_ENABLE_FABRIC_MEM` 时进入 FabricMem。buffer-pool relay、RoCE direct 和 FabricMem 三种模式应按进程启动前配置固定下来，不要混用；buffer-pool 参数仅在未启用 FabricMem 时生效。
-7. HCCS 默认在单个进程内执行 HIXL `TransferSync()`；FabricMem 默认会以 4 路并发切分单个请求内的 TransferSync，可通过 `DS_HIXL_TRANSFER_SYNC_PARALLELISM` 调整。若一次 Get 命中多个远端来源，可通过 `DS_HIXL_REMOTE_GROUP_PARALLELISM` 并发处理不同来源 group；其余 HCCS 场景需要提高并发度时建议使用多个 Client 进程。
+7. HIXL 默认使用 `TransferSync()`。FabricMem 通过 `DS_HIXL_TRANSFER_SYNC_CHUNK_COUNT` 控制每个任务的对象数（默认 1），通过 `DS_HIXL_TRANSFER_SYNC_THREAD_NUM` 控制共享同步线程池大小（默认 4）。Get 的多个远端 endpoint 分组受 `DS_HIXL_REMOTE_GROUP_PARALLELISM` 限制；增加 worker engine 数量不等于所有 engine 同时满载。
 8. FabricMem 依赖 CANN HIXL/ADXL 头文件提供 `OPTION_ENABLE_USE_FABRIC_MEM`、`AdxlEngine::MallocMem` 和 `AdxlEngine::FreeMem` 等接口，并依赖 `libllm_datadist.so` 提供 ADXL 实现。构建环境缺少这些接口或库时仍可使用普通 HCCS buffer-pool 模式，但运行时不能启用 FabricMem。
 
 ## Client 无本地 Worker 的 Pipeline H2D
@@ -231,11 +231,12 @@ Worker 参数说明：
 | `etcd_address` | - | ETCD 集群访问地址列表，多个 `IP:Port` 使用逗号分隔 |
 | `arena_per_tenant` | - | 不应超过系统内存资源限制，避免初始化失败，初始建议值为 `1`。FabricMem 模式下会按 `remote_h2d_device_ids` 的数量自动调整 memory arena 数量 |
 | `shared_memory_size_mb` | `1024` | Worker 可用于缓存数据的共享内存上限，单位为 MB；RH2D 场景推荐值为 `51200`，普通场景可使用默认值。FabricMem 模式下单个 arena 大小必须 1GB 对齐；多 arena 模式还必须能被 arena 数量整除 |
-| `remote_h2d_device_ids` | 空 | 非空时启用 Worker RH2D；多个 device id 使用逗号分隔，例如：`0,1,2,3,4,5,6,7`。FabricMem 模式下只使用第一个 device id 创建 HIXL engine，完整列表用于轮询分配多个 FabricMem arena；A3 多 NUMA 测试建议优先选择分布在不同 NUMA 位置的 device id，例如 `0,4,8,12` |
+| `remote_h2d_device_ids` | 空 | 非空时启用 Worker RH2D；多个有效且不重复的 device id 使用逗号分隔，例如 `0,4,8,12`。FabricMem 始终按完整列表放置 arena；默认只在第一个设备创建 engine，开启多 engine 后每个设备创建一个 engine |
 | `remote_h2d_link_type` | `ROCE` | 支持 `ROCE`、`HCCS`，区分大小写 |
 | `remote_h2d_hccs_buffer_pool` | `0:0` | HIXL buffer-pool 参数，格式为两个正整数 `<count>:<size>`；默认关闭，配置正数值（例如 `4:8`）时启用 |
 | `hixl_cs_enable` | `False` | 是否由 Worker 通过 HIXL `LocalCommRes` version 1.3 启用 HIXL CS；仅 HCCS 链路使用。启用后支持同节点跨进程、同 NPU 卡建链，并利用 CS 针对小数据传输的专项优化降低通信时延 |
 | `remote_h2d_hccs_enable_fabric_mem` | `false` | HIXL FabricMem 模式开关，仅 HCCS 使用。设置为 `true` 时不使用 HIXL buffer-pool relay |
+| `remote_h2d_hccs_fabric_mem_multi_engine` | `false` | Worker 启动开关，要求 HCCS、FabricMem 和非空设备列表。开启后每块 arena 只注册到其所属设备的 engine，对象读写使用该 engine 的 endpoint。关闭时所有 arena 注册到唯一 engine。不能动态切换 |
 | `sc_regular_socket_num` | `16` | FabricMem 模式必须设置为 `0`，关闭 StreamCache regular ShmCircularQueue |
 | `sc_stream_socket_num` | `16` | FabricMem 模式必须设置为 `0`，关闭 StreamCache stream ShmCircularQueue |
 | `oc_metadata_header` | `true` | FabricMem 模式必须设置为 `false`，避免在 FabricMem arena 内写入传统 mmap metadata header |

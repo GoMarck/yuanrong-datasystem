@@ -2,6 +2,15 @@
 
 ## Routed FabricMem device writes
 
+- RH2D Create/Get responses carry a shared `root_infos` table; each `host_info` has a presence-checked
+  `root_info_index`. `common/rdma/remote_h2d_host_info.h` owns runtime table sharing, validation and encoding.
+  SDK buffers retain only the immutable root table plus their own segment/layout, not the whole RPC response.
+  Worker-worker batch partitions build separate tables and remap indexes at merge; forwarding to clients
+  deduplicates endpoints again without expanding roots per object. Missing/out-of-range indexes are rejected.
+  This is a wire/API change with no old-version compatibility; rebuild and deploy SDK and workers together.
+  FabricMem uses the ShmUnit's owner engine; other HIXL modes retain communicator affinity.
+  The client still has one local engine and connects each remote endpoint for both READ and WRITE.
+  Coverage: `remote_h2d_host_info_test` (CMake and Bazel), plus fake-plugin owner-registration tests.
 - `DS_HIXL_SKIP_GLOBAL_RESOURCE_CONFIG=1` omits the entire GlobalResourceConfig option during HiXL engine
   initialization (client and Worker); default false preserves current behavior. This skips both device listen-port
   and FabricMem capacity/AICPU/task-stream overrides, leaving native defaults. Other options are unchanged.
@@ -574,8 +583,9 @@ handler. Clearing the Router handler synchronously excludes later callback acces
     RH2D global flags; serial admission and Connect honor the remaining request deadline. With RH2D enabled,
     preregistration shares the RH2D transport and its communicator UUID with D2RH. SDK processes still bind one
     device each; DS_HIXL_D2RH_LOCAL_IP also supplies the RH2D local endpoint in this mode. MultiCreate carries
-    `hixl_comm_id` and validates the Worker's echo before DMA. The Worker hashes that UUID onto its startup device
-    list for both directions; D2RH-only clients generate a UUID per private engine. SDK and Workers must upgrade
+    `hixl_comm_id` and validates the Worker's echo before DMA. Outside FabricMem, the Worker hashes that UUID onto
+    its startup device list for both directions; FabricMem resolves the object's ShmUnit owner engine instead.
+    D2RH-only clients generate a UUID per private engine. SDK and Workers must upgrade
     together. The SDK engine explicitly sets `GlobalResourceConfig`'s `comm_resource_config.listen_port`
     to its allocated endpoint port, avoiding a shared
     default device-NIC port 16666; Worker engines retain device-NIC port 26666. HeteroClient pybind registration runs after KVClient

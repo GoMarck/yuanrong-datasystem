@@ -33,6 +33,7 @@ set(COMMON_REF_DEPEND_LIBS
         common_util
         common_metrics
         common_shared_memory
+        posix_protos
         )
 
 add_library(common_buffer STATIC ${COMMON_BUFFER_SRCS})

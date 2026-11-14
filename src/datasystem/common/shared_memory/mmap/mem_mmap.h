@@ -68,6 +68,8 @@ public:
 
     uint64_t GetPhysicalBackingSize() const override;
 
+    int32_t GetHixlEngineIndex() const override { return hixlEngineIndex_; }
+
 private:
     bool InRange(void *pointer, ptrdiff_t &offset);
     Status InitializeFabricMemory(uint64_t size);
@@ -78,6 +80,7 @@ private:
     bool fabricMemoryInitialized_ = false;
     bool fabricUnregistered_ = false;
     int32_t fabricMemoryDeviceId_ = -1;
+    int32_t hixlEngineIndex_ = -1;
 };
 }  // namespace memory
 }  // namespace datasystem

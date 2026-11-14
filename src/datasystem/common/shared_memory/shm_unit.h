@@ -117,8 +117,12 @@ public:
      */
     uint64_t GetMigratableSize() const;
 
+    int32_t GetHixlEngineIndex() const { return hixlEngineIndex_; }
+
 private:
     friend class ShmOwner;
+
+    int32_t hixlEngineIndex_ = -1;
 
     ServiceType serviceType_ = ServiceType::OBJECT;
 

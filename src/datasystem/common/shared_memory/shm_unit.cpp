@@ -103,6 +103,8 @@ Status ShmUnit::FreeMemory()
     // If shm owner exists, the memory will be freed together at shmOwner destruction.
     if (shmOwner_) {
         shmOwner_.reset();
+        pointer = nullptr;
+        hixlEngineIndex_ = -1;
         return Status::OK();
     }
     // This call will set pointer to nullptr on success.
@@ -120,7 +122,9 @@ Status ShmUnit::FreeMemory()
             LOG(WARNING) << FormatString("[ShmId %s] memset failed, error code: %d.", id, ret);
         }
     }
-    return datasystem::memory::Allocator::Instance()->FreeMemory(tenantId_, pointer, serviceType_, cacheType_);
+    RETURN_IF_NOT_OK(datasystem::memory::Allocator::Instance()->FreeMemory(tenantId_, pointer, serviceType_, cacheType_));
+    hixlEngineIndex_ = -1;
+    return Status::OK();
 }
 
 Status ShmUnit::AllocateMemory(const std::string &tenantId, uint64_t needSize, bool populate, ServiceType serviceType,
@@ -129,7 +133,7 @@ Status ShmUnit::AllocateMemory(const std::string &tenantId, uint64_t needSize, b
     serviceType_ = serviceType;
     cacheType_ = cacheType;
     RETURN_IF_NOT_OK(datasystem::memory::Allocator::Instance()->AllocateMemory(
-        tenantId, needSize, populate, pointer, fd, offset, mmapSize, numaId, serviceType_, cacheType_));
+        tenantId, needSize, populate, pointer, fd, offset, mmapSize, numaId, serviceType_, cacheType_, &hixlEngineIndex_));
     size = needSize;
     tenantId_ = tenantId;
     VLOG(1) << "[ShmUnit] AllocateMemory, Tenant: " << (tenantId.empty() ? "Default" : tenantId)
@@ -156,6 +160,7 @@ Status ShmOwner::DistributeMemory(uint64_t shmSize, ShmUnit &shmUnit)
     shmUnit.needHardFree_ = needHardFree_;
     shmUnit.shmOwner_ = shared_from_this();
     shmUnit.numaId = numaId;
+    shmUnit.hixlEngineIndex_ = hixlEngineIndex_;
     return Status::OK();
 }
 

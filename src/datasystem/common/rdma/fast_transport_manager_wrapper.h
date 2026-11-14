@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "datasystem/common/rdma/rdma_util.h"
+#include "datasystem/common/rdma/remote_h2d_host_info.h"
 #include "datasystem/common/object_cache/ub_port_health.h"
 #include "datasystem/common/rdma/urma_send_lane.h"
 #ifdef USE_URMA
@@ -173,13 +174,17 @@ void GetSegmentInfoFromShmUnit(std::shared_ptr<ShmUnit> shmUnit, uint64_t memory
  * @param[in] avoidClientDeviceForSameNode Whether to avoid selecting the client's physical device. This should only be
  *            set for direct same-node client-worker HIXL transfer. Cross-worker flows may still run on the same
  *            physical node in unsupported one-node-multi-worker deployments, but are treated as cross-node here.
+ * @param[in] communicatorThreadPool Optional asynchronous P2P-Transfer connection executor.
+ * @param[in] preparedDeviceId Nonnegative only if already bound on this thread; ignored for FabricMem.
  * @return Status of the call.
  */
 Status FillRemoteH2DHostInfoFromShm(const std::string &commId, const std::shared_ptr<ShmUnit> &shmUnit,
-                                    uint64_t metadataSize, bool fillDataInfo, RemoteH2DHostInfoPb &hostInfo,
+                                    uint64_t metadataSize, bool fillDataInfo, RemoteH2DHostInfo &hostInfo,
                                     const RemoteH2DClientDeviceInfoPb *clientDeviceInfo = nullptr,
                                     const std::vector<uint64_t> *blobSizes = nullptr,
-                                    bool avoidClientDeviceForSameNode = false);
+                                    bool avoidClientDeviceForSameNode = false,
+                                    std::shared_ptr<ThreadPool> communicatorThreadPool = nullptr,
+                                    int32_t preparedDeviceId = -1);
 
 /**
  * @brief Trigger UrmaManager logic to import segment and write payload.

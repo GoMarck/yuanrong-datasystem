@@ -262,6 +262,34 @@ owner 却只计少量字节。因此成功链路的批次也必须在此预算�
 再按实际设备停止访问保证重启目标 Worker，不要仅关闭开关就认为内存已经可安全回收。
 # Routed FabricMem 写入
 
+## FabricMem 多 engine
+
+Worker 使用 `--remote_h2d_hccs_fabric_mem_multi_engine true` 开启每设备一个 engine，默认 false。
+保持既有 HCCS/FabricMem 前提配置，使用非连续设备列表（例如 `0,4`），并保证每 arena 容量 1 GiB 对齐。
+SDK 不增加对应开关，仍使用一个本地 engine，按返回的对象归属连接不同 worker endpoint。
+协议使用共享 root info 表及对象索引，不提供新旧版本兼容；SDK 和所有 worker 必须同步更新。
+绑定 worker 即使未开启多 engine，也必须能解析并转发数据 worker 返回的多 endpoint 表。
+开关只在启动时生效，退回单 engine 需要关闭开关并重启 worker；有未确认传输时，先按上文的
+隔离和停止访问流程处理，不能靠切换开关安全释放内存。
+
+硬件验证至少覆盖同 worker 两 engine、绑定 worker 转发、不同 client 读同一批对象，以及绑定/路由写。
+每批使用足够多的新对象命中不同 arena，检查实际 endpoint 与 worker engine 的对应关系并逐字节读回。
+重复释放和重新分配，覆盖 arena 分配回退、worker 关闭及传输失败；不能只用吞吐增长作为正确性证据。
+默认开关关闭的单 engine、HIXL 非 FabricMem、原有 P2P-Transfer 也需回归。
+
+无需 NPU 的用例：
+
+```bash
+bazel test //tests/ut/common/rdma:remote_h2d_host_info_test \
+  //tests/ut/common/rdma:hixl_transport_plugin_test --test_output=errors
+```
+
+前者覆盖表共享、索引校验、分区合并及协议往返；后者用 fake plugin 检查独立 engine、单 owner 注册和注销。
+这些用例不证明真实 HiXL 对一个 client engine 连接多个 worker engine 的支持或 DMA 故障停止语义。
+`AllocatorTest.HixlEngineIndexFollowsAllocationAndOwnerSlices` 检查索引随实际分配及切片传播。
+`WorkerOcServiceImplTest.RemoteHostInfoTracksShmLifetime`（需 `--config=hetero`）检查换内存后缓存失效，
+同时保留已发起 Get 的旧快照；`BatchGetRemapsRootIndexesAcrossPartitions` 检查生产端分区合并。
+
 ## FabricMem 传输并发配置
 
 ### 跳过 GlobalResourceConfig

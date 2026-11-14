@@ -1,8 +1,50 @@
 """Unit tests for the CANN-independent HIXL plugin ABI."""
 
 load("//bazel:build_defs.bzl", "ds_cc_test")
+load("@local_ascend//:ascend_config.bzl", "ASCEND_HIXL_SRCS")
 
 package(default_visibility = ["//visibility:public"])
+
+ds_cc_test(
+    name = "remote_h2d_host_info_test",
+    srcs = ["remote_h2d_host_info_test.cpp"],
+    deps = [
+        "//src/datasystem/common/log:common_log",
+        "//src/datasystem/common/rdma:remote_h2d_host_info",
+        "//src/datasystem/protos:worker_object_cc_proto",
+    ],
+)
+
+ds_cc_test(
+    name = "hixl_transport_plugin_test",
+    srcs = ["hixl_transport_plugin_test.cpp"] + ([] if ASCEND_HIXL_SRCS else [
+        "hixl_plugin_sha256.h",
+        "//src/datasystem/common/rdma/npu:hixl_transport.cpp",
+        "//src/datasystem/common/rdma/npu:hixl_plugin_loader.cpp",
+    ]),
+    copts = ["-iquote", "tests/ut/common/rdma"],
+    linkopts = ["-ldl"],
+    deps = [
+        "//src/datasystem/common/ak_sk:common_ak_sk",
+        "//src/datasystem/common/device/ascend:acl_device_manager",
+        "//src/datasystem/common/flags:ds_flags",
+        "//src/datasystem/common/inject:common_inject",
+        "//src/datasystem/common/log:common_log",
+        "//src/datasystem/common/metrics:common_metrics",
+        "//src/datasystem/common/perf:common_perf",
+        "//src/datasystem/common/rdma:common_rdma",
+        "//src/datasystem/common/rdma/npu:hixl_transport_header",
+        "//src/datasystem/common/rdma/npu:remote_h2d_manager",
+        "//src/datasystem/common/rpc:api_deadline",
+        "//src/datasystem/common/rpc:timeout_duration",
+        "//src/datasystem/common/util:file_util",
+        "//src/datasystem/common/util:net_util",
+        "//src/datasystem/common/util:raii",
+        "//src/datasystem/common/util:thread_pool",
+        "//src/datasystem/common/util:validator",
+        "@securec",
+    ],
+)
 
 ds_cc_test(
     name = "urma_log_test",

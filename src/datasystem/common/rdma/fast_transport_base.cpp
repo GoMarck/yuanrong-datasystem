@@ -206,6 +206,19 @@ Status UnregisterHostMemory(void *segAddress)
     return Status::OK();
 }
 
+Status RegisterFabricHostMemory(void *segAddress, uint64_t segSize, int32_t allocationDeviceId, int32_t &engineIndex)
+{
+#ifdef USE_NPU
+    return RemoteH2DManager::Instance().RegisterFabricHostMemory(segAddress, segSize, allocationDeviceId, engineIndex);
+#else
+    (void)segAddress;
+    (void)segSize;
+    (void)allocationDeviceId;
+    (void)engineIndex;
+    RETURN_STATUS(K_NOT_SUPPORTED, "FabricMem requires an NPU build");
+#endif
+}
+
 bool IsFastTransportEnabled()
 {
     if (IsUrmaEnabled()) {

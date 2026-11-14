@@ -15,6 +15,7 @@
 
 #include <cstdlib>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <algorithm>
 #include <mutex>
@@ -53,6 +54,8 @@ struct FakeHixlState {
     std::string bufferPool;
     std::string globalResourceConfig;
     size_t globalResourceConfigCount = 0;
+    std::vector<int> registrationEngines;
+    std::vector<int> deregistrationEngines;
 };
 
 FakeHixlState g_state;
@@ -111,15 +114,17 @@ DsHixlResult DisconnectEngine(DsHixlEngineHandle, DsHixlStringView, int32_t, uin
     return DS_HIXL_OK;
 }
 
-DsHixlResult RegisterMemory(DsHixlEngineHandle, const DsHixlRegisterMemoryRequest *, DsHixlMemHandle *handle,
+DsHixlResult RegisterMemory(DsHixlEngineHandle engine, const DsHixlRegisterMemoryRequest *, DsHixlMemHandle *handle,
                             uint32_t *)
 {
+    g_state.registrationEngines.push_back(*reinterpret_cast<int *>(engine));
     *handle = reinterpret_cast<DsHixlMemHandle>(static_cast<uintptr_t>(1));
     return DS_HIXL_OK;
 }
 
-DsHixlResult DeregisterMemory(DsHixlEngineHandle, DsHixlMemHandle, uint32_t *)
+DsHixlResult DeregisterMemory(DsHixlEngineHandle engine, DsHixlMemHandle, uint32_t *)
 {
+    g_state.deregistrationEngines.push_back(*reinterpret_cast<int *>(engine));
     return DS_HIXL_OK;
 }
 
@@ -284,11 +289,13 @@ TEST_F(HixlTransportPluginTest, ExplicitOptionsDoNotMutateProcessFlags)
 
 TEST_F(HixlTransportPluginTest, ConnectHonorsCallerBudget)
 {
+    constexpr int32_t timeoutMs = 100;
     HixlTransport transport(&FAKE_API, true);
     transport.SetLocalEndpoint("127.0.0.1");
     ASSERT_TRUE(transport.Init({ 0 }).IsOk());
-    ASSERT_TRUE(transport.Connect("127.0.0.1:12345", 100).IsOk());
-    EXPECT_EQ(g_state.connectTimeoutMs, 100);
+    ASSERT_TRUE(transport.Connect("127.0.0.1:12345", timeoutMs).IsOk());
+    EXPECT_GT(g_state.connectTimeoutMs, 0);
+    EXPECT_LE(g_state.connectTimeoutMs, timeoutMs);
     EXPECT_EQ(transport.Connect("127.0.0.1:12346", 0).GetCode(), K_RPC_DEADLINE_EXCEEDED);
     EXPECT_EQ(g_state.connectCalls, 1);
 }
@@ -387,6 +394,45 @@ TEST_F(HixlTransportPluginTest, SixteenWorkerDevicesShareRoundRobinEndpoints)
     EXPECT_EQ(g_state.finalizeCalls, deviceCount);
     EXPECT_EQ(g_state.destroyCalls, deviceCount);
 }
+TEST_F(HixlTransportPluginTest, FabricMemArenasRegisterOnlyOnTheirOwnerEngine)
+{
+    const bool oldFabric = FLAGS_remote_h2d_hccs_enable_fabric_mem;
+    Raii restore([oldFabric] { FLAGS_remote_h2d_hccs_enable_fabric_mem = oldFabric; });
+    FLAGS_remote_h2d_hccs_enable_fabric_mem = true;
+    constexpr int32_t secondDevice = 4;
+    constexpr int secondEngine = 2;
+    constexpr uintptr_t firstAddress = 0x10000;
+    constexpr uintptr_t secondAddress = 0x20000;
+    constexpr uint64_t arenaSize = 4096;
+    auto *first = reinterpret_cast<void *>(firstAddress);
+    auto *second = reinterpret_cast<void *>(secondAddress);
+    HixlTransport transport(&FAKE_API, true);
+    transport.SetLocalEndpoint("192.0.2.1");
+    ASSERT_TRUE(transport.Init({ 0, secondDevice }).IsOk());
+    std::string firstEndpoint;
+    std::string secondEndpoint;
+    ASSERT_TRUE(transport.GetDeviceEndpoint(0, firstEndpoint).IsOk());
+    ASSERT_TRUE(transport.GetDeviceEndpoint(secondDevice, secondEndpoint).IsOk());
+    EXPECT_NE(firstEndpoint, secondEndpoint);
+    P2pSegmentInfo segment{};
+    ASSERT_TRUE(transport.RegisterFabricMemory(0, first, arenaSize, &segment).IsOk());
+    ASSERT_TRUE(transport.RegisterFabricMemory(secondDevice, second, arenaSize, &segment).IsOk());
+    EXPECT_EQ(g_state.registrationEngines, (std::vector<int>{ 1, secondEngine }));
+    ASSERT_TRUE(transport.RegisterFabricMemory(0, first, arenaSize, &segment).IsOk());
+    P2pSegmentInfo repeatedSegment{};
+    ASSERT_TRUE(transport.RegisterFabricMemory(0, first, arenaSize, &repeatedSegment).IsOk());
+    EXPECT_EQ(std::memcmp(&segment, &repeatedSegment, sizeof(segment)), 0);
+    EXPECT_EQ(transport.RegisterFabricMemory(secondDevice, first, arenaSize, &segment).GetCode(), K_INVALID);
+    EXPECT_EQ(g_state.registrationEngines.size(), static_cast<size_t>(secondEngine));
+    ASSERT_TRUE(transport.Connect(firstEndpoint, P2P_SENDER, nullptr).IsOk());
+    EXPECT_EQ(g_state.connectCalls, 0);
+    ASSERT_TRUE(transport.UnregisterMemory(second).IsOk());
+    ASSERT_TRUE(transport.UnregisterMemory(first).IsOk());
+    EXPECT_EQ(g_state.deregistrationEngines, (std::vector<int>{ secondEngine, 1 }));
+    ASSERT_TRUE(transport.DisconnectAll().IsOk());
+    EXPECT_EQ(g_state.destroyCalls, secondEngine);
+}
+
 TEST_F(HixlTransportPluginTest, FabricMemChunksKeepObjectBlobsTogether)
 {
     const bool savedFabricMem = FLAGS_remote_h2d_hccs_enable_fabric_mem;

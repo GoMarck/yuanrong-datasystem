@@ -10428,7 +10428,7 @@ TEST(ObjectBufferTest, MemoryCopyRejectsMissingBackingMemory)
     info->dataSize = 4;
     info->metadataSize = 0;
     info->pointer = nullptr;
-    info->remoteHostInfo = std::make_shared<RemoteH2DHostInfoPb>();
+    info->remoteHostInfo = std::make_shared<RemoteH2DHostInfo>();
 
     std::shared_ptr<ObjectBuffer> buffer;
     ASSERT_TRUE(ObjectBufferInternal::Create(info, buffer).IsOk());

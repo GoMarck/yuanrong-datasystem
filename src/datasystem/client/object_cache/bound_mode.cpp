@@ -880,7 +880,7 @@ Status BoundMode::MmapShmUnit(int64_t fd, uint64_t mmapSize, ptrdiff_t offset,
 std::shared_ptr<ObjectBufferInfo> BoundMode::MakeObjectBufferInfo(
     const std::string &objectKey, uint8_t *pointer, uint64_t size, uint64_t metaSize, const FullParam &param,
     bool isSeal, uint32_t version, const ShmKey &shmId, const std::shared_ptr<RpcMessage> &payloadPointer,
-    std::shared_ptr<client::IMmapTableEntry> mmapEntry, std::shared_ptr<RemoteH2DHostInfoPb> remoteHostInfo)
+    std::shared_ptr<client::IMmapTableEntry> mmapEntry, std::shared_ptr<RemoteH2DHostInfo> remoteHostInfo)
 {
     auto bufferInfo = std::make_shared<ObjectBufferInfo>();
     bufferInfo->objectKey = objectKey;
@@ -1390,6 +1390,10 @@ Status BoundMode::GetObjectBuffers(const std::vector<std::string> &objectsNeedTo
                                    const std::unordered_map<std::string,
                                               std::shared_ptr<ObjectBufferInfo>> &ubBufferInfos)
 {
+    SharedRemoteH2DRootInfoTable roots;
+    if (!rsp.root_infos().empty()) {
+        roots = std::make_shared<RemoteH2DRootInfoTable>(rsp.root_infos());
+    }
     size_t i = 0;
     size_t j = 0;
     size_t shmCount = static_cast<size_t>(rsp.objects().size());
@@ -1415,7 +1419,7 @@ Status BoundMode::GetObjectBuffers(const std::vector<std::string> &objectsNeedTo
                 failedObjectKey.emplace_back(objectKey);
                 continue;
             }
-            status = SetShmObjectBufferWithMetric(objectKey, info, version, readParams, index, bufferPtr);
+            status = SetShmObjectBufferWithMetric(objectKey, info, version, readParams, index, bufferPtr, roots);
         } else if (isNoShm) {
             status = SetNoShmObjectBufferWithMetric(objectKey, rsp.payload_info(j), version, payloads,
                                                     ubBufferInfos, bufferPtr);
@@ -1436,11 +1440,12 @@ Status BoundMode::GetObjectBuffers(const std::vector<std::string> &objectsNeedTo
 Status BoundMode::SetShmObjectBufferWithMetric(const std::string &objectKey,
                                                const GetRspPb::ObjectInfoPb &info, uint32_t version,
                                                const std::vector<ReadParam> &readParams, size_t index,
-                                               std::shared_ptr<Buffer> &bufferPtr)
+                                               std::shared_ptr<Buffer> &bufferPtr,
+                                               const SharedRemoteH2DRootInfoTable &roots)
 {
     // Special case for Remote H2D scenario.
     if (info.has_host_info()) {
-        return SetRemoteHostObjectBuffer(objectKey, info, version, bufferPtr);
+        return SetRemoteHostObjectBuffer(objectKey, info, version, bufferPtr, roots);
     }
     if (readParams.empty()) {
         METRIC_ADD(metrics::KvMetricId::CLIENT_GET_SHM_READ_TOTAL_BYTES,
@@ -1475,14 +1480,15 @@ Status BoundMode::SetNoShmObjectBufferWithMetric(const std::string &objectKey,
 }
 
 Status BoundMode::SetRemoteHostObjectBuffer(const std::string &objectKey, const GetRspPb::ObjectInfoPb &info,
-                                            uint32_t version, std::shared_ptr<Buffer> &buffer)
+                                            uint32_t version, std::shared_ptr<Buffer> &buffer,
+                                            const SharedRemoteH2DRootInfoTable &roots)
 {
     FullParam param;
     param.writeMode = WriteMode(info.write_mode());
     param.consistencyType = ConsistencyType(info.consistency_type());
     param.cacheType = CacheType(info.cache_type());
-    auto hostInfo = std::make_shared<RemoteH2DHostInfoPb>();
-    *hostInfo = std::move(info.host_info());
+    auto hostInfo = std::make_shared<RemoteH2DHostInfo>();
+    RETURN_IF_NOT_OK(hostInfo->Decode(info.host_info(), roots));
     auto bufferInfo = MakeObjectBufferInfo(objectKey, nullptr, info.data_size(), info.metadata_size(), param,
                                            info.is_seal(), version, {}, nullptr, nullptr, hostInfo);
     return Buffer::CreateBuffer(bufferInfo, host_.getSelf(), buffer);

@@ -149,7 +149,8 @@ void WorkerOcServiceCreateImpl::ReleaseReservations(const std::vector<ShmKey> &r
 
 Status WorkerOcServiceCreateImpl::FillCreateResponse(const ClientKey &clientId,
                                                      const std::shared_ptr<ShmUnit> &shmUnit,
-                                                     size_t metadataSize, CreateRspPb &resp, bool hixlWrite,
+                                                     size_t metadataSize, CreateRspPb &resp,
+                                                     RemoteH2DRootInfoBuilder &roots, bool hixlWrite,
                                                      const std::string &commId,
                                                      const RemoteH2DClientDeviceInfoPb *clientDeviceInfo)
 {
@@ -157,6 +158,7 @@ Status WorkerOcServiceCreateImpl::FillCreateResponse(const ClientKey &clientId,
     (void)hixlWrite;
     (void)commId;
     (void)clientDeviceInfo;
+    (void)roots;
     resp.set_store_fd(shmUnit->GetFd());
     resp.set_mmap_size(shmUnit->GetMmapSize());
     resp.set_offset(shmUnit->GetOffset());
@@ -165,8 +167,10 @@ Status WorkerOcServiceCreateImpl::FillCreateResponse(const ClientKey &clientId,
 
 #ifdef BUILD_HETERO
     if (IsRemoteH2DEnabled() && !commId.empty()) {
-        RETURN_IF_NOT_OK(FillRemoteH2DHostInfoFromShm(commId, shmUnit, metadataSize, false, *resp.mutable_host_info(),
+        RemoteH2DHostInfo hostInfo;
+        RETURN_IF_NOT_OK(FillRemoteH2DHostInfoFromShm(commId, shmUnit, metadataSize, false, hostInfo,
                                                       clientDeviceInfo, nullptr, true));
+        RETURN_IF_NOT_OK(roots.Encode(hostInfo, *resp.mutable_host_info()));
     }
 #endif
 
@@ -277,7 +281,9 @@ Status WorkerOcServiceCreateImpl::CreateImpl(const std::string &tenantId, const 
         "worker allocate memory failed");
 
     shmUnit->id = shmId;
-    RETURN_IF_NOT_OK(FillCreateResponse(clientId, shmUnit, metadataSize, resp, false, commId, clientDeviceInfo));
+    RemoteH2DRootInfoBuilder roots;
+    RETURN_IF_NOT_OK(FillCreateResponse(clientId, shmUnit, metadataSize, resp, roots, false, commId, clientDeviceInfo));
+    roots.MoveTo(*resp.mutable_root_infos());
     bool reclaimable = !ClientShmEnabled(clientId);
     INJECT_POINT_NO_RETURN("worker.Create.reclaimable", [&reclaimable](bool value) { reclaimable = value; });
 #ifdef WITH_TESTS
@@ -351,6 +357,7 @@ Status WorkerOcServiceCreateImpl::FillMultiCreateShmUnits(
     const RemoteH2DClientDeviceInfoPb *clientDeviceInfo)
 {
     const auto metadataSize = GetMetadataSize();
+    RemoteH2DRootInfoBuilder roots;
     for (int index = 0; index < req.object_key_size(); ++index) {
         const auto objectKey = TenantAuthManager::ConstructNamespaceUriWithTenantId(tenantId, req.object_key(index));
         if (IsMultiCreateObjectExisting(req, index, objectKey, resp)) {
@@ -368,7 +375,7 @@ Status WorkerOcServiceCreateImpl::FillMultiCreateShmUnits(
             shmUnits[index]->id = requestShmIds[index];
         }
         point.RecordAndReset(PerfKey::WORKER_MULTI_CREATE_FILL_SUB_RSP);
-        results[index] = FillCreateResponse(clientId, shmUnits[index], metadataSize, subRsp[index],
+        results[index] = FillCreateResponse(clientId, shmUnits[index], metadataSize, subRsp[index], roots,
                                             req.hixl_layouts_size() > 0, commId, clientDeviceInfo);
         if (results[index].IsOk() && req.hixl_layouts_size() > 0 && !req.hixl_fabric_mem()) {
             results[index] = FillHixlTarget(req, index, shmUnits[index], subRsp[index]);
@@ -377,6 +384,7 @@ Status WorkerOcServiceCreateImpl::FillMultiCreateShmUnits(
             shmUnits[index].reset();
         }
     }
+    roots.MoveTo(*resp.mutable_root_infos());
     return Status::OK();
 }
 

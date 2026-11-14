@@ -104,7 +104,7 @@ static constexpr uint32_t K_RH2D_INFO_LOG_EVERY_N = 100;
 
 namespace {
 #ifdef USE_NPU
-bool HasRemoteH2DDataInfo(const std::shared_ptr<RemoteH2DHostInfoPb> &hostInfo)
+bool HasRemoteH2DDataInfo(const std::shared_ptr<RemoteH2DHostInfo> &hostInfo)
 {
     return hostInfo != nullptr && hostInfo->has_data_info() && hostInfo->data_info().sizes_size() > 0;
 }
@@ -132,7 +132,7 @@ Status PrepareLocalGetRemoteH2DHostInfo(const ReadKey &readKey, SafeObjType &saf
         }
     }
 
-    auto hostInfo = std::make_shared<RemoteH2DHostInfoPb>();
+    auto hostInfo = std::make_shared<RemoteH2DHostInfo>();
     auto blobSizes = safeObj->GetBlobSizes();
     // Local Get serves the directly connected client-worker path. Treat it as same-node for HIXL device selection.
     RETURN_IF_NOT_OK(FillRemoteH2DHostInfoFromShm(clientCommId, shmUnit, safeObj->GetMetadataSize(),
@@ -1733,8 +1733,10 @@ Status WorkerOcServiceGetImpl::PullObjectDataFromRemoteWorker(const std::string 
         && rspPb.has_host_info()) {
         // Return the remote host segment info back to client, so client can import the segment.
         // Also the root info for communicator connection, and the offsets for get scattered.
-        auto hostInfo = std::make_shared<RemoteH2DHostInfoPb>();
-        *hostInfo = std::move(rspPb.host_info());
+        auto roots = std::make_shared<RemoteH2DRootInfoTable>();
+        roots->Swap(rspPb.mutable_root_infos());
+        auto hostInfo = std::make_shared<RemoteH2DHostInfo>();
+        RETURN_IF_NOT_OK(hostInfo->Decode(rspPb.host_info(), std::move(roots)));
 #ifdef USE_NPU
         objectKV.GetObjEntry()->SetRemoteHostInfo(*objectKV.commId_, hostInfo);
 #endif

@@ -33,6 +33,7 @@
 #include "datasystem/common/device/ascend/acl_device_manager.h"
 #include "datasystem/common/flags/flags.h"
 #include "datasystem/common/rdma/npu/rh2d_transport_strategy.h"
+#include "datasystem/common/rdma/remote_h2d_host_info.h"
 #include "datasystem/common/flags/common_flags.h"
 #include "datasystem/common/util/lock_map.h"
 #include "datasystem/common/util/net_util.h"
@@ -74,9 +75,7 @@ struct RemoteH2DContext {
     std::string remoteEndpoint;
     P2pLink linkType;
 
-    // Local identity for exchange: base64(rootInfo) for RoCE, "IP:Port" for HCCS.
-    // Used by remote peer to establish connection back.
-    std::string localIdentity;
+    SharedRemoteH2DRootInfoTable localRootInfos;
 
     // RoCE only: stream for async operations
     std::shared_ptr<aclrtStream> stream{ nullptr };
@@ -145,15 +144,18 @@ public:
     /**
      * @brief Get the root info for communicator connection.
      * @param[in] key The client uuid for the connection.
-     * @param[out] p2pRootInfo The p2p root info for communicator connection.
+     * @param[out] rootInfos Immutable root table shared by objects on this connection.
      * @param[in] clientDeviceInfo Optional client device information.
      * @param[in] avoidClientDeviceForSameNode Whether to avoid selecting the client's physical device. Set it only for
      *            direct same-node client-worker HIXL transfer.
      * @return Status of the call.
      */
-    Status P2PGetRootInfo(const std::string &key, RemoteH2DRootInfoPb *p2pRootInfo,
+    Status P2PGetRootInfo(const std::string &key, SharedRemoteH2DRootInfoTable &rootInfos,
                           const RemoteH2DClientDeviceInfoPb *clientDeviceInfo = nullptr,
                           bool avoidClientDeviceForSameNode = false);
+
+    Status GetFabricRootInfo(int32_t engineIndex, RemoteH2DHostInfo &hostInfo, int32_t &devId);
+    Status RegisterFabricHostMemory(void *data, uint64_t dataSize, int32_t allocationDeviceId, int32_t &engineIndex);
 
     /**
      * @brief Fill the segment info for device side import purposes.
@@ -330,6 +332,7 @@ private:
     Status GetConnectionIdentityForComm(const std::string &commId, std::string &identity);
     Status InitAclRuntime();
     Status PrepareTransportDeviceIds(std::vector<int32_t> &workerDevIdsForInit);
+    Status InitFabricRootInfos();
     Status StartHeartbeatThread();
     static std::unique_ptr<RH2DTransportStrategy> CreateTransport();
     Status EnsureTransportForCurrentConfig();
@@ -369,6 +372,7 @@ private:
     std::unique_ptr<RemoteSegmentMap> remoteSegmentMap_;
     // Effective worker device ids used by the current transport mode.
     std::vector<int32_t> workerDeviceIds_;
+    SharedRemoteH2DRootInfoTable fabricRootInfos_;
     // Worker logical device id to physical device id. Filled during worker RemoteH2D initialization.
     std::unordered_map<int32_t, int32_t> workerPhysicalDeviceIds_;
     // Worker processes are enabled by remote_h2d_device_ids.

@@ -556,7 +556,7 @@ void WorkerOcServiceGetImpl::UpdateLastBatchError(const Status &status, Status &
 }
 
 Status WorkerOcServiceGetImpl::HandleBatchSubResponse(const GetObjectRemoteRspPb &subResp,
-                                                      const RemoteH2DRootInfoPb &batchRootInfo, ObjectMetaPb *meta,
+                                                      const SharedRemoteH2DRootInfoTable &roots, ObjectMetaPb *meta,
                                                       ReadObjectKV &objectKV, std::vector<RpcMessage> &payloads,
                                                       uint64_t &payloadIndex, bool &tryGetFromElsewhere,
                                                       bool &dataSizeChange)
@@ -587,9 +587,8 @@ Status WorkerOcServiceGetImpl::HandleBatchSubResponse(const GetObjectRemoteRspPb
 
         if (IsRemoteH2DEnabled() && (subResp.data_source() == DataTransferSource::DATA_DELAY_TRANSFER)
             && subResp.has_host_info()) {
-            auto hostInfo = std::make_shared<RemoteH2DHostInfoPb>();
-            *hostInfo = std::move(subResp.host_info());
-            *(hostInfo->mutable_root_info()) = batchRootInfo;
+            auto hostInfo = std::make_shared<RemoteH2DHostInfo>();
+            RETURN_IF_NOT_OK(hostInfo->Decode(subResp.host_info(), roots));
 #ifdef BUILD_HETERO
             objectKV.GetObjEntry()->SetRemoteHostInfo(*objectKV.commId_, hostInfo);
 #endif
@@ -668,6 +667,12 @@ Status WorkerOcServiceGetImpl::ProcessBatchResponse(
     }
     auto config = GetServerLatencyTraceConfig();
     const bool traceEnabled = ShouldCollectLatencyTrace(config);
+    SharedRemoteH2DRootInfoTable roots;
+    if (!rspPb.root_infos().empty()) {
+        auto rootTable = std::make_shared<RemoteH2DRootInfoTable>();
+        rootTable->Swap(rspPb.mutable_root_infos());
+        roots = std::move(rootTable);
+    }
     for (int i = 0; iter != infos.end(); i++) {
         bool isFromL2 = false;
         auto metaIter = iter->queryMeta->mutable_meta();
@@ -690,7 +695,7 @@ Status WorkerOcServiceGetImpl::ProcessBatchResponse(
             if (subResp.has_provider_ub_failure_detail()) {
                 providerUbFailureDetail = &subResp.provider_ub_failure_detail();
             }
-            subRc = HandleBatchSubResponse(subResp, rspPb.root_info(), metaIter, objectKV, payloads, payloadIndex,
+            subRc = HandleBatchSubResponse(subResp, roots, metaIter, objectKV, payloads, payloadIndex,
                                            tryGetFromElsewhere, dataSizeChanged);
             if (subRc.IsOk() && request && subResp.data_source() == DataTransferSource::DATA_ALREADY_TRANSFERRED) {
                 OsXprtPipln::MarkPipelineStep1Ok(request->GetH2DChunkManager(), objectKV.GetObjKey());

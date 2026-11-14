@@ -419,7 +419,7 @@ Status WorkerOcServiceCrudCommonApi::UpdateRequestForSuccess(ReadObjectKV &objec
 #ifdef USE_NPU
             if (IsRemoteH2DEnabled() && !request->GetClientCommUuid().empty()
                 && objectKV.GetObjEntry()->GetShmUnit() != nullptr) {
-                auto hostInfo = std::make_shared<RemoteH2DHostInfoPb>();
+                auto hostInfo = std::make_shared<RemoteH2DHostInfo>();
                 auto blobSizes = objectKV.GetObjEntry()->GetBlobSizes();
                 // This local-hit response goes directly back to the client. Treat it as same-node for HIXL device
                 // selection.

@@ -505,17 +505,18 @@ void ClientWorkerBaseApi::FillDevObjMeta(const std::shared_ptr<DeviceBufferInfo>
     metaPb->set_src_offset(bufferInfo->srcOffset);
 }
 
-void ClientWorkerBaseApi::PostMultiCreate(bool skipCheckExistence, const MultiCreateRspPb &rsp,
+Status ClientWorkerBaseApi::PostMultiCreate(bool skipCheckExistence, const MultiCreateRspPb &rsp,
                                           std::vector<MultiCreateParam> &createParams, bool &useShmTransfer,
                                           PerfPoint &point, uint32_t &version, std::vector<bool> &exists)
 {
     useShmTransfer = CheckUseTransferForMultiCreateRsp(rsp, skipCheckExistence);
     if (!useShmTransfer) {
-        return;
+        return Status::OK();
     }
     point.RecordAndReset(PerfKey::CLIENT_MULTI_CREATE_FILL_PARAM);
-    FillCreateParamsFromMultiCreateRsp(rsp, skipCheckExistence, createParams, exists);
+    RETURN_IF_NOT_OK(FillCreateParamsFromMultiCreateRsp(rsp, skipCheckExistence, createParams, exists));
     version = workerVersion_.load(std::memory_order_relaxed);
+    return Status::OK();
 }
 
 bool ClientWorkerBaseApi::CheckUseTransferForMultiCreateRsp(const MultiCreateRspPb &rsp, bool skipCheckExistence) const
@@ -547,24 +548,32 @@ bool ClientWorkerBaseApi::CheckUseTransferForMultiCreateRsp(const MultiCreateRsp
     return false;
 }
 
-void ClientWorkerBaseApi::FillCreateParamsFromMultiCreateRsp(const MultiCreateRspPb &rsp, bool skipCheckExistence,
+Status ClientWorkerBaseApi::FillCreateParamsFromMultiCreateRsp(const MultiCreateRspPb &rsp, bool skipCheckExistence,
                                                              std::vector<MultiCreateParam> &createParams,
                                                              const std::vector<bool> &exists)
 {
+    CHECK_FAIL_RETURN_STATUS(rsp.results_size() == static_cast<int>(createParams.size()), K_INVALID,
+                             "MultiCreate response count mismatch");
+    CHECK_FAIL_RETURN_STATUS(skipCheckExistence || exists.size() == createParams.size(), K_INVALID,
+                             "MultiCreate existence response count mismatch");
+    SharedRemoteH2DRootInfoTable roots;
+    if (!rsp.root_infos().empty()) {
+        roots = std::make_shared<RemoteH2DRootInfoTable>(rsp.root_infos());
+    }
     for (auto i = 0ul; i < createParams.size(); i++) {
         if (!skipCheckExistence && exists[i]) {
             continue;
         }
         auto &shmBuf = createParams[i].shmBuf;
-        auto subRsp = rsp.results()[i];
+        const auto &subRsp = rsp.results()[i];
         shmBuf->fd = subRsp.store_fd();
         shmBuf->mmapSize = subRsp.mmap_size();
         shmBuf->offset = static_cast<ptrdiff_t>(subRsp.offset());
         shmBuf->id = ShmKey::Intern(subRsp.shm_id());
         createParams[i].metadataSize = subRsp.metadata_size();
         if (subRsp.has_host_info()) {
-            createParams[i].remoteHostInfo = std::make_shared<RemoteH2DHostInfoPb>();
-            createParams[i].remoteHostInfo->CopyFrom(subRsp.host_info());
+            createParams[i].remoteHostInfo = std::make_shared<RemoteH2DHostInfo>();
+            RETURN_IF_NOT_OK(createParams[i].remoteHostInfo->Decode(subRsp.host_info(), roots));
         }
 #ifdef USE_URMA
         if (IsUrmaEnabled() && subRsp.has_urma_info()) {
@@ -573,6 +582,7 @@ void ClientWorkerBaseApi::FillCreateParamsFromMultiCreateRsp(const MultiCreateRs
         }
 #endif
     }
+    return Status::OK();
 }
 }  // namespace object_cache
 }  // namespace datasystem

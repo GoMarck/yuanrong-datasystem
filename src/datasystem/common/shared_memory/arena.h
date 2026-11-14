@@ -112,7 +112,7 @@ public:
                           uint64_t &mmapSize, ServiceType type);
 
     Status AllocateMemory(uint64_t size, bool populate, uint64_t &realSize, void *&pointer, int &fd, ptrdiff_t &offset,
-                          uint64_t &mmapSize, uint8_t &numaId, ServiceType type);
+                          uint64_t &mmapSize, uint8_t &numaId, ServiceType type, int32_t *hixlEngineIndex = nullptr);
 
     /**
      * @brief Free memory from shared memory.
@@ -547,6 +547,8 @@ public:
      * @return Status of the call.
      */
     Status GetAllocInfo(void *pointer, int &fd, ptrdiff_t &offset, uint64_t &mmapSize);
+
+    int32_t GetHixlEngineIndex() const { return mmap_->GetHixlEngineIndex(); }
 
     /**
      * @brief Destroy Jemalloc arena.

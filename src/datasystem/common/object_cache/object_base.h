@@ -33,6 +33,7 @@
 #include "datasystem/common/object_cache/object_bitmap.h"
 #include "datasystem/common/object_cache/ireceive_buffer_owner.h"
 #include "datasystem/common/rdma/fast_transport_base.h"
+#include "datasystem/common/rdma/remote_h2d_host_info.h"
 #include "datasystem/common/rpc/rpc_message.h"
 #include "datasystem/common/shared_memory/shm_unit.h"
 #include "datasystem/common/string_intern/string_ref.h"
@@ -45,7 +46,7 @@
 
 namespace datasystem {
 
-using RemoteH2DHostInfoMap = tbb::concurrent_hash_map<std::string, std::shared_ptr<RemoteH2DHostInfoPb>>;
+using RemoteH2DHostInfoMap = tbb::concurrent_hash_map<std::string, std::shared_ptr<RemoteH2DHostInfo>>;
 struct ObjectInterface {
     // The state and config of the object.
     datasystem::StateInfo stateInfo;
@@ -367,7 +368,7 @@ struct ObjectInterface {
 
     #ifdef BUILD_HETERO
     virtual void SetRemoteHostInfo(const std::string &clientCommId,
-                                   const std::shared_ptr<RemoteH2DHostInfoPb> &remoteH2DHostInfo)
+                                   const std::shared_ptr<RemoteH2DHostInfo> &remoteH2DHostInfo)
     {
         (void)clientCommId;
         (void)remoteH2DHostInfo;
@@ -394,7 +395,7 @@ struct ObjectBufferInfo {
     uint32_t version;
     std::shared_ptr<RpcMessage> payloadPointer;
     std::shared_ptr<client::IMmapTableEntry> mmapEntry;
-    std::shared_ptr<RemoteH2DHostInfoPb> remoteHostInfo = nullptr;
+    std::shared_ptr<RemoteH2DHostInfo> remoteHostInfo = nullptr;
     std::vector<uint64_t> blobSizes;
     std::shared_ptr<UrmaRemoteAddrPb> ubUrmaDataInfo = nullptr;
     bool ubDataSentByMemoryCopy = false;

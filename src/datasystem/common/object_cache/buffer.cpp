@@ -467,7 +467,7 @@ Status Buffer::InvalidateBuffer()
     return Status::OK();
 }
 
-RemoteH2DHostInfoPb *Buffer::GetRemoteHostInfo()
+RemoteH2DHostInfo *Buffer::GetRemoteHostInfo()
 {
     return bufferInfo_->remoteHostInfo.get();
 }

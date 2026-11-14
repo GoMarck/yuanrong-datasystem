@@ -150,7 +150,7 @@ public:
     Status AllocateMemory(const std::string &tenantId, uint64_t needSize, bool populate, void *&pointer, int &fd,
                           ptrdiff_t &offset, uint64_t &mmapSize, uint8_t &numaId,
                           ServiceType serviceType = ServiceType::OBJECT,
-                          CacheType cacheType = CacheType::MEMORY);
+                          CacheType cacheType = CacheType::MEMORY, int32_t *hixlEngineIndex = nullptr);
 
     /**
      * @brief Free memory from shared memory.

@@ -72,7 +72,8 @@ private:
     void ReleaseReservations(const std::vector<ShmKey> &reservations);
 
     Status FillCreateResponse(const ClientKey &clientId, const std::shared_ptr<ShmUnit> &shmUnit,
-                              size_t metadataSize, CreateRspPb &resp, bool hixlWrite = false,
+                              size_t metadataSize, CreateRspPb &resp, RemoteH2DRootInfoBuilder &roots,
+                              bool hixlWrite = false,
                               const std::string &commId = "",
                               const RemoteH2DClientDeviceInfoPb *clientDeviceInfo = nullptr);
 

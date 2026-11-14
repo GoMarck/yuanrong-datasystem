@@ -52,7 +52,7 @@ std::function<Status(const std::string &, uint64_t)> WorkerRequestManager::delet
 namespace {
 constexpr uint32_t K_RH2D_WARNING_LOG_EVERY_N = 100;
 
-bool HasRemoteH2DDataInfo(const std::shared_ptr<RemoteH2DHostInfoPb> &hostInfo)
+bool HasRemoteH2DDataInfo(const std::shared_ptr<RemoteH2DHostInfo> &hostInfo)
 {
     return hostInfo != nullptr && hostInfo->has_data_info() && hostInfo->data_info().sizes_size() > 0;
 }
@@ -526,6 +526,7 @@ Status GetRequest::ConstructResponse(uint64_t &totalSize, GetRspPb &resp, std::v
     }
     Status lastRc;
     uint64_t shmBytes = 0;
+    RemoteH2DRootInfoBuilder roots;
 
     for (size_t objectIndex = 0; objectIndex < rawObjectKeys_.size(); objectIndex++) {
         auto &objectKeyUri = rawObjectKeys_[objectIndex];
@@ -540,7 +541,7 @@ Status GetRequest::ConstructResponse(uint64_t &totalSize, GetRspPb &resp, std::v
         const auto &params = objectInfo->params;
         totalSize += params->dataSize;
         rc = AddObjectToResponse(objectKeyUri, *objectInfo, objectIndex, shmEnabled, useUbGet, ubWriteOffset, resp,
-                                 payloads, shmBytes);
+                                 payloads, shmBytes, roots);
         if (rc.IsOk() && shmEnabled
             && !(IsRemoteH2DEnabled() && params->shmUnit == nullptr && params->remoteH2DHostInfo
                  && !params->remoteH2DHostInfo->empty())) {
@@ -571,6 +572,7 @@ Status GetRequest::ConstructResponse(uint64_t &totalSize, GetRspPb &resp, std::v
         METRIC_ADD(metrics::KvMetricId::WORKER_TO_CLIENT_GET_SHM_TOTAL_BYTES, shmBytes);
     }
 
+    roots.MoveTo(*resp.mutable_root_infos());
     VLOG(1) << FormatString("The total size of the currently get is %llu", totalSize);
     return lastRc;
 }
@@ -667,17 +669,22 @@ Status TrackWorkerToClientUrmaFallback(ShmGuard &shmGuard, uint64_t readSize, co
 
 Status GetRequest::AddObjectToResponse(const ObjectKey &objectKeyUri, GetObjInfo &objectInfo, size_t objectIndex,
                                        bool shmEnabled, bool useUbGet, uint64_t &ubWriteOffset, GetRspPb &resp,
-                                       std::vector<RpcMessage> &outPayloads, uint64_t &shmBytes)
+                                       std::vector<RpcMessage> &outPayloads, uint64_t &shmBytes,
+                                       RemoteH2DRootInfoBuilder &roots)
 {
     const auto &params = objectInfo.params;
     if (shmEnabled
         || (IsRemoteH2DEnabled() && objectInfo.params->remoteH2DHostInfo
             && !objectInfo.params->remoteH2DHostInfo->empty())) {
-        GetRspPb::ObjectInfoPb *object = resp.add_objects();
         bool hasRemoteH2DDataInfo = HasRemoteH2DDataInfoForComm(params->remoteH2DHostInfo, clientCommId_);
         CHECK_FAIL_RETURN_STATUS(hasRemoteH2DDataInfo || !UsePhysicalFabricArena(), K_NOT_SUPPORTED,
                                  "FabricMem Get requires HIXL/RH2D host_info support from client.");
-        SetShmObjectInfoPb(objectKeyUri, objectIndex, *params, *object);
+        auto *object = resp.add_objects();
+        auto rc = SetShmObjectInfoPb(objectKeyUri, objectIndex, *params, *object, roots);
+        if (rc.IsError()) {
+            resp.mutable_objects()->RemoveLast();
+            return rc;
+        }
         if (!object->has_host_info()) {
             objectInfo.offsetInfo.AdjustReadSize(params->dataSize);
             shmBytes += objectInfo.offsetInfo.readSize;
@@ -724,8 +731,8 @@ Status GetRequest::AddObjectToResponse(const ObjectKey &objectKeyUri, GetObjInfo
     return Status::OK();
 }
 
-void GetRequest::SetShmObjectInfoPb(const ObjectKey &objectKey, size_t objectIndex, GetObjEntryParams &safeEntry,
-                                    GetRspPb::ObjectInfoPb &info)
+Status GetRequest::SetShmObjectInfoPb(const ObjectKey &objectKey, size_t objectIndex, GetObjEntryParams &safeEntry,
+                                      GetRspPb::ObjectInfoPb &info, RemoteH2DRootInfoBuilder &roots)
 {
     if (enableReturnObjectIndex_) {
         info.set_object_index(objectIndex);
@@ -741,7 +748,7 @@ void GetRequest::SetShmObjectInfoPb(const ObjectKey &objectKey, size_t objectInd
         RemoteH2DHostInfoMap::const_accessor constAccessor;
         if (safeEntry.remoteH2DHostInfo->find(constAccessor, clientCommId_)
             && HasRemoteH2DDataInfo(constAccessor->second)) {
-            *(info.mutable_host_info()) = *(constAccessor->second);
+            RETURN_IF_NOT_OK(roots.Encode(*constAccessor->second, *info.mutable_host_info()));
             useRemoteH2DHostInfo = true;
         } else {
             LOG_EVERY_N(WARNING, K_RH2D_WARNING_LOG_EVERY_N)
@@ -771,6 +778,7 @@ void GetRequest::SetShmObjectInfoPb(const ObjectKey &objectKey, size_t objectInd
     info.set_is_seal(safeEntry.isSealed);
     info.set_write_mode(static_cast<uint32_t>(safeEntry.objectMode.GetWriteMode()));
     info.set_consistency_type(static_cast<uint32_t>(safeEntry.objectMode.GetConsistencyType()));
+    return Status::OK();
 }
 
 void GetRequest::SetNoShmObjectInfoPb(const ObjectKey &, size_t objectIndex, const GetObjInfo &objectInfo,

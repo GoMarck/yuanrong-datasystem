@@ -95,6 +95,7 @@ list(FILTER DS_TEST_UT_SRCS EXCLUDE REGEX .*/worker/data_worker_options_test\.cp
 list(FILTER DS_TEST_UT_SRCS EXCLUDE REGEX .*/test_main\.cpp$)
 list(FILTER DS_TEST_UT_SRCS EXCLUDE REGEX .*/common/rdma/hixl_plugin_api_test\.cpp$)
 list(FILTER DS_TEST_UT_SRCS EXCLUDE REGEX .*/common/rdma/hixl_async_executor_test\.cpp$)
+list(FILTER DS_TEST_UT_SRCS EXCLUDE REGEX .*/common/rdma/remote_h2d_host_info_test\.cpp$)
 list(FILTER DS_TEST_UT_SRCS EXCLUDE REGEX .*/common\\.cpp$)
 list(FILTER DS_TEST_UT_SRCS EXCLUDE REGEX .*/stream_cache/.*)
 list(FILTER DS_TEST_UT_SRCS EXCLUDE REGEX .*/object_cache/.*)
@@ -174,6 +175,11 @@ add_executable(hixl_async_executor_test common/rdma/hixl_async_executor_test.cpp
 target_include_directories(hixl_async_executor_test PRIVATE ${PROJECT_DIR}/src)
 target_link_libraries(hixl_async_executor_test PRIVATE GTest::gtest GTest::gtest_main pthread)
 gtest_discover_tests(hixl_async_executor_test)
+
+add_executable(remote_h2d_host_info_test common/rdma/remote_h2d_host_info_test.cpp)
+target_link_libraries(remote_h2d_host_info_test PRIVATE
+        GTest::gtest GTest::gtest_main common_util common_log posix_protos worker_object_protos)
+gtest_discover_tests(remote_h2d_host_info_test DISCOVERY_MODE PRE_TEST)
 
 add_library(fake_hixl_plugin SHARED common/rdma/fake_hixl_plugin.cpp)
 target_include_directories(fake_hixl_plugin PRIVATE ${PROJECT_DIR}/src)

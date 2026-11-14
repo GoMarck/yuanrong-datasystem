@@ -611,13 +611,14 @@ Status HixlTransport::Init(const std::vector<int32_t> &deviceIds, const Options 
 
     std::map<int32_t, DsHixlEngineHandle> pendingEngines;
     std::map<int32_t, std::string> pendingEndpoints;
-    std::vector<DsHixlEngineHandle> pendingOrder;
+    std::vector<std::pair<int32_t, DsHixlEngineHandle>> pendingOrder;
     pendingOrder.reserve(targetDevIds.size());
     bool needRollback = true;
     Raii rollback([this, &pendingOrder, &needRollback]() {
         if (needRollback) {
             for (auto iter = pendingOrder.rbegin(); iter != pendingOrder.rend(); ++iter) {
-                DestroyEngine(*iter);
+                LOG_IF_ERROR(BindDeviceForEngine(iter->first), "Failed to bind rollback HIXL engine device");
+                DestroyEngine(iter->second);
             }
         }
     });
@@ -628,7 +629,7 @@ Status HixlTransport::Init(const std::vector<int32_t> &deviceIds, const Options 
         std::string endpoint;
         RETURN_IF_NOT_OK(InitializeSingleDevice(devId, effectiveOptions, engine, endpoint));
         // Record ownership before map insertion so allocation failures still destroy this engine.
-        pendingOrder.emplace_back(engine);
+        pendingOrder.emplace_back(devId, engine);
         pendingEngines.emplace(devId, engine);
         pendingEndpoints.emplace(devId, std::move(endpoint));
     }
@@ -947,7 +948,7 @@ Status HixlTransport::RegisterMemory(void *addr, uint64_t size, P2pSegmentInfo *
     CHECK_FAIL_RETURN_STATUS(size > 0, StatusCode::K_INVALID, "HCCS host memory size must be greater than 0");
 
     if (IsHixlFabricMemMode()) {
-        return RegisterFabricMemory(addr, size, segInfo);
+        RETURN_STATUS(K_INVALID, "FabricMem registration requires an explicit owner device");
     }
     return RegisterRoceDirectHostMemory(addr, size);
 }
@@ -957,9 +958,14 @@ Status HixlTransport::FillFabricSegmentIdentity(int32_t devId, const std::shared
 {
     RETURN_RUNTIME_ERROR_IF_NULL(region);
     RETURN_RUNTIME_ERROR_IF_NULL(segInfo);
-    FabricSegmentIdentity identity{ std::hash<std::string>{}(localEndpointById_.at(devId)),
-                                    reinterpret_cast<uint64_t>(region->sourceAddr), region->size, devId };
-    int ret = memcpy_s(segInfo->internal, sizeof(segInfo->internal), &identity, sizeof(identity));
+    FabricSegmentIdentity identity;
+    int ret = memset_s(&identity, sizeof(identity), 0, sizeof(identity));
+    CHECK_FAIL_RETURN_STATUS(ret == EOK, K_RUNTIME_ERROR, "Failed to clear FabricMem identity padding");
+    identity.endpointHash = std::hash<std::string>{}(localEndpointById_.at(devId));
+    identity.address = reinterpret_cast<uint64_t>(region->sourceAddr);
+    identity.size = region->size;
+    identity.devId = devId;
+    ret = memcpy_s(segInfo->internal, sizeof(segInfo->internal), &identity, sizeof(identity));
     CHECK_FAIL_RETURN_STATUS(ret == EOK, StatusCode::K_RUNTIME_ERROR, "Failed to set HCCS FabricMem segment identity");
     return Status::OK();
 }
@@ -980,8 +986,9 @@ Status HixlTransport::EnsureFabricMemoryRegisteredOnDevice(int32_t devId,
 {
     RETURN_RUNTIME_ERROR_IF_NULL(region);
     RETURN_OK_IF_TRUE(region->registrationHandles.count(devId) != 0);
-
-    RETURN_IF_NOT_OK(acl::AclDeviceManager::Instance()->SetDeviceIdx(devId));
+    CHECK_FAIL_RETURN_STATUS(region->registrationHandles.empty(), K_INVALID,
+                             "FabricMem arena is already registered on another engine");
+    RETURN_IF_NOT_OK(BindDeviceForEngine(devId));
     DsHixlMemHandle handle = nullptr;
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
         RegisterHostMemoryOnEngine(devId, region->sourceAddr, region->size, handle),
@@ -991,12 +998,17 @@ Status HixlTransport::EnsureFabricMemoryRegisteredOnDevice(int32_t devId,
     return Status::OK();
 }
 
-Status HixlTransport::RegisterFabricMemory(void *addr, uint64_t size, P2pSegmentInfo *segInfo)
+Status HixlTransport::RegisterFabricMemory(int32_t devId, void *addr, uint64_t size, P2pSegmentInfo *segInfo)
 {
+    std::shared_lock<std::shared_timed_mutex> lifecycleLock(lifecycleMutex_);
+    RETURN_IF_NOT_OK(CheckReadyLocked());
+    CHECK_FAIL_RETURN_STATUS(!isClient_ && IsHixlFabricMemMode(), K_INVALID,
+                             "FabricMem host registration requires a worker FabricMem engine");
+    CHECK_FAIL_RETURN_STATUS(addr != nullptr && size > 0, K_INVALID, "Invalid FabricMem arena");
     CHECK_FAIL_RETURN_STATUS(segInfo != nullptr, StatusCode::K_INVALID,
                              "HCCS FabricMem registration requires segment identity output");
-    int32_t devId = -1;
-    RETURN_IF_NOT_OK(acl::AclDeviceManager::Instance()->GetDeviceIdx(devId));
+    const int clearResult = memset_s(segInfo, sizeof(*segInfo), 0, sizeof(*segInfo));
+    CHECK_FAIL_RETURN_STATUS(clearResult == EOK, K_RUNTIME_ERROR, "Failed to clear FabricMem segment identity");
     CHECK_FAIL_RETURN_STATUS(engines_.find(devId) != engines_.end(), StatusCode::K_RUNTIME_ERROR,
                              "No HCCS engine available for FabricMem registration on devId " + std::to_string(devId));
 
@@ -1006,12 +1018,7 @@ Status HixlTransport::RegisterFabricMemory(void *addr, uint64_t size, P2pSegment
     if (regionIt != fabricMemoryRegions_.end()) {
         CHECK_FAIL_RETURN_STATUS(regionIt->second->size == size, StatusCode::K_INVALID,
                                  "HCCS FabricMem source address is already registered with a different size");
-        bool additionalEngine = regionIt->second->registrationHandles.count(devId) == 0;
         RETURN_IF_NOT_OK(EnsureFabricMemoryRegisteredOnDevice(devId, regionIt->second));
-        if (additionalEngine) {
-            LOG(INFO) << "[HCCS] Registered physical FabricMem source arena on additional engine addr=" << addr
-                      << " size=" << size << " devId=" << devId;
-        }
         return FillFabricSegmentIdentity(devId, regionIt->second, segInfo);
     }
 
@@ -1053,7 +1060,9 @@ Status HixlTransport::RegisterRoceDirectHostMemory(void *addr, uint64_t size)
 
 Status HixlTransport::UnregisterMemory(void *addr)
 {
+    std::unique_lock<std::shared_timed_mutex> lifecycleLock(lifecycleMutex_);
     RETURN_OK_IF_TRUE(isClient_ || addr == nullptr || hixlMemoryMode_ == HixlMemoryMode::BUFFER_POOL);
+    CHECK_FAIL_RETURN_STATUS(!transferFailed_, K_NOT_READY, "FabricMem still owns an uncertain transfer");
 
     if (IsHixlFabricMemMode()) {
         std::lock_guard<std::mutex> lock(fabricMemoryMutex_);
@@ -1067,7 +1076,6 @@ Status HixlTransport::UnregisterMemory(void *addr)
     int32_t devId = -1;
     RETURN_IF_NOT_OK(acl::AclDeviceManager::Instance()->GetDeviceIdx(devId));
 
-    std::unique_lock<std::shared_timed_mutex> lifecycleLock(lifecycleMutex_);
     const uintptr_t hostAddr = reinterpret_cast<uintptr_t>(addr);
     auto registered = std::find_if(registeredHostMemories_.begin(), registeredHostMemories_.end(),
                                    [devId, hostAddr](const RegisteredHostMemory &memory) {
@@ -1087,6 +1095,8 @@ Status HixlTransport::UnregisterMemory(void *addr)
 
 Status HixlTransport::PrepareRemoteMemory(void *addr, uint64_t offset, uint64_t size, uint64_t *remoteAddr)
 {
+    std::shared_lock<std::shared_timed_mutex> lifecycleLock(lifecycleMutex_);
+    RETURN_IF_NOT_OK(CheckReadyLocked());
     CHECK_FAIL_RETURN_STATUS(addr != nullptr && remoteAddr != nullptr, StatusCode::K_INVALID,
                              "Invalid HCCS remote memory arguments");
     if (!IsHixlFabricMemMode()) {

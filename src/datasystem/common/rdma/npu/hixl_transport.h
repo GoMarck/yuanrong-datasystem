@@ -17,7 +17,7 @@
 #ifndef DATASYSTEM_COMMON_RDMA_NPU_HIXL_TRANSPORT_H
 #define DATASYSTEM_COMMON_RDMA_NPU_HIXL_TRANSPORT_H
 
-#include "rh2d_transport_strategy.h"
+#include "datasystem/common/rdma/npu/rh2d_transport_strategy.h"
 
 #include <atomic>
 #include <cstdint>
@@ -65,6 +65,7 @@ public:
     Status Disconnect(const std::string &remoteIdentity) override;
     Status DisconnectAll() override;
     Status RegisterMemory(void *addr, uint64_t size, P2pSegmentInfo *segInfo) override;
+    Status RegisterFabricMemory(int32_t devId, void *addr, uint64_t size, P2pSegmentInfo *segInfo);
     Status UnregisterMemory(void *addr) override;
     Status PrepareRemoteMemory(void *addr, uint64_t offset, uint64_t size, uint64_t *remoteAddr) override;
     Status PreRegisterDeviceMemory(const std::vector<void *> &addrs, const std::vector<uint64_t> &sizes) override;
@@ -133,7 +134,6 @@ private:
                                      P2pSegmentInfo *segInfo) const;
     Status RegisterHostMemoryOnEngine(int32_t devId, void *addr, uint64_t size, DsHixlMemHandle &handle);
     Status EnsureFabricMemoryRegisteredOnDevice(int32_t devId, const std::shared_ptr<FabricMemoryRegion> &region);
-    Status RegisterFabricMemory(void *addr, uint64_t size, P2pSegmentInfo *segInfo);
     Status RegisterRoceDirectHostMemory(void *addr, uint64_t size);
     Status TransferFabricMemBatchParallel(HixlTransferOp op, const std::vector<HixlTransferDesc> &descs,
                                           const std::string &remoteEndpoint);
@@ -163,8 +163,7 @@ private:
     bool initialized_ = false;
     HixlMemoryMode hixlMemoryMode_ = HixlMemoryMode::BUFFER_POOL;
     bool bufferPoolEnabled_ = false;
-    // Physical FabricMem arenas keyed by source VA. Each worker HIXL engine that may expose the arena keeps its own
-    // registration handle.
+    // Each FabricMem arena has exactly one registering engine for its entire lifetime.
     std::map<uintptr_t, std::shared_ptr<FabricMemoryRegion>> fabricMemoryRegions_;
     std::mutex fabricMemoryMutex_;
     bool allowSameDeviceConnection_ = false;

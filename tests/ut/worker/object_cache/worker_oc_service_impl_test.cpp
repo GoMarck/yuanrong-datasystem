@@ -970,6 +970,81 @@ TEST_F(WorkerOcServiceImplTest, FabricMemWriteAdmissionDoesNotRequireBufferPoolF
     }
 }
 
+#ifdef BUILD_HETERO
+TEST_F(WorkerOcServiceImplTest, RemoteHostInfoTracksShmLifetime)
+{
+    BINEXPECT_CALL(&datasystem::IsRemoteH2DEnabled, ()).WillRepeatedly(Return(true));
+    ObjCacheShmUnit object;
+    auto roots = std::make_shared<RemoteH2DRootInfoTable>();
+    roots->Add()->set_internal("192.0.2.1:26667");
+    auto host = std::make_shared<RemoteH2DHostInfo>();
+    DS_ASSERT_OK(host->SetRootInfo(roots, 0));
+    auto first = std::make_shared<ShmUnit>();
+    object.SetShmUnit(first);
+    object.SetRemoteHostInfo("client", host);
+    auto cache = object.GetRemoteHostInfo();
+    ASSERT_NE(cache, nullptr);
+    ASSERT_EQ(cache->size(), 1);
+    object.SetShmUnit(first);
+    EXPECT_EQ(cache->size(), 1);
+
+    object.SetShmUnit(std::make_shared<ShmUnit>());
+    EXPECT_TRUE(object.GetRemoteHostInfo()->empty());
+    EXPECT_EQ(cache->size(), 1);
+    EXPECT_NE(cache, object.GetRemoteHostInfo());
+    object.SetRemoteHostInfo("client", host);
+    DS_ASSERT_OK(object.FreeResources());
+    EXPECT_TRUE(object.GetRemoteHostInfo()->empty());
+
+    object.SetRemoteHostInfo("client", host);
+    object.SetShmUnit(nullptr);
+    EXPECT_EQ(object.GetRemoteHostInfo()->size(), 1);
+    object.SetShmUnit(first);
+    EXPECT_TRUE(object.GetRemoteHostInfo()->empty());
+    object.SetRemoteHostInfo("client", host);
+    object.SetShmUnit(nullptr);
+    EXPECT_TRUE(object.GetRemoteHostInfo()->empty());
+}
+#endif
+
+TEST_F(WorkerOcServiceImplTest, BatchGetRemapsRootIndexesAcrossPartitions)
+{
+    WorkerWorkerOCServiceImpl remoteService(
+        impl_, nullptr, topologyRuntime_.Engine()->Membership(), []() { return true; },
+        []() { return cluster::ControlBackendObservation{}; });
+    const std::vector<std::string> endpoints{ "192.0.2.1:26667", "192.0.2.1:26671", "192.0.2.1:26667" };
+    std::vector<WorkerWorkerOCServiceImpl::ParallelRes> partitions(endpoints.size());
+    for (size_t i = 0; i < partitions.size(); ++i) {
+        auto roots = std::make_shared<RemoteH2DRootInfoTable>();
+        roots->Add()->set_internal(endpoints[i]);
+        RemoteH2DHostInfo host;
+        DS_ASSERT_OK(host.SetRootInfo(roots, 0));
+        partitions[i].respPbs.emplace_back();
+        auto *wire = partitions[i].respPbs.back().mutable_host_info();
+        DS_ASSERT_OK(partitions[i].roots.Encode(host, *wire));
+        EXPECT_EQ(wire->root_info_index(), 0);
+    }
+    BatchGetObjectRemoteReqPb request;
+    BatchGetObjectRemoteRspPb response;
+    std::vector<RpcMessage> payloads;
+    DS_ASSERT_OK(remoteService.MergeParallelBatchGetResult(request, partitions, response, payloads));
+    ASSERT_EQ(response.responses_size(), endpoints.size());
+    ASSERT_EQ(response.root_infos_size(), 2);
+    for (int i = 0; i < response.responses_size(); ++i) {
+        const RemoteH2DRootInfoPb *root = nullptr;
+        DS_ASSERT_OK(ResolveRemoteH2DRootInfo(response.responses(i).host_info(), response.root_infos(), root));
+        EXPECT_EQ(root->internal(), endpoints[i]);
+        EXPECT_TRUE(response.responses(i).root_infos().empty());
+    }
+
+    std::vector<WorkerWorkerOCServiceImpl::ParallelRes> invalidPartitions(1);
+    invalidPartitions[0].respPbs.emplace_back();
+    invalidPartitions[0].respPbs.back().mutable_host_info()->set_root_info_index(0);
+    response.Clear();
+    EXPECT_EQ(remoteService.MergeParallelBatchGetResult(request, invalidPartitions, response, payloads).GetCode(),
+              K_INVALID);
+}
+
 TEST_F(WorkerOcServiceImplTest, AllocationIdReservationUsesStableShmIdAndRejectsConcurrentDuplicate)
 {
     const std::string allocationId = GetStringUuid();

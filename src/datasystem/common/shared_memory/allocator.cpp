@@ -381,7 +381,7 @@ Status Allocator::AllocateMemory(const std::string &tenantId, uint64_t needSize,
 
 Status Allocator::AllocateMemory(const std::string &tenantId, uint64_t needSize, bool populate, void *&pointer, int &fd,
                                  ptrdiff_t &offset, uint64_t &mmapSize, uint8_t &numaId, ServiceType serviceType,
-                                 CacheType cacheType)
+                                 CacheType cacheType, int32_t *hixlEngineIndex)
 {
     RETURN_RUNTIME_ERROR_IF_NULL(arenaManager_);
 #ifdef WITH_TESTS
@@ -407,7 +407,7 @@ Status Allocator::AllocateMemory(const std::string &tenantId, uint64_t needSize,
     if (rc.IsOk()) {
         RETURN_RUNTIME_ERROR_IF_NULL(arenaGroup);
         rc = arenaGroup->AllocateMemory(needSize, populate, realSize, pointer, fd, offset, mmapSize, numaId,
-                                        serviceType);
+                                        serviceType, hixlEngineIndex);
     }
     auto stats = GetResourcePoolByType(serviceType, cacheType);
     if (rc.IsError()) {

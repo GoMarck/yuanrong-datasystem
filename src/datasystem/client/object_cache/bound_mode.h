@@ -177,7 +177,7 @@ public:
         bool isSeal, uint32_t version, const ShmKey &shmId = {},
         const std::shared_ptr<RpcMessage> &payloadPointer = nullptr,
         std::shared_ptr<client::IMmapTableEntry> mmapEntry = nullptr,
-        std::shared_ptr<RemoteH2DHostInfoPb> remoteHostInfo = nullptr);
+        std::shared_ptr<RemoteH2DHostInfo> remoteHostInfo = nullptr);
     Status GetBuffersFromWorker(std::shared_ptr<IClientWorkerApi> workerApi, GetParam &getParam,
                                 std::vector<std::shared_ptr<Buffer>> &buffers, Status *ingressRpcStatus = nullptr);
     Status GetBuffersFromWorkerBatched(std::shared_ptr<IClientWorkerApi> workerApi, const GetParam &getParam,
@@ -208,14 +208,14 @@ public:
                                 &ubBufferInfos = {});
     Status SetShmObjectBufferWithMetric(const std::string &objectKey, const GetRspPb::ObjectInfoPb &info,
                                         uint32_t version, const std::vector<ReadParam> &readParams, size_t index,
-                                        std::shared_ptr<Buffer> &bufferPtr);
+                                        std::shared_ptr<Buffer> &bufferPtr, const SharedRemoteH2DRootInfoTable &roots);
     Status SetNoShmObjectBufferWithMetric(const std::string &objectKey, const GetRspPb::PayloadInfoPb &payloadInfo,
                                           uint32_t version, std::vector<RpcMessage> &payloads,
                                           const std::unordered_map<std::string, std::shared_ptr<ObjectBufferInfo>>
                                               &ubBufferInfos,
                                           std::shared_ptr<Buffer> &bufferPtr);
     Status SetRemoteHostObjectBuffer(const std::string &objectKey, const GetRspPb::ObjectInfoPb &info, uint32_t version,
-                                     std::shared_ptr<Buffer> &buffer);
+                                     std::shared_ptr<Buffer> &buffer, const SharedRemoteH2DRootInfoTable &roots);
     Status SetNonShmObjectBuffer(const std::string &objectKey, const GetRspPb::PayloadInfoPb &payloadInfo, int version,
                                  std::vector<RpcMessage> &payloads, std::shared_ptr<Buffer> &bufferPtr);
     Status SetOffsetReadObjectBuffer(const std::string &objectKey, const GetRspPb::ObjectInfoPb &info, uint32_t version,

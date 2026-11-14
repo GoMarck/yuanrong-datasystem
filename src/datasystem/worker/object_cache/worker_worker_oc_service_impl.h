@@ -171,6 +171,7 @@ private:
 
     struct ParallelRes {
         std::vector<GetObjectRemoteRspPb> respPbs;
+        RemoteH2DRootInfoBuilder roots;
         std::vector<BatchEventPayload> kps;
         std::vector<RpcMessage> fallbackPayloads;
         std::vector<Status> fallbackStatuses;
@@ -196,8 +197,7 @@ private:
             TCP_FALLBACK,
         };
 
-        bool prepared = false;
-        int32_t devId = -1;
+        int32_t preparedDeviceId = -1;
         // A remote Get RPC may be pinned to TCP before object processing. Batch Get may instead own one shared lane.
         // TCP_FALLBACK prevents single, per-object, and aggregate paths from attempting URMA again.
         UrmaTransportMode urmaTransportMode = UrmaTransportMode::DEFAULT;
@@ -219,7 +219,7 @@ private:
         std::shared_ptr<ShmUnit> shmUnit;
         uint64_t metadataSize = 0;
         std::vector<uint64_t> blobSizes;
-        RemoteH2DRootInfoPb *batchRootInfo = nullptr;
+        RemoteH2DRootInfoBuilder *batchRoots = nullptr;
         BatchRh2dContext *batchRh2dContext = nullptr;
         const RemoteH2DClientDeviceInfoPb *clientDeviceInfo = nullptr;
     };
@@ -256,20 +256,20 @@ private:
      * @param[in] blocking Whether to blocking wait for the urma_write to finish.
      * @param[out] keys The new request id to wait for if not blocking.
      * @param[in] batchPtr Batch ptr, default is nullptr means not in aggregate path.
-     * @param[in] batchRootInfo The common root info for batched requests.
+     * @param[in] batchRoots The root table builder owned by this parallel partition.
      * @return Status of the call.
      */
     Status GetObjectRemoteImpl(const GetObjectRemoteReqPb &req, GetObjectRemoteRspPb &rsp,
                                std::vector<RpcMessage> &outPayload, bool blocking, std::vector<uint64_t> &eventKeys,
                                std::shared_ptr<AggregateMemory> batchPtr = nullptr,
-                               RemoteH2DRootInfoPb *batchRootInfo = nullptr, Status *fallbackStatus = nullptr,
+                               RemoteH2DRootInfoBuilder *batchRoots = nullptr, Status *fallbackStatus = nullptr,
                                BatchRh2dContext *batchRh2dContext = nullptr);
 
     Status LoadPayloadAndFillResponse(const GetObjectRemoteReqPb &req, GetObjectRemoteRspPb &rsp, SafeObjType &entry,
                                       std::vector<RpcMessage> &outPayload, const std::string &objectKey,
                                       uint64_t offset, uint64_t size, bool blocking, std::vector<uint64_t> &eventKeys,
                                       const std::shared_ptr<AggregateMemory> &batchPtr,
-                                      RemoteH2DRootInfoPb *batchRootInfo, BatchRh2dContext *batchRh2dContext,
+                                      RemoteH2DRootInfoBuilder *batchRoots, BatchRh2dContext *batchRh2dContext,
                                       Status *fallbackStatus, bool isFastTransportEnabled, bool isUrmaFastTransport,
                                       bool isPipelineH2DRequest, PerfPoint &batchImplPoint);
 
@@ -315,7 +315,7 @@ private:
                                  bool isUrmaFastTransport,
                                  bool isPipelineH2DRequest, bool blocking,
                                  const std::shared_ptr<AggregateMemory> &batchPtr, Status *fallbackStatus,
-                                 RemoteH2DRootInfoPb *batchRootInfo, BatchRh2dContext *batchRh2dContext,
+                                 RemoteH2DRootInfoBuilder *batchRoots, BatchRh2dContext *batchRh2dContext,
                                  const ReadObjectKV &objKv, uint64_t localSegAddress, uint64_t localSegSize);
 
     Status ProcessFallbackTrackError(const Status &rc, const Status &fastTransportStatus, bool blocking,
@@ -427,13 +427,13 @@ private:
      * @param[in] blocking Whether to blocking wait for the urma_write to finish.
      * @param[out] keys The request id to wait for if not blocking.
      * @param[in] batchPtr Batch ptr, default is nullptr means not in aggregate path.
-     * @param[in] batchRootInfo The common root info for batched requests.
+     * @param[in] batchRoots The root table builder owned by this parallel partition.
      * @return Status of the call.
      */
     Status GetObjectRemoteHandler(const GetObjectRemoteReqPb &req, GetObjectRemoteRspPb &rsp,
                                   std::vector<RpcMessage> &payload, bool blocking, std::vector<uint64_t> &eventKeys,
                                   std::shared_ptr<AggregateMemory> batchPtr = nullptr,
-                                  RemoteH2DRootInfoPb *batchRootInfo = nullptr, Status *fallbackStatus = nullptr,
+                                  RemoteH2DRootInfoBuilder *batchRoots = nullptr, Status *fallbackStatus = nullptr,
                                   BatchRh2dContext *batchRh2dContext = nullptr);
 
     /**
@@ -454,10 +454,6 @@ private:
      */
     Status EstablishConnAndFillSeg(const std::string &commId, const RemoteH2DConnectionInfo &connInfo,
                                    GetObjectRemoteRspPb &rsp);
-#ifdef USE_NPU
-    Status PrepareRemoteH2DConnection(const std::string &commId, const RemoteH2DConnectionInfo &connInfo,
-                                      GetObjectRemoteRspPb &rsp, RemoteH2DRootInfoPb *&rootInfo, int32_t &devId);
-#endif
 
     Status PrepareBatchRh2dContext(const GetObjectRemoteReqPb &req, BatchRh2dContext &batchRh2dContext);
 

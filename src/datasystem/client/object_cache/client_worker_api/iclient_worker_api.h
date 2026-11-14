@@ -75,7 +75,7 @@ struct MultiCreateParam {
     size_t dataSize;
     size_t metadataSize;
     std::shared_ptr<ShmUnitInfo> shmBuf;
-    std::shared_ptr<RemoteH2DHostInfoPb> remoteHostInfo = nullptr;
+    std::shared_ptr<RemoteH2DHostInfo> remoteHostInfo = nullptr;
 #ifdef USE_URMA
     std::shared_ptr<UrmaRemoteAddrPb> urmaDataInfo = nullptr;  // For SendBufferViaUb in MSet MultiCreate path
 #endif

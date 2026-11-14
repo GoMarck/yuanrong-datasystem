@@ -230,8 +230,9 @@ Status BuildFabricWrites(const std::vector<std::string> &keys,
                                  K_NOT_SUPPORTED, "Target worker did not return a FabricMem allocation");
         const auto &host = item.host_info();
         const auto &seg = host.remote_host_segment();
-        CHECK_FAIL_RETURN_STATUS(!host.root_info().internal().empty()
-                                     && seg.seg_data_offset() <= seg.seg_len()
+        const RemoteH2DRootInfoPb *root = nullptr;
+        RETURN_IF_NOT_OK(ResolveRemoteH2DRootInfo(host, response.root_infos(), root));
+        CHECK_FAIL_RETURN_STATUS(seg.seg_data_offset() <= seg.seg_len()
                                      && seg.seg_va() <= UINT64_MAX - seg.seg_len(),
                                  K_RUNTIME_ERROR, "Invalid FabricMem target segment");
         uint64_t size = 0;
@@ -264,11 +265,12 @@ Status WriteFabricObjects(const std::vector<const DeviceBlobList *> &blobs, cons
         }
         RETURN_IF_NOT_OK(ApiDeadline::Instance().CheckApiDeadline());
         const auto &host = response.results(i).host_info();
-        const auto &root = host.root_info();
+        const RemoteH2DRootInfoPb *root = nullptr;
+        RETURN_IF_NOT_OK(ResolveRemoteH2DRootInfo(host, response.root_infos(), root));
         const auto &seg = host.remote_host_segment();
-        auto &group = groups[root.internal()];
+        auto &group = groups[root->internal()];
         if (group.comm == nullptr) {
-            RETURN_IF_NOT_OK(manager.P2PCommInitRootInfo(root.internal(), root, P2P_RECEIVER, group.comm));
+            RETURN_IF_NOT_OK(manager.P2PCommInitRootInfo(root->internal(), *root, P2P_RECEIVER, group.comm));
         }
         RETURN_IF_NOT_OK(manager.ImportHostSegment(group.comm->remoteEndpoint, seg));
         uint64_t offset = seg.seg_data_offset();

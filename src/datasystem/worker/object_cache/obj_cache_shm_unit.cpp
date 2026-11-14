@@ -58,7 +58,7 @@ ObjCacheShmUnit::ObjCacheShmUnit()
 Status ObjCacheShmUnit::FreeResources()
 {
     // Call super class to release our memory resources.
-    shmUnit_.reset();
+    SetShmUnit(nullptr);
     return Status::OK();
 }
 
@@ -139,7 +139,7 @@ void ObjCacheShmUnit::SetAddress(const std::string &newAddress)
 
 #ifdef BUILD_HETERO
 void ObjCacheShmUnit::SetRemoteHostInfo(const std::string &clientCommId,
-                                        const std::shared_ptr<RemoteH2DHostInfoPb> &remoteH2DHostInfo)
+                                        const std::shared_ptr<RemoteH2DHostInfo> &remoteH2DHostInfo)
 {
     if (IsRemoteH2DEnabled()) {
         RemoteH2DHostInfoMap::accessor accessor;

@@ -82,6 +82,8 @@ Status FreeFabricMemory(void *ptr);
  */
 Status RegisterHostMemory(void *segAddress, const uint64_t &segSize);
 
+Status RegisterFabricHostMemory(void *segAddress, uint64_t segSize, int32_t allocationDeviceId, int32_t &engineIndex);
+
 /**
  * @brief Unregister host memory before releasing its backing allocation.
  * @param[in] segAddress Starting address of the segment.

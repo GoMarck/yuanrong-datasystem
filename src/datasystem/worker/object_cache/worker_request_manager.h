@@ -221,7 +221,8 @@ private:
 
     Status AddObjectToResponse(const ObjectKey &objectKeyUri, GetObjInfo &objectInfo, size_t index, bool shmEnable,
                                bool useUbGet, uint64_t &ubWriteOffset, GetRspPb &resp,
-                               std::vector<RpcMessage> &outPayloads, uint64_t &shmBytes);
+                               std::vector<RpcMessage> &outPayloads, uint64_t &shmBytes,
+                               RemoteH2DRootInfoBuilder &roots);
 
     Status UbWriteHelper(const ObjectKey &objectKeyUri, uint64_t metaSize, uint64_t readSize, uint64_t readOffset,
                          std::shared_ptr<ShmUnit> shmUnit, GetObjInfo &objectInfo, size_t objectIndex,
@@ -232,8 +233,8 @@ private:
 
     void AttachRemoteProviderUbFailure(const Status &status, GetRspPb &resp);
 
-    void SetShmObjectInfoPb(const ObjectKey &, size_t objectIndex, GetObjEntryParams &safeEntry,
-                            GetRspPb::ObjectInfoPb &info);
+    Status SetShmObjectInfoPb(const ObjectKey &, size_t objectIndex, GetObjEntryParams &safeEntry,
+                              GetRspPb::ObjectInfoPb &info, RemoteH2DRootInfoBuilder &roots);
 
     void SetNoShmObjectInfoPb(const ObjectKey &, size_t objectIndex, const GetObjInfo &objectInfo,
                               GetRspPb::PayloadInfoPb &info);

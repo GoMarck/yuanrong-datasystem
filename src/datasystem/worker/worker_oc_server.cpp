@@ -261,6 +261,11 @@ constexpr int32_t WORKER_PROBE_REPORT_ATTEMPT_TIMEOUT_MS = 1'000;
 #ifdef USE_NPU
 Status ValidateHccsFabricMemWorkerConfig()
 {
+    CHECK_FAIL_RETURN_STATUS(!FLAGS_remote_h2d_hccs_fabric_mem_multi_engine
+                                 || (FLAGS_remote_h2d_link_type == "HCCS"
+                                     && FLAGS_remote_h2d_hccs_enable_fabric_mem
+                                     && !FLAGS_remote_h2d_device_ids.empty()),
+                             K_INVALID, "FabricMem multi-engine requires HCCS, FabricMem and remote_h2d_device_ids");
     RETURN_OK_IF_TRUE(!RemoteH2DManager::IsRemoteH2DEnabled());
     RETURN_OK_IF_TRUE(FLAGS_remote_h2d_link_type != "HCCS" || !FLAGS_remote_h2d_hccs_enable_fabric_mem);
 
@@ -2503,6 +2508,9 @@ Status WorkerOCServer::InitRpcAndMemoryRuntime()
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(SetRH2DLocalEndpointIp(hostPort_.Host()), "Failed to configure HCCS worker IP");
 #ifdef USE_NPU
     RETURN_IF_NOT_OK(ValidateHccsFabricMemWorkerConfig());
+#else
+    CHECK_FAIL_RETURN_STATUS(!FLAGS_remote_h2d_hccs_fabric_mem_multi_engine, K_NOT_SUPPORTED,
+                             "FabricMem multi-engine requires an NPU build");
 #endif
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(InitializeRemoteH2DManager(), "Remote H2D transport init failed");
 

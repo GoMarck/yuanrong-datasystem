@@ -39,6 +39,9 @@
 #include "datasystem/common/device/ascend/acl_device_manager.h"
 #endif
 #include "datasystem/common/flags/common_flags.h"
+#ifdef WITH_TESTS
+#include "datasystem/common/inject/inject_point.h"
+#endif
 #include "datasystem/common/util/numa_util.h"
 #include "datasystem/common/util/raii.h"
 #include "datasystem/common/util/status_helper.h"
@@ -185,7 +188,7 @@ Status MemMmap::Initialize(uint64_t size, bool populate, bool hugepage)
     if (usePhysicalFabricArena) {
         RETURN_IF_NOT_OK(InitializeHostMemoryContext());
         RETURN_IF_NOT_OK(InitializeFabricMemory(size));
-        RETURN_IF_NOT_OK(RegisterHostMemory(pointer_, mmapSize_));
+        RETURN_IF_NOT_OK(RegisterFabricHostMemory(pointer_, mmapSize_, fabricMemoryDeviceId_, hixlEngineIndex_));
         return Status::OK();
     }
 
@@ -217,6 +220,9 @@ Status MemMmap::Initialize(uint64_t size, bool populate, bool hugepage)
     RETURN_IF_NOT_OK(RegisterFastTransportMemory(pointer_, mmapSize_));
     // If Remote H2D is enabled, pin and register the npu memory
     RETURN_IF_NOT_OK(RegisterHostMemory(pointer_, mmapSize_));
+#ifdef WITH_TESTS
+    INJECT_POINT_NO_RETURN("MemMmap.Initialize.hixlEngineIndex", [this](int32_t index) { hixlEngineIndex_ = index; });
+#endif
     return Status::OK();
 }
 

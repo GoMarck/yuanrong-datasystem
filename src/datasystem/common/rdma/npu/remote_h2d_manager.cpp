@@ -341,6 +341,7 @@ Status RemoteH2DManager::GetWorkerDeviceIds(std::vector<int32_t> *devIds)
         size_t start = 0;
         uint32_t npuCount;
         RETURN_IF_NOT_OK(acl::AclDeviceManager::Instance()->aclrtGetDeviceCount(&npuCount));
+        std::vector<int32_t> parsedDeviceIds;
 
         while (start < devIdStr.size()) {
             size_t end = devIdStr.find(',', start);
@@ -358,20 +359,24 @@ Status RemoteH2DManager::GetWorkerDeviceIds(std::vector<int32_t> *devIds)
                                              + std::to_string(devId) + ". Total NPU count: "
                                              + std::to_string(npuCount));
             }
-            workerDeviceIds_.push_back(devId);
+            CHECK_FAIL_RETURN_STATUS(std::find(parsedDeviceIds.begin(), parsedDeviceIds.end(), devId)
+                                         == parsedDeviceIds.end(),
+                                     K_INVALID, "Duplicate remote_h2d_device_ids entry");
+            parsedDeviceIds.push_back(devId);
             if (end == std::string::npos) {
                 break;
             }
             start = end + 1;
         }
-        if (IsHccsFabricMemEnabled() && workerDeviceIds_.size() > 1) {
+        if (IsHccsFabricMemEnabled() && !FLAGS_remote_h2d_hccs_fabric_mem_multi_engine
+            && parsedDeviceIds.size() > 1) {
             LOG(INFO) << "[RH2D] HCCS FabricMem uses a single HIXL engine; effective engine device id is "
-                      << workerDeviceIds_.front() << ". Additional configured device ids are used only for "
+                      << parsedDeviceIds.front() << ". Additional configured device ids are used only for "
                       << "FabricMem arena placement: "
-                      << DeviceIdsForLog(std::vector<int32_t>(workerDeviceIds_.begin() + 1,
-                                                               workerDeviceIds_.end()));
-            workerDeviceIds_.resize(1);
+                      << DeviceIdsForLog(std::vector<int32_t>(parsedDeviceIds.begin() + 1, parsedDeviceIds.end()));
+            parsedDeviceIds.resize(1);
         }
+        workerDeviceIds_ = std::move(parsedDeviceIds);
     }
     if (devIds != nullptr) {
         *devIds = workerDeviceIds_;
@@ -459,7 +464,7 @@ void RemoteH2DManager::FillRootInfoDeviceFields(int32_t devId, RemoteH2DRootInfo
     p2pRootInfo->set_worker_physical_device_id(physicalDeviceId);
 }
 
-Status RemoteH2DManager::P2PGetRootInfo(const std::string &key, RemoteH2DRootInfoPb *p2pRootInfo,
+Status RemoteH2DManager::P2PGetRootInfo(const std::string &key, SharedRemoteH2DRootInfoTable &rootInfos,
                                         const RemoteH2DClientDeviceInfoPb *clientDeviceInfo,
                                         bool avoidClientDeviceForSameNode)
 {
@@ -471,8 +476,7 @@ Status RemoteH2DManager::P2PGetRootInfo(const std::string &key, RemoteH2DRootInf
 
     CommunicatorMap::ConstAccessor constAcc;
     if (communicatorMap_->Find(constAcc, key)) {
-        p2pRootInfo->set_internal(constAcc.entry->data->localIdentity);
-        FillRootInfoDeviceFields(constAcc.entry->data->devId, p2pRootInfo);
+        rootInfos = constAcc.entry->data->localRootInfos;
         return Status::OK();
     }
 
@@ -480,8 +484,7 @@ Status RemoteH2DManager::P2PGetRootInfo(const std::string &key, RemoteH2DRootInf
     if (!communicatorMap_->Insert(accessor, key)) {
         // Insert() already returns an accessor locked on the existing entry when another thread won the race.
         // Re-finding the same key here would try to lock the same entry mutex again in the same thread.
-        p2pRootInfo->set_internal(accessor.entry->data->localIdentity);
-        FillRootInfoDeviceFields(accessor.entry->data->devId, p2pRootInfo);
+        rootInfos = accessor.entry->data->localRootInfos;
         return Status::OK();
     }
 
@@ -501,13 +504,44 @@ Status RemoteH2DManager::P2PGetRootInfo(const std::string &key, RemoteH2DRootInf
         PerfPoint identityPoint(PerfKey::RH2D_MANAGER_GET_CONNECTION_IDENTITY);
         RETURN_IF_NOT_OK(transport_->GetConnectionIdentity(&identity, devId));
     }
-    ctx->localIdentity = identity;
+    auto roots = std::make_shared<RemoteH2DRootInfoTable>();
+    auto *root = roots->Add();
+    root->set_internal(std::move(identity));
+    FillRootInfoDeviceFields(devId, root);
+    ctx->localRootInfos = std::move(roots);
     ctx->devId = devId;
     accessor.entry->data = ctx;
     needRollback = false;
 
-    p2pRootInfo->set_internal(ctx->localIdentity);
-    FillRootInfoDeviceFields(devId, p2pRootInfo);
+    rootInfos = ctx->localRootInfos;
+    return Status::OK();
+}
+
+Status RemoteH2DManager::InitFabricRootInfos()
+{
+    RETURN_OK_IF_TRUE(isClient_ || !IsHccsFabricMemEnabled());
+    auto roots = std::make_shared<RemoteH2DRootInfoTable>();
+    roots->Reserve(workerDeviceIds_.size());
+    for (auto devId : workerDeviceIds_) {
+        auto *root = roots->Add();
+        RETURN_IF_NOT_OK(transport_->GetConnectionIdentity(root->mutable_internal(), devId));
+        FillRootInfoDeviceFields(devId, root);
+    }
+    fabricRootInfos_ = std::move(roots);
+    return Status::OK();
+}
+
+Status RemoteH2DManager::GetFabricRootInfo(int32_t engineIndex, RemoteH2DHostInfo &hostInfo, int32_t &devId)
+{
+    RETURN_IF_NOT_OK(initStatus_);
+    CHECK_FAIL_RETURN_STATUS(!isClient_ && IsHccsFabricMemEnabled() && engineIndex >= 0
+                                 && static_cast<size_t>(engineIndex) < workerDeviceIds_.size(),
+                             K_INVALID, "Invalid FabricMem owner engine index");
+#ifdef ASCEND_HIXL_AVAILABLE
+    RETURN_IF_NOT_OK(static_cast<HixlTransport *>(transport_.get())->CheckReady());
+#endif
+    RETURN_IF_NOT_OK(hostInfo.SetRootInfo(fabricRootInfos_, engineIndex));
+    devId = workerDeviceIds_[engineIndex];
     return Status::OK();
 }
 
@@ -696,7 +730,15 @@ Status RemoteH2DManager::RegisterHostMemoryOnDevice(int32_t devId, void *data, u
     });
     P2pSegmentInfo segmentInfo;
     P2pSegmentPermissions permissions = P2pSegmentPermissions::P2P_SEGMENT_READ_WRITE;
-    RETURN_IF_NOT_OK(transport_->RegisterMemory(data, dataSize, &segmentInfo));
+#ifdef ASCEND_HIXL_AVAILABLE
+    if (IsHccsFabricMemEnabled()) {
+        RETURN_IF_NOT_OK(static_cast<HixlTransport *>(transport_.get())->RegisterFabricMemory(
+            devId, data, dataSize, &segmentInfo));
+    } else
+#endif
+    {
+        RETURN_IF_NOT_OK(transport_->RegisterMemory(data, dataSize, &segmentInfo));
+    }
 
     std::shared_ptr<HostSegment> hostSegment;
     HostSegment::Create(hostSegment, reinterpret_cast<std::byte *>(data), dataSize, segmentInfo, permissions);
@@ -709,6 +751,8 @@ Status RemoteH2DManager::RegisterHostMemory(void *data, uint64_t dataSize)
 {
     RETURN_OK_IF_TRUE(!IsRemoteH2DEnabled());
     RETURN_IF_NOT_OK(initStatus_);
+    CHECK_FAIL_RETURN_STATUS(!IsHccsFabricMemEnabled(), K_INVALID,
+                             "FabricMem registration requires an explicit arena owner");
     LOG(INFO) << "RemoteH2DManager::RegisterHostMemory addr=" << data << " size=" << dataSize
               << " link_type=" << FLAGS_remote_h2d_link_type;
 
@@ -744,6 +788,24 @@ Status RemoteH2DManager::RegisterHostMemory(void *data, uint64_t dataSize)
         }
     }
     RETURN_IF_NOT_OK(firstError);
+    return Status::OK();
+}
+
+Status RemoteH2DManager::RegisterFabricHostMemory(void *data, uint64_t dataSize, int32_t allocationDeviceId,
+                                                  int32_t &engineIndex)
+{
+    engineIndex = -1;
+    RETURN_IF_NOT_OK(initStatus_);
+    CHECK_FAIL_RETURN_STATUS(!isClient_ && IsHccsFabricMemEnabled() && !workerDeviceIds_.empty(),
+                             K_NOT_READY, "Worker FabricMem engines are unavailable");
+    auto owner = workerDeviceIds_.begin();
+    if (FLAGS_remote_h2d_hccs_fabric_mem_multi_engine) {
+        owner = std::find(workerDeviceIds_.begin(), workerDeviceIds_.end(), allocationDeviceId);
+    }
+    CHECK_FAIL_RETURN_STATUS(owner != workerDeviceIds_.end(), K_INVALID,
+                             "FabricMem arena device has no worker engine");
+    RETURN_IF_NOT_OK(RegisterHostMemoryOnDevice(*owner, data, dataSize));
+    engineIndex = std::distance(workerDeviceIds_.begin(), owner);
     return Status::OK();
 }
 
@@ -980,6 +1042,7 @@ Status RemoteH2DManager::Init()
 
     LOG(INFO) << "RemoteH2DManager::Init calling transport_->Init() with " << workerDevIdsForInit.size() << " devId(s)";
     RETURN_IF_NOT_OK(transport_->Init(workerDevIdsForInit));
+    RETURN_IF_NOT_OK(InitFabricRootInfos());
     RETURN_IF_NOT_OK(StartHeartbeatThread());
     initCommitted = true;
     initialized_ = true;

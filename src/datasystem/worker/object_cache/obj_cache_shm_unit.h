@@ -124,6 +124,10 @@ public:
 
     void SetShmUnit(const std::shared_ptr<ShmUnit> &shmUnit) override
     {
+        if (shmUnit_ != shmUnit && remoteH2DHostInfoMap_ != nullptr && !remoteH2DHostInfoMap_->empty()) {
+            // Outstanding Get requests retain the old map together with their pinned ShmUnit.
+            remoteH2DHostInfoMap_ = std::make_shared<RemoteH2DHostInfoMap>();
+        }
         shmUnit_ = shmUnit;
     }
 
@@ -162,7 +166,7 @@ public:
      * @param[in] remoteH2DHostInfo The remote H2D host info, containing segment info, roor info and data info.
      */
     void SetRemoteHostInfo(const std::string &clientCommId,
-                           const std::shared_ptr<RemoteH2DHostInfoPb> &remoteH2DHostInfo) override;
+                           const std::shared_ptr<RemoteH2DHostInfo> &remoteH2DHostInfo) override;
 
     /**
      * @brief Get the remote host info.

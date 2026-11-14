@@ -21,6 +21,8 @@
 #ifndef DATASYSTEM_COMMON_SHARED_MEMORY_MMAP_IMMAP_H
 #define DATASYSTEM_COMMON_SHARED_MEMORY_MMAP_IMMAP_H
 
+#include <cstdint>
+
 #include "datasystem/common/shared_memory/mmap/allocation.h"
 #include "datasystem/utils/optional.h"
 #include "datasystem/utils/status.h"
@@ -109,6 +111,8 @@ public:
     {
         return 0;
     }
+
+    virtual int32_t GetHixlEngineIndex() const { return -1; }
 };
 }  // namespace memory
 }  // namespace datasystem

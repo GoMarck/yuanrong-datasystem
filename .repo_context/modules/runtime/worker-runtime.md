@@ -53,6 +53,15 @@
     Installing strong owners rolls back partial insertions on allocation errors before committing the reservation.
     This is conservative quarantine, not a DMA fence or automatic failure recovery. Read
     `tests/st/device/README_hixl_d2rh.md` before rollout/rollback and hardware fault testing.
+  - FabricMem can enable `remote_h2d_hccs_fabric_mem_multi_engine` at startup; it defaults false and requires HCCS,
+    FabricMem and a nonempty unique device list. Each arena has one registration owner, recorded in ShmUnit.
+    Create/local Get/remote Get resolve that owner rather than hashing the client UUID. Fixed engine root tables
+    replace worker-side per-client HIXL contexts in this mode; P2P-Transfer connection setup remains unchanged.
+    Replacing or releasing an object's local ShmUnit detaches cached host metadata; outstanding Get snapshots
+    keep the old map and pinned memory. Leaving a remote-only object without local memory preserves its metadata.
+    BatchGet/Multicreate/Get responses use endpoint tables and per-object indexes, including forwarding through a
+    worker whose own multi-engine flag is off. Parallel partitions remap their indexes during merge.
+    Protocol readers must be updated together; no mixed-version compatibility is provided.
   - global-reference decrease treats a missing worker-to-master API after a successful owner lookup as
     `K_RPC_UNAVAILABLE`; affected ids enter the existing RPC-failure path instead of being silently skipped during a
     connection rebuild window.

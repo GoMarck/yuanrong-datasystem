@@ -114,7 +114,8 @@ Status ArenaGroup::AllocateMemory(uint64_t size, bool populate, uint64_t &realSi
 }
 
 Status ArenaGroup::AllocateMemory(uint64_t size, bool populate, uint64_t &realSize, void *&pointer, int &fd,
-                                  ptrdiff_t &offset, uint64_t &mmapSize, uint8_t &numaId, ServiceType type)
+                                  ptrdiff_t &offset, uint64_t &mmapSize, uint8_t &numaId, ServiceType type,
+                                  int32_t *hixlEngineIndex)
 {
     CHECK_FAIL_RETURN_STATUS(!destroyed_.load(), StatusCode::K_RUNTIME_ERROR, "ArenaGroup destroyed");
     CHECK_FAIL_RETURN_STATUS(!arenas_.empty(), StatusCode::K_RUNTIME_ERROR, "arenas_ is empty");
@@ -158,6 +159,9 @@ Status ArenaGroup::AllocateMemory(uint64_t size, bool populate, uint64_t &realSi
     auto arena = arenas_[index];
     arena->AddRealMemoryUsage(realSize);
     (void)realMemoryUsage_.fetch_add(realSize, std::memory_order_relaxed);
+    if (hixlEngineIndex != nullptr) {
+        *hixlEngineIndex = arena->GetHixlEngineIndex();
+    }
     QueryAllocNumaId(arena, pointer, numaId);
     VLOG(1) << "[Allocator] Arena " << arena->GetArenaId() << " allocate require size: " << size
             << ", real size: " << realSize << ", offset: " << offset;

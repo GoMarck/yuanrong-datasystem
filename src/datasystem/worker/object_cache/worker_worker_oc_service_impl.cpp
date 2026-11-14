@@ -427,12 +427,13 @@ Status WorkerWorkerOCServiceImpl::GetObjectRemoteBatchWrite(uint32_t paraIndex, 
                                   callerAddress, FLAGS_worker_address);
     Status fallbackStatus;
     auto status =
-        GetObjectRemoteHandler(subReq, subRsp, subPayload, false, eventKeys, batchPtr, rsp.mutable_root_info(),
+        GetObjectRemoteHandler(subReq, subRsp, subPayload, false, eventKeys, batchPtr, &parallelRes[paraIndex].roots,
                                isGatherWrite ? nullptr : &fallbackStatus, batchRh2dContext);
     // payload means need to FallbackTcp/NormalTcp transport
     if ((status.IsError() && subPayload.empty()) || (status.IsError() && !FLAGS_enable_transport_fallback)) {
         subRsp.mutable_error()->set_error_code(status.GetCode());
         subRsp.mutable_error()->set_error_msg(status.GetMsg());
+        subRsp.clear_host_info();
     }
 
     if (isGatherWrite) {
@@ -568,14 +569,13 @@ Status WorkerWorkerOCServiceImpl::PrepareBatchRh2dContext(const GetObjectRemoteR
         batchRh2dContext.hasClientDeviceInfo = true;
         batchRh2dContext.clientDeviceInfo = req.remote_h2d_client_device_info();
     }
-    const auto *clientDeviceInfo =
-        batchRh2dContext.hasClientDeviceInfo ? &batchRh2dContext.clientDeviceInfo : nullptr;
-    // Worker-worker remote get is treated as cross-node by flow semantics. A deployment with multiple workers on the
-    // same physical node is not expected here, so do not avoid the original client's device id.
-    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().GetDevIdForComm(req.comm_id(), batchRh2dContext.devId,
-                                                                  clientDeviceInfo));
-    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().SetDeviceIdx(batchRh2dContext.devId));
-    batchRh2dContext.prepared = true;
+    if (!UsePhysicalFabricArena()) {
+        const auto *clientDeviceInfo =
+            batchRh2dContext.hasClientDeviceInfo ? &batchRh2dContext.clientDeviceInfo : nullptr;
+        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().GetDevIdForComm(
+            req.comm_id(), batchRh2dContext.preparedDeviceId, clientDeviceInfo));
+        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().SetDeviceIdx(batchRh2dContext.preparedDeviceId));
+    }
 #else
     (void)req;
     (void)batchRh2dContext;
@@ -587,7 +587,7 @@ Status WorkerWorkerOCServiceImpl::GetObjectRemoteHandler(const GetObjectRemoteRe
                                                          std::vector<RpcMessage> &payload, bool blocking,
                                                          std::vector<uint64_t> &eventKeys,
                                                          std::shared_ptr<AggregateMemory> batchPtr,
-                                                         RemoteH2DRootInfoPb *batchRootInfo, Status *fallbackStatus,
+                                                         RemoteH2DRootInfoBuilder *batchRoots, Status *fallbackStatus,
                                                          BatchRh2dContext *batchRh2dContext)
 {
     PerfPoint point(PerfKey::WORKER_SERVER_BATCH_GET_REMOTE_HANDLER);
@@ -596,7 +596,7 @@ Status WorkerWorkerOCServiceImpl::GetObjectRemoteHandler(const GetObjectRemoteRe
     CHECK_FAIL_RETURN_STATUS(!objectKey.empty(), K_INVALID, "objectKey is empty.");
     INJECT_POINT("worker.worker_worker_remote_get_sleep");
     INJECT_POINT("worker.worker_worker_remote_get_failure");
-    Status status = GetObjectRemoteImpl(req, rsp, payload, blocking, eventKeys, batchPtr, batchRootInfo,
+    Status status = GetObjectRemoteImpl(req, rsp, payload, blocking, eventKeys, batchPtr, batchRoots,
                                         fallbackStatus, batchRh2dContext);
     if (status.GetCode() == K_INVALID || status.GetCode() == K_NOT_FOUND) {
         status = Status(K_WORKER_PULL_OBJECT_NOT_FOUND, status.GetMsg());
@@ -634,36 +634,6 @@ Status WorkerWorkerOCServiceImpl::GetSafeObjectEntry(const std::string &objectKe
     return Status::OK();
 }
 
-#ifdef USE_NPU
-Status WorkerWorkerOCServiceImpl::PrepareRemoteH2DConnection(const std::string &commId,
-                                                             const RemoteH2DConnectionInfo &connInfo,
-                                                             GetObjectRemoteRspPb &rsp,
-                                                             RemoteH2DRootInfoPb *&rootInfo, int32_t &devId)
-{
-    const auto *effectiveClientDeviceInfo = connInfo.clientDeviceInfo;
-    if (effectiveClientDeviceInfo == nullptr && connInfo.batchRh2dContext != nullptr
-        && connInfo.batchRh2dContext->hasClientDeviceInfo) {
-        effectiveClientDeviceInfo = &connInfo.batchRh2dContext->clientDeviceInfo;
-    }
-
-    if (connInfo.batchRh2dContext != nullptr && connInfo.batchRh2dContext->prepared) {
-        devId = connInfo.batchRh2dContext->devId;
-    } else {
-        // Worker-worker remote get is treated as cross-node by flow semantics. A deployment with multiple workers on
-        // the same physical node is not expected here, so do not avoid the original client's device id.
-        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().GetDevIdForComm(commId, devId, effectiveClientDeviceInfo));
-        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().SetDeviceIdx(devId));
-    }
-
-    rootInfo = connInfo.batchRootInfo ? connInfo.batchRootInfo : rsp.mutable_host_info()->mutable_root_info();
-    if (rootInfo->internal().empty()) {
-        // Keep worker-worker selection cross-node for the same reason as GetDevIdForComm above.
-        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().P2PGetRootInfo(commId, rootInfo, effectiveClientDeviceInfo));
-    }
-    return Status::OK();
-}
-#endif
-
 Status WorkerWorkerOCServiceImpl::EstablishConnAndFillSeg(const std::string &commId,
                                                           const RemoteH2DConnectionInfo &connInfo,
                                                           GetObjectRemoteRspPb &rsp)
@@ -673,38 +643,23 @@ Status WorkerWorkerOCServiceImpl::EstablishConnAndFillSeg(const std::string &com
     (void)rsp;
 #ifdef USE_NPU
     PerfPoint point(PerfKey::WORKER_REMOTE_GET_PREPARE_RH2D_HOST_INFO);
-
-    int32_t devId = -1;
-    RemoteH2DRootInfoPb *rootInfo = nullptr;
-    RETURN_IF_NOT_OK(PrepareRemoteH2DConnection(commId, connInfo, rsp, rootInfo, devId));
-
-    // Initialize communicator connection (accept client).
-    std::shared_ptr<RemoteH2DContext> p2pComm;
-    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().P2PCommInitRootInfo(commId, *rootInfo, P2P_SENDER, p2pComm, devId,
-                                                                      communicatorThreadPool_));
-    // Send offset info to client
-    auto *dataInfoPb = rsp.mutable_host_info()->mutable_data_info();
-    const auto *blobSizesForDataInfo = connInfo.blobSizes.empty() ? nullptr : &connInfo.blobSizes;
-    if (blobSizesForDataInfo != nullptr) {
-        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().FillDataInfo(*blobSizesForDataInfo, *dataInfoPb));
-    } else {
-        uint64_t *dataPtr = reinterpret_cast<uint64_t *>(
-            static_cast<uint8_t *>(connInfo.shmUnit->GetPointer()) + connInfo.metadataSize);
-        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().FillDataInfo(dataPtr, *dataInfoPb));
+    const auto *clientDeviceInfo = connInfo.clientDeviceInfo;
+    if (clientDeviceInfo == nullptr && connInfo.batchRh2dContext != nullptr
+        && connInfo.batchRh2dContext->hasClientDeviceInfo) {
+        clientDeviceInfo = &connInfo.batchRh2dContext->clientDeviceInfo;
     }
-
-    uint64_t dataSize = 0;
-    for (const auto size : dataInfoPb->sizes()) {
-        CHECK_FAIL_RETURN_STATUS(size <= std::numeric_limits<uint64_t>::max() - dataSize, K_INVALID,
-                                 "Remote H2D data size overflow");
-        dataSize += size;
+    RemoteH2DHostInfo host;
+    const int32_t preparedDeviceId =
+        connInfo.batchRh2dContext == nullptr ? -1 : connInfo.batchRh2dContext->preparedDeviceId;
+    RETURN_IF_NOT_OK(FillRemoteH2DHostInfoFromShm(commId, connInfo.shmUnit, connInfo.metadataSize, true, host,
+                                                 clientDeviceInfo, &connInfo.blobSizes, false, communicatorThreadPool_,
+                                                 preparedDeviceId));
+    RemoteH2DRootInfoBuilder singleRoots;
+    auto &roots = connInfo.batchRoots == nullptr ? singleRoots : *connInfo.batchRoots;
+    RETURN_IF_NOT_OK(roots.Encode(host, *rsp.mutable_host_info()));
+    if (connInfo.batchRoots == nullptr) {
+        roots.MoveTo(*rsp.mutable_root_infos());
     }
-
-    // Send segment info to client. FabricMem synchronizes only this object's data into its physical-backed arena.
-    auto *segmentPb = rsp.mutable_host_info()->mutable_remote_host_segment();
-    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().FillSegmentInfo(
-        connInfo.localSegSize, connInfo.shmUnit->GetOffset() + connInfo.metadataSize, dataInfoPb->offset(), dataSize,
-        connInfo.localSegAddress, *segmentPb, devId));
     point.Record();
 #endif
     return Status::OK();
@@ -713,7 +668,7 @@ Status WorkerWorkerOCServiceImpl::EstablishConnAndFillSeg(const std::string &com
 Status WorkerWorkerOCServiceImpl::LoadPayloadAndFillResponse(
     const GetObjectRemoteReqPb &req, GetObjectRemoteRspPb &rsp, SafeObjType &entry, std::vector<RpcMessage> &outPayload,
     const std::string &objectKey, uint64_t offset, uint64_t size, bool blocking, std::vector<uint64_t> &eventKeys,
-    const std::shared_ptr<AggregateMemory> &batchPtr, RemoteH2DRootInfoPb *batchRootInfo,
+    const std::shared_ptr<AggregateMemory> &batchPtr, RemoteH2DRootInfoBuilder *batchRoots,
     BatchRh2dContext *batchRh2dContext, Status *fallbackStatus, bool isFastTransportEnabled, bool isUrmaFastTransport,
     bool isPipelineH2DRequest, PerfPoint &batchImplPoint)
 {
@@ -755,7 +710,7 @@ Status WorkerWorkerOCServiceImpl::LoadPayloadAndFillResponse(
         RETURN_IF_NOT_OK(HandlePayloadFallback(
             req, rsp, entry, outPayload, shmGuard, shmUnit, fastTransportStatus, fastTransportName, objectKey,
             isFastTransportEnabled, isUrmaFastTransport, isPipelineH2DRequest, blocking, batchPtr, fallbackStatus,
-            batchRootInfo, batchRh2dContext, objKv, localSegAddress, localSegSize));
+            batchRoots, batchRh2dContext, objKv, localSegAddress, localSegSize));
         pointImpl.RecordAndReset(PerfKey::WORKER_REMOTE_GET_RESP);
     }
 
@@ -986,14 +941,14 @@ Status WorkerWorkerOCServiceImpl::HandlePayloadFallback(
     const std::string &fastTransportName,
     const std::string &objectKey, bool isFastTransportEnabled, bool isUrmaFastTransport,
     bool isPipelineH2DRequest, bool blocking, const std::shared_ptr<AggregateMemory> &batchPtr, Status *fallbackStatus,
-    RemoteH2DRootInfoPb *batchRootInfo, BatchRh2dContext *batchRh2dContext, const ReadObjectKV &objKv,
+    RemoteH2DRootInfoBuilder *batchRoots, BatchRh2dContext *batchRh2dContext, const ReadObjectKV &objKv,
     uint64_t localSegAddress, uint64_t localSegSize)
 {
     if (!isPipelineH2DRequest && IsRemoteH2DEnabled() && !req.comm_id().empty()) {
         const auto *clientDeviceInfo =
             req.has_remote_h2d_client_device_info() ? &req.remote_h2d_client_device_info() : nullptr;
         RemoteH2DConnectionInfo connInfo{ localSegAddress, localSegSize, shmUnit, entry->GetMetadataSize(),
-                                          entry->GetBlobSizes(), batchRootInfo, batchRh2dContext, clientDeviceInfo };
+                                          entry->GetBlobSizes(), batchRoots, batchRh2dContext, clientDeviceInfo };
         RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
             EstablishConnAndFillSeg(req.comm_id(), connInfo, rsp), "");
         rsp.set_data_source(datasystem::DataTransferSource::DATA_DELAY_TRANSFER);
@@ -1036,7 +991,7 @@ Status WorkerWorkerOCServiceImpl::GetObjectRemoteImpl(const GetObjectRemoteReqPb
                                                       std::vector<RpcMessage> &outPayload, bool blocking,
                                                       std::vector<uint64_t> &eventKeys,
                                                       std::shared_ptr<AggregateMemory> batchPtr,
-                                                      RemoteH2DRootInfoPb *batchRootInfo, Status *fallbackStatus,
+                                                      RemoteH2DRootInfoBuilder *batchRoots, Status *fallbackStatus,
                                                       BatchRh2dContext *batchRh2dContext)
 {
     // Outer scope (BatchGetObjectRemote/GetObjectRemote) already created ScopedRequestContext.
@@ -1084,7 +1039,7 @@ Status WorkerWorkerOCServiceImpl::GetObjectRemoteImpl(const GetObjectRemoteReqPb
     RETURN_IF_NOT_OK(CheckFastTransportSize(entry, expectedDataSize, objectKey, isFastTransportEnabled, rsp));
 
     return LoadPayloadAndFillResponse(req, rsp, entry, outPayload, objectKey, offset, size, blocking, eventKeys,
-                                      batchPtr, batchRootInfo, batchRh2dContext, fallbackStatus, isFastTransportEnabled,
+                                      batchPtr, batchRoots, batchRh2dContext, fallbackStatus, isFastTransportEnabled,
                                       isUrmaFastTransport, isPipelineH2DRequest, batchImplPoint);
 }
 
@@ -1367,8 +1322,17 @@ Status WorkerWorkerOCServiceImpl::MergeParallelBatchGetResult(const BatchGetObje
                                                               std::vector<RpcMessage> &payload)
 {
     uint64_t index = 0;
+    RemoteH2DRootInfoBuilder roots;
     for (auto &loc : parallelRes) {
+        std::vector<uint32_t> rootIndexes;
+        RETURN_IF_NOT_OK(roots.Merge(loc.roots.Roots(), rootIndexes));
         for (auto &resp : loc.respPbs) {
+            if (resp.has_host_info()) {
+                auto *host = resp.mutable_host_info();
+                CHECK_FAIL_RETURN_STATUS(host->has_root_info_index() && host->root_info_index() < rootIndexes.size(),
+                                         K_INVALID, "Invalid Remote H2D index in batch partition");
+                host->set_root_info_index(rootIndexes[host->root_info_index()]);
+            }
             rsp.add_responses()->Swap(&resp);
         }
 
@@ -1407,6 +1371,7 @@ Status WorkerWorkerOCServiceImpl::MergeParallelBatchGetResult(const BatchGetObje
         loc.fallbackPayloads.clear();
         loc.fallbackStatuses.clear();
     }
+    roots.MoveTo(*rsp.mutable_root_infos());
     return Status::OK();
 }
 
