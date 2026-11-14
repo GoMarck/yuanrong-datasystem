@@ -264,37 +264,6 @@ owner 却只计少量字节。因此成功链路的批次也必须在此预算�
 
 ## FabricMem 传输并发配置
 
-### Worker 多 engine 开关
-
-```bash
---remote_h2d_link_type=HCCS \
---remote_h2d_hccs_enable_fabric_mem=true \
---remote_h2d_device_ids=0,1 \
---remote_h2d_hccs_fabric_mem_multi_engine=true
-```
-
-`remote_h2d_hccs_fabric_mem_multi_engine` 默认 false：只在设备列表的第一张卡上创建一个 engine。
-设为 true 后，每个配置设备创建一个 engine；仅配置一张卡时仍只有一个。
-这是 Worker 启动参数，修改需重启；不支持同一张卡上创建多个 engine。
-arena 放置始终使用完整设备列表，不受此开关影响；SDK 单设备 engine 和非 FabricMem 模式不变。
-客户端 communicator 按既有 UUID 哈希规则固定选择有效 engine 集合中的一个，
-并不是每个 key 轮询所有 engine，也不保证有限客户端均匀覆盖所有 engine。
-启动日志 `FabricMem HIXL engine devices=...` 可确认有效列表；
-还应核对每卡 engine 初始化日志并完成多客户端读写测试。回退时关闭开关并按正常流程重启 Worker，
-已有客户端连接需要重新建立；多 engine 的吞吐收益需实测。
-
-### 可选提前初始化 RH2D
-
-```bash
-export DS_HETERO_EAGER_INIT_REMOTE_H2D=1
-```
-
-默认关闭。只有显式开启且基础客户端初始化成功，`HeteroClient::Init()` 才调用 `InitRemoteH2D()`。
-需要提前初始化时，在 Init 前设置环境变量并正确绑定当前 ACL 设备。
-不开启时，设备内存预注册及设备读写接口沿用已有的按需初始化流程。
-这个开关只控制初始化时机，不关闭 RH2D，也不允许已初始化的进程随意修改设备或传输配置。
-提前初始化失败时，Init 保留现有错误返回与回滚处理。
-
 ### 跳过 GlobalResourceConfig
 
 ```bash

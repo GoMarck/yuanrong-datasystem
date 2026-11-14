@@ -227,8 +227,6 @@ Status RemoteH2DManager::CheckClientHeteroTransportConfig(bool enableHeteroTrans
 void RemoteH2DManager::CommitClientHeteroTransportConfig(bool enableHeteroTransport, uint32_t devId,
                                                          const std::string &localIp)
 {
-    LOG(INFO) << "CommitClientHeteroTransportConfig: enableHeteroTransport=" << enableHeteroTransport
-              << ", devId=" << devId << ", localIp=" << localIp;
     clientConfig_.enableHeteroTransport = enableHeteroTransport;
     clientConfig_.devId = static_cast<int32_t>(devId);
     clientConfig_.localIp = FLAGS_remote_h2d_link_type == "HCCS" ? localIp : "";
@@ -366,18 +364,13 @@ Status RemoteH2DManager::GetWorkerDeviceIds(std::vector<int32_t> *devIds)
             }
             start = end + 1;
         }
-        if (IsHccsFabricMemEnabled() && !FLAGS_remote_h2d_hccs_fabric_mem_multi_engine
-            && workerDeviceIds_.size() > 1) {
+        if (IsHccsFabricMemEnabled() && workerDeviceIds_.size() > 1) {
             LOG(INFO) << "[RH2D] HCCS FabricMem uses a single HIXL engine; effective engine device id is "
                       << workerDeviceIds_.front() << ". Additional configured device ids are used only for "
                       << "FabricMem arena placement: "
                       << DeviceIdsForLog(std::vector<int32_t>(workerDeviceIds_.begin() + 1,
                                                                workerDeviceIds_.end()));
             workerDeviceIds_.resize(1);
-        }
-        if (IsHccsFabricMemEnabled()) {
-            LOG(INFO) << "[RH2D] FabricMem HIXL engine devices=" << DeviceIdsForLog(workerDeviceIds_)
-                      << ", multi_engine=" << FLAGS_remote_h2d_hccs_fabric_mem_multi_engine;
         }
     }
     if (devIds != nullptr) {
