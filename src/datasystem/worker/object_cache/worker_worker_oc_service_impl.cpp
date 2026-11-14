@@ -409,7 +409,6 @@ Status WorkerWorkerOCServiceImpl::SendGetObjectRemotePayload(
 }
 
 Status WorkerWorkerOCServiceImpl::GetObjectRemoteBatchWrite(uint32_t paraIndex, const GetObjectRemoteReqPb &subReq,
-                                                            BatchGetObjectRemoteRspPb &rsp,
                                                             std::vector<ParallelRes> &parallelRes,
                                                             std::shared_ptr<AggregateMemory> batchPtr,
                                                             BatchRh2dContext *batchRh2dContext)
@@ -1283,7 +1282,7 @@ Status WorkerWorkerOCServiceImpl::BatchGetObjectRemoteImpl(BatchGetObjectRemoteR
                                      && req.requests_size() > FLAGS_oc_worker_worker_parallel_min
                                      && IsFastTransportEnabled();
     if (useParallelBatchGet) {
-        RETURN_IF_NOT_OK(ParallelBatchGetObject(req, rsp, parallelRes, batchTransportContext));
+        RETURN_IF_NOT_OK(ParallelBatchGetObject(req, parallelRes, batchTransportContext));
     } else {
         uint32_t parallelSize = 1;
         parallelRes.resize(parallelSize);
@@ -1303,7 +1302,7 @@ Status WorkerWorkerOCServiceImpl::BatchGetObjectRemoteImpl(BatchGetObjectRemoteR
             if (req.has_remote_h2d_client_device_info()) {
                 subReq->mutable_remote_h2d_client_device_info()->CopyFrom(req.remote_h2d_client_device_info());
             }
-            (void)GetObjectRemoteBatchWrite(parallelSize - 1, *subReq, rsp, parallelRes, nullptr, &batchRh2dContext);
+            (void)GetObjectRemoteBatchWrite(parallelSize - 1, *subReq, parallelRes, nullptr, &batchRh2dContext);
         }
         loopPoint.Record();
     }
@@ -1473,7 +1472,7 @@ Status WorkerWorkerOCServiceImpl::WaitFastTransportAndFallback(BatchWaitContext 
 }
 
 Status WorkerWorkerOCServiceImpl::ParallelBatchGetObject(
-    BatchGetObjectRemoteReqPb &req, BatchGetObjectRemoteRspPb &rsp, std::vector<ParallelRes> &parallelRes,
+    BatchGetObjectRemoteReqPb &req, std::vector<ParallelRes> &parallelRes,
     const BatchRh2dContext &batchTransportContext)
 {
     LOG(INFO) << PIPLN_LOG_PREFIX "Enter ParallelBatchGetObject: requestCount=" << req.requests_size()
@@ -1518,7 +1517,7 @@ Status WorkerWorkerOCServiceImpl::ParallelBatchGetObject(
                     if (req.has_remote_h2d_client_device_info()) {
                         subReq->mutable_remote_h2d_client_device_info()->CopyFrom(req.remote_h2d_client_device_info());
                     }
-                    GetObjectRemoteBatchWrite(i, *subReq, rsp, parallelRes, batchPtr, &batchRh2dContext);
+                    GetObjectRemoteBatchWrite(i, *subReq, parallelRes, batchPtr, &batchRh2dContext);
                 }
                 loopPoint.Record();
                 PerfPoint pDo(PerfKey::URMA_GATHER_WRITE_DO);

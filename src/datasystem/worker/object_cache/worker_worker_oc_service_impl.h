@@ -326,14 +326,12 @@ private:
      * @brief Helper function to GetObjectRemote, but specialized for the batch get path.
      * @param[in] subIndex Sub slot index of the parallel list.
      * @param[in] req Remote get sub request.
-     * @param[out] rsp Remote get response.
-     * @param[out] payload Out payloads.
-     * @param[out] keys The request id to wait for if not blocking.
      * @param[out] parallelRes Parallel result.
      * @param[in] batchPtr Batch ptr, default is nullptr means not in aggregate path.
+     * @param[in] batchRh2dContext Partition transport context.
      * @return Status of the call.
      */
-    Status GetObjectRemoteBatchWrite(uint32_t subIndex, const GetObjectRemoteReqPb &req, BatchGetObjectRemoteRspPb &rsp,
+    Status GetObjectRemoteBatchWrite(uint32_t subIndex, const GetObjectRemoteReqPb &req,
                                      std::vector<ParallelRes> &parallelRes,
                                      std::shared_ptr<AggregateMemory> batchPtr = nullptr,
                                      BatchRh2dContext *batchRh2dContext = nullptr);
@@ -387,14 +385,12 @@ private:
     /**
      * @brief Helper function to BatchGetObjectRemote to process requests in parallel.
      * @param[in] req Remote get batch request.
-     * @param[out] rsp Remote get batch response.
-     * @param[out] payload Out payloads.
-     * @param[out] keys The request id to wait for if not blocking.
-     * @param[out] lastRc The last try-again status seen during parallel processing.
+     * @param[out] parallelRes Parallel result list.
+     * @param[in] batchTransportContext Request-level transport decision.
      * @return Status of the call.
      */
-    Status ParallelBatchGetObject(BatchGetObjectRemoteReqPb &req, BatchGetObjectRemoteRspPb &rsp,
-                                  std::vector<ParallelRes> &parallelRes, const BatchRh2dContext &batchTransportContext);
+    Status ParallelBatchGetObject(BatchGetObjectRemoteReqPb &req, std::vector<ParallelRes> &parallelRes,
+                                  const BatchRh2dContext &batchTransportContext);
 
     /**
      * @brief Helper function to BatchGetObjectRemote to prepare the aggregate info.
