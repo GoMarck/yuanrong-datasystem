@@ -61,6 +61,8 @@
   filenames are DS-specific. `cmake/private-sdk-package.cmake` exports the actual link graph, rejects shared and
   out-of-prefix private inputs, preserves static cycles, and installs public headers without source/build/cache paths.
 - Dedicated dependency policy: `cmake/private-sdk-dependency-options.cmake`; TBB uses upstream `big_iron.inc`,
+  with compile/ABI flags exported through the environment for recursive make and no linker flags passed to `ar`.
+  Private dependency cache misses start in isolated fresh work directories so configure retries do not reapply patches.
   SecureC receives a mode-specific static patch, brpc tools use protobuf config targets for their static closure.
   Required patch failures stop this mode. Existing standalone defaults remain outside the opt-in policy.
 - `docs/private-static-sdk.md` owns build/install, ABI, archive/patch inventory and scope limits. The installed-package

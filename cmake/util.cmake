@@ -343,6 +343,10 @@ function(ADD_THIRDPARTY_LIB LIB_NAME)
   endif()
 
   # Fetch the package first.
+  if (DS_BUILD_STATIC_SDK)
+    set(FETCHCONTENT_BASE_DIR "${DS_BINARY_DIR}/_deps/private-sdk/${_LIB_NAME_LOWER}")
+    file(REMOVE_RECURSE "${FETCHCONTENT_BASE_DIR}")
+  endif()
   download_lib_pkg(${_LIB_NAME_LOWER} ${ARG_URL} ${ARG_SHA256})
 
   # Apply the patches if need.
@@ -370,16 +374,19 @@ function(ADD_THIRDPARTY_LIB LIB_NAME)
     if (NOT MAKE_PROGRAM)
       message(FATAL_ERROR "make program not found! Please install make.")
     endif()
-    if (ARG_CXX_FLAGS)
+    if (ARG_CXX_FLAGS AND NOT DS_BUILD_STATIC_SDK)
       list(APPEND ${LIB_NAME}_MAKE_CXXFLAGS "CXXFLAGS=${ARG_CXX_FLAGS}")
     endif()
-    if (ARG_C_FLAGS)
+    if (ARG_C_FLAGS AND NOT DS_BUILD_STATIC_SDK)
       list(APPEND ${LIB_NAME}_MAKE_CFLAGS "CFLAGS=${ARG_C_FLAGS}")
     endif()
     if (ARG_LINK_FLAGS)
       list(APPEND ${LIB_NAME}_MAKE_LDFLAGS "LDFLAGS=${ARG_LINK_FLAGS}")
     endif()
     if (DS_BUILD_STATIC_SDK)
+      # TBB clears MAKEOVERRIDES; environment flags survive its recursive make.
+      set(_ds_make_command ${CMAKE_COMMAND} -E env
+          "CXXFLAGS=${ARG_CXX_FLAGS}" "CFLAGS=${ARG_C_FLAGS}" "LDFLAGS=" "${MAKE_PROGRAM}")
       list(APPEND ${LIB_NAME}_MAKE_CXXFLAGS
           "CPLUS=${CMAKE_CXX_COMPILER}" "CONLY=${CMAKE_C_COMPILER}" extra_inc=big_iron.inc
           tbb_build_prefix=ds_private_sdk "tbb_build_dir=${${_LIB_NAME_LOWER}_SOURCE_DIR}/build" tbb)
@@ -390,8 +397,10 @@ function(ADD_THIRDPARTY_LIB LIB_NAME)
       else()
         message(FATAL_ERROR "Private static TBB requires a GCC or Clang toolchain")
       endif()
+    else()
+      set(_ds_make_command "${MAKE_PROGRAM}")
     endif()
-    __exec_command(COMMAND ${MAKE_PROGRAM}
+    __exec_command(COMMAND ${_ds_make_command}
                           ${${LIB_NAME}_MAKE_CFLAGS}
                           ${${LIB_NAME}_MAKE_CXXFLAGS}
                           ${${LIB_NAME}_MAKE_LDFLAGS}

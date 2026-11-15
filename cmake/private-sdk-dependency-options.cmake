@@ -41,6 +41,8 @@ function(ds_private_sdk_dependency_options name)
     elseif (_name STREQUAL "leveldb")
         list(APPEND _options -DCMAKE_DISABLE_FIND_PACKAGE_Snappy:BOOL=ON
             -DHAVE_SNAPPY:BOOL=OFF -DHAVE_CRC32C:BOOL=OFF)
+    elseif (_name STREQUAL "tbb")
+        set(ARG_LINK_FLAGS "" PARENT_SCOPE)
     endif()
     set(ARG_CONF_OPTIONS ${_options} PARENT_SCOPE)
     set(ARG_CXX_FLAGS "${ARG_CXX_FLAGS} -fPIC" PARENT_SCOPE)

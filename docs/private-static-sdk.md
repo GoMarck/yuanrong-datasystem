@@ -40,6 +40,8 @@ cmake --install <private-sdk-build>
 不要从 xllm 的第三方前缀寻找包。依赖构建使用 DS 自身前缀，禁用 package registry，并优先解析静态库。
 导出阶段拒绝私有前缀之外的第三方 archive/头文件、共享 target、共享库路径、无法解析的裸库名和薄 archive。
 必需补丁应用失败会停止配置，不继续生成可能不兼容的包。
+依赖缓存未命中时使用该依赖独立的全新工作目录，避免失败后重新配置时对旧源码重复应用补丁。
+TBB 递归 make 通过环境接收编译/ABI 参数，静态归档不接收最终共享库的链接器参数。
 
 `DS_GLIBCXX_USE_CXX11_ABI` 可显式设置为 0 或 1；默认探测 libstdc++ 的 ABI，并写入客户端 target。
 它同时应用到 DS 代码和 DS 第三方构建。bridge 中调用 C++ SDK 的编译单元必须使用相同 ABI、
