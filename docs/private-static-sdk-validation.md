@@ -17,7 +17,7 @@
 | `c++ -std=c++17 -Wall -Wextra -Werror -fsyntax-only -I include example/cpp/private_static_sdk/kv_smoke.cpp example/cpp/private_static_sdk/main.cpp` | PASS | 公开 KVClient 接口的语法和类型检查；没有链接 |
 | `bash -n scripts/validate_private_sdk.sh` | PASS | 验证脚本语法 |
 | `python3 scripts/ai_context/validate_module_metadata.py` | 18 files PASS | 模块元数据 |
-| `git diff --check` | PASS | 已跟踪 diff 的空白检查 |
+| `git diff --check`、`git diff --cached --check` | PASS | 工作树及包含新增文件的暂存区空白检查；首次暂存检查发现的补丁上下文空白及文件末尾空行已修正后重检 |
 
 首轮本地命令输出保存在 `/tmp/ds-private-sdk-local-20261115/`；其中 package.log 是新增库搜索拒绝用例前的
 3-test 输出，4-test 结果来自随后实际执行的命令输出。新增 SecureC 静态补丁已接续现有 CMake 补丁应用成功；
@@ -38,7 +38,14 @@
 | `1.95.199.126:22224` | unreachable | fallback 超时 |
 
 已验证可达节点的用户为 marck，HOME 为 `/home/marck`。22302 和 22303 的原有仓库均存在其他任务的
-未提交改动，未切换、覆盖或清理它们；本次应另用 Git clone。未运行跨节点测试。
+未提交改动，未切换、覆盖或清理它们。未运行跨节点测试。
+
+实现 commit `fae3449ee29f70552d9379822252d92215f0d110` 已推送到上述临时分支，并在 22303
+通过 HTTPS Git clone 同步到 `/home/marck/workspace/ds-private-sdk-validation`，切为 detached HEAD，
+核对 SHA 一致且已跟踪文件干净。Git 日志为
+`/home/marck/workspace/ds-private-sdk-validation-logs/git-clone-20261115.log`，退出码为 0。
+宿主机编译器路径为 `/usr/bin/gcc`、`/usr/bin/g++`；`/usr/bin/ccache` 为 198872-byte 可执行文件，
+不符合已知 35-byte 错误替代脚本特征。这些检查不代表容器编译器检查完成。
 
 候选镜像来自 [vLLM Ascend 官方安装文档](https://docs.vllm.ai/projects/ascend/en/v0.21.0rc/installation.html)，
 该版本要求 CANN 9.0.0，并列出 `quay.io/ascend/vllm-ascend:v0.21.0rc1`。
