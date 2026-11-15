@@ -1,0 +1,65 @@
+# Point CMAKE_PREFIX_PATH at a single coherent installation, or replace find_package
+# with your existing add_subdirectory calls before adding Datasystem.
+find_package(gflags CONFIG REQUIRED)
+find_package(brpc CONFIG REQUIRED)
+find_package(Protobuf CONFIG REQUIRED)
+find_package(gRPC CONFIG REQUIRED)
+find_package(absl CONFIG REQUIRED)
+find_package(OpenSSL REQUIRED)
+find_package(leveldb CONFIG REQUIRED)
+find_package(ZLIB REQUIRED)
+find_package(re2 CONFIG REQUIRED)
+find_package(CURL REQUIRED)
+find_package(ZeroMQ CONFIG REQUIRED)
+find_package(c-ares CONFIG REQUIRED)
+find_package(nlohmann_json CONFIG REQUIRED)
+find_package(TBB CONFIG REQUIRED)
+find_package(SecureC CONFIG REQUIRED)
+
+# Example mapping. Set these to existing targets if your packages use other names.
+set(DS_BRPC_TARGET brpc-static)
+set(DS_ZMQ_TARGET libzmq)
+set(DS_SECUREC_TARGET securec::securec)
+
+# Actual host versions; update these when rebuilding the host dependency set.
+set(DS_GFLAGS_VERSION 2.2.2)
+set(DS_BRPC_VERSION 1.12.1)
+set(DS_PROTOBUF_VERSION 3.21.12)
+set(DS_GRPC_VERSION 1.51.1)
+set(DS_HOST_GRPC_PLUGIN_VERSION 1.51.1)
+set(DS_ABSL_VERSION 20230802.1)
+set(DS_SSL_VERSION 3.2.1)
+set(DS_CRYPTO_VERSION 3.2.1)
+set(DS_LEVELDB_VERSION 1.23)
+set(DS_ZLIB_VERSION 1.3.1)
+set(DS_RE2_VERSION 2023-07-01)
+set(DS_CURL_VERSION 8.6.0)
+set(DS_ZMQ_VERSION 4.3.5)
+set(DS_CARES_VERSION 1.26.0)
+set(DS_JSON_VERSION 3.11.3)
+set(DS_TBB_VERSION 2020.3)
+set(DS_SECUREC_VERSION 1.1.16)
+
+# Set properties only after checking the real unified brpc build. This example
+# deliberately requires those decisions from the host instead of asserting them.
+if (NOT DEFINED HOST_BRPC_LOGGING OR NOT HOST_BRPC_NO_PTHREAD_MUTEX_HOOK
+        OR NOT HOST_BRPC_USES_HOST_DEPS)
+    message(FATAL_ERROR "Declare the audited HOST_BRPC_* build contract; see docs/client-source-integration.md")
+endif()
+get_target_property(_brpc_real "${DS_BRPC_TARGET}" ALIASED_TARGET)
+if (NOT _brpc_real)
+    set(_brpc_real "${DS_BRPC_TARGET}")
+endif()
+set_target_properties("${_brpc_real}" PROPERTIES
+    DS_BRPC_LOGGING "${HOST_BRPC_LOGGING}"
+    DS_BRPC_NO_PTHREAD_MUTEX_HOOK TRUE
+    DS_BRPC_USES_HOST_DEPS TRUE)
+
+if (NOT HOST_TBB_BTHREAD_AWARE_YIELD)
+    message(FATAL_ERROR "Audit and provide a bthread-aware TBB build; see the repository TBB yield patch")
+endif()
+get_target_property(_tbb_real TBB::tbb ALIASED_TARGET)
+if (NOT _tbb_real)
+    set(_tbb_real TBB::tbb)
+endif()
+set_property(TARGET "${_tbb_real}" PROPERTY DS_TBB_BTHREAD_AWARE_YIELD TRUE)

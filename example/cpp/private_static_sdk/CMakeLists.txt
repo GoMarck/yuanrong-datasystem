@@ -1,0 +1,11 @@
+cmake_minimum_required(VERSION 3.20)
+project(DatasystemPrivateConsumer LANGUAGES CXX)
+find_package(DatasystemPrivate CONFIG REQUIRED)
+add_library(ds_private_sdk_consumer SHARED kv_smoke.cpp)
+target_link_libraries(ds_private_sdk_consumer PRIVATE DatasystemPrivate::client)
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(ds_private_sdk_consumer PRIVATE -Wl,--no-undefined
+        "-Wl,-Map,${CMAKE_CURRENT_BINARY_DIR}/ds_private_sdk_consumer.map")
+endif()
+add_executable(ds_private_sdk_smoke main.cpp)
+target_link_libraries(ds_private_sdk_smoke PRIVATE ds_private_sdk_consumer)

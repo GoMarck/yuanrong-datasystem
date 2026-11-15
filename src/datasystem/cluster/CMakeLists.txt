@@ -3,12 +3,14 @@ add_library(remote_ub_port_health_verifier STATIC
 target_include_directories(remote_ub_port_health_verifier PUBLIC ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(remote_ub_port_health_verifier PUBLIC common_buffer common_log common_util)
 
-add_library(cluster_membership_codec STATIC
-        membership/membership_value_codec.cpp)
-target_include_directories(cluster_membership_codec PUBLIC ${PROJECT_SOURCE_DIR}/src)
-target_link_libraries(cluster_membership_codec PUBLIC
-        common_util
-        coordinator_protos)
+if (NOT DS_BUILD_CLIENT_ONLY)
+    add_library(cluster_membership_codec STATIC
+            membership/membership_value_codec.cpp)
+    target_include_directories(cluster_membership_codec PUBLIC ${PROJECT_SOURCE_DIR}/src)
+    target_link_libraries(cluster_membership_codec PUBLIC
+            common_util
+            coordinator_protos)
+endif()
 
 add_library(cluster_membership_codec_client STATIC
         membership/membership_value_codec.cpp)
@@ -17,7 +19,9 @@ target_link_libraries(cluster_membership_codec_client PUBLIC
         common_util
         coordinator_protos_client)
 
-add_subdirectory(coordination_backend)
+if (NOT DS_BUILD_CLIENT_ONLY)
+        add_subdirectory(coordination_backend)
+endif()
 
 add_library(cluster_topology_keyspace STATIC
         repository/topology_key_helper.cpp)
@@ -25,6 +29,10 @@ target_include_directories(cluster_topology_keyspace PUBLIC ${PROJECT_SOURCE_DIR
 target_link_libraries(cluster_topology_keyspace PUBLIC
         common_log
         common_util)
+
+if (DS_BUILD_CLIENT_ONLY)
+    return()
+endif()
 
 add_library(cluster_topology_scope STATIC
         executor/hash_key_filter.cpp

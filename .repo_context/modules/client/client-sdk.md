@@ -40,6 +40,33 @@
 - Regression: `ShmFdReceiveTest.*` in `tests/ut/client/transport_test.cpp` covers abandoned RPC responses,
   stale FD closure, an expired budget before reception, and reuse after validation failure.
 
+## Private static PIC SDK for a dynamically loaded bridge
+
+- Current delivery: independently configure `DS_BUILD_STATIC_SDK=ON`, retain DS-owned third-party versions, install
+  `DatasystemPrivate`, consume `DatasystemPrivate::client` without source/build paths or generic third-party targets.
+- Client source and lightweight helper closure are reused; service targets, bindings and device backends are excluded.
+  Public API, request paths, buffer ownership, shutdown, protocol and persistence semantics do not change.
+- `example/cpp/private_static_sdk` builds a shared consumer against the installed SDK and exercises real KVClient API;
+  its public-header syntax check and package plumbing fixtures are distinct from real DS build/Worker evidence.
+- Host Client requires no CANN/HIXL link libraries even when its validation container contains CANN. Existing process-wide
+  DS/brpc logging/config state remains; ELF export and runtime isolation in the final bridge is the consumer's duty.
+- Source of truth: `docs/private-static-sdk.md`, `cmake/private-sdk-*.cmake`, and the client CMake source list.
+
+## Source-integrated Host Client build
+
+- Root `DS_BUILD_CLIENT_ONLY=ON` exposes `Datasystem::client` as a production STATIC target with public SDK
+  includes and CMake-managed link closure. `DS_USE_EXTERNAL_DEPS=ON` reuses host common dependencies and rejects
+  missing versions/targets and required brpc/TBB build contracts. Both options default OFF.
+- Client-only retains discovery, coordinator-client, routing and transport protocol code without Worker/Coordinator
+  service targets, language packages, hetero backends or packaging. The lightweight transport API definition is reused
+  from `worker/object_cache/transport_api.cmake`; source implementations are not copied or replaced.
+- `example/cpp/source_client/main.cpp` uses only public KVClient API and is syntax-checked separately from real linking.
+  Initialization/shutdown belong to the host lifecycle; stop callers and release buffers before shutdown.
+- DS logging/config/metrics and shared brpc parameters still have process scope. Plain Client Init does not call the
+  Worker crash-handler installer; source integration does not mean zero process-global effects.
+- See `docs/client-source-integration.md` for dependency contracts, partial-Get Optional semantics, executable
+  validation commands and explicit unverified Linux/ABI/runtime limits. No API, timeout, persistence or protocol change.
+
 ## Scope
 
 - Paths:

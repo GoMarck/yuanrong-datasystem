@@ -53,6 +53,44 @@
   - CMake build knowledge is broader than `build-test-debug.md`; it owns target graph, third-party build cache,
     install layout, and packaging behavior, which are repeated inputs for compile-speed optimization and review.
 
+## Independent private static PIC SDK
+
+- Current bridge delivery uses `DS_BUILD_STATIC_SDK=ON` (default OFF), a native Linux, single-configuration,
+  independent CMake build. It selects the real Client-only closure and DS-owned versions; external mode is rejected.
+- Installed package: `DatasystemPrivate`, target `DatasystemPrivate::client`. All private imported targets and archive
+  filenames are DS-specific. `cmake/private-sdk-package.cmake` exports the actual link graph, rejects shared and
+  out-of-prefix private inputs, preserves static cycles, and installs public headers without source/build/cache paths.
+- Dedicated dependency policy: `cmake/private-sdk-dependency-options.cmake`; TBB uses upstream `big_iron.inc`,
+  SecureC receives a mode-specific static patch, brpc tools use protobuf config targets for their static closure.
+  Required patch failures stop this mode. Existing standalone defaults remain outside the opt-in policy.
+- `docs/private-static-sdk.md` owns build/install, ABI, archive/patch inventory and scope limits. The installed-package
+  shared consumer is `example/cpp/private_static_sdk`; `scripts/validate_private_sdk.sh` preserves per-step logs and
+  `scripts/verify_private_sdk.py` inspects installed archives, ELF, link map and system runtime dependencies.
+- Local package fixture checks do not establish real DS compatibility. Real validation uses ds-test on a selected
+  server inside a vLLM Ascend container with verified CANN 9.0.0. Final bridge C ABI/export/binding isolation belongs
+  to its consumer. No protocol/data migration is introduced; rollback disables this build option.
+
+## Source-integrated Host Client
+
+- `DS_BUILD_CLIENT_ONLY` and `DS_USE_EXTERNAL_DEPS` default OFF. The root routes the opt-in Client path to
+  `cmake/client-build.cmake` before standalone compiler policy, service targets and packaging.
+- `Datasystem::client` aliases the PIC STATIC `datasystem_client`; consumers use only this target and public headers.
+  Client-only currently disables device/URMA/RDMA extensions, tests, bindings, transfer_engine and packaging locally.
+- External dependencies are selected by existing targets or installed package configs in
+  `cmake/client-external-deps.cmake`, without acquiring common libraries. Unknown versions, missing targets,
+  incompatible canonical mappings, brpc logging/hook contracts and missing TBB cooperative-yield capability fail closed.
+  Only prefixed jemalloc and namespaced ds_spdlog can retain DS acquisition; their native builds inherit host compiler/ABI.
+- Keep coordinator-client/discovery, protocols and the lightweight worker transport API. The shared target definition
+  is `src/datasystem/worker/object_cache/transport_api.cmake`; including it does not configure Worker services.
+- `cmake/codegen.cmake` separates protocol generation from dependency acquisition. External tools use executable
+  targets without DS loader paths; cross builds require explicit host tools and prebuilt target-side DS private deps.
+- Contract/configuration checks: `python3 tests/cmake/test_client_integration.py -v`. Public-only API syntax:
+  `c++ -std=c++17 -fsyntax-only -I include example/cpp/source_client/main.cpp`.
+  These checks do not establish real dependency, ABI, ELF or Worker runtime compatibility.
+- Real Linux build/run and linkage audit commands, target/version tables and rollout limits:
+  `docs/client-source-integration.md`, `example/cpp/source_client/`, `scripts/verify_client_linkage.py`.
+  Remove the two opt-in flags to return to standalone behavior; no data/protocol migration is involved.
+
 ## Build Entrypoints
 
 | Entrypoint | Role | Source-backed notes |
@@ -172,7 +210,7 @@ against checked-in baselines, and it must be run after `build.sh` creates packag
 | Go SDK | `BUILD_GO_API=on` | `datasystem/sdk/go`, C API headers under `datasystem/sdk/go/include/datasystem/c_api`, Go libs under `datasystem/sdk/go/lib`; post-install validation builds example/client packages | `src/datasystem/c_api/CMakeLists.txt`, `cmake/package.cmake`, `scripts/package_go_sdk.sh` |
 | Final tarball | always after install | `yr-datasystem-v$(cat VERSION).tar.gz`; the script removes the installed `datasystem/` tree while creating the tarball | `scripts/build_cmake.sh` |
 
-braft 1.1.2 and every Coordinator Raft adapter target are built unconditionally by CMake. The static PIC
+In the standalone build, braft 1.1.2 and every Coordinator Raft adapter target are built unconditionally by CMake. The static PIC
 `libbraft.a` enters the product closure through `coordinator_service_impl` -> `coordinator_election_manager` ->
 `coordinator_raft_node`; Bazel mirrors the same product dependency. There is no standalone braft shared library or direct
 braft install/package rule. `WITH_TESTS` only adds GTest and test targets/CTest registration.

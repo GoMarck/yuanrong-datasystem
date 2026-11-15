@@ -116,6 +116,7 @@ Status RpcServer::StartBrpcServer(const std::string &addr, int port, BrpcLogPoli
     if (!brpcServer_) {
         brpcServer_ = std::make_unique<brpc::Server>();
     }
+#if !BRPC_WITH_GLOG
     if (logPolicy == BrpcLogPolicy::DISABLE_PROCESS_LOGGING) {
         logging::LoggingSettings settings;
         settings.logging_dest = logging::LOG_TO_NONE;
@@ -124,6 +125,10 @@ Status RpcServer::StartBrpcServer(const std::string &addr, int port, BrpcLogPoli
         settings.delete_old = logging::APPEND_TO_OLD_LOG_FILE;
         logging::InitLogging(settings);
     }
+#else
+    // The embedding application owns the process-wide glog configuration.
+    (void)logPolicy;
+#endif
 
     brpc::ServerOptions options;
     options.idle_timeout_sec = -1;
