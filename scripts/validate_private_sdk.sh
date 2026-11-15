@@ -26,6 +26,7 @@ if test -e "$validation_dir/relocated-sdk"; then
 fi
 run_logged configure cmake -S "$source_dir" -B "$validation_dir/sdk-build" \
     -DDS_BUILD_STATIC_SDK=ON -DDS_OPENSOURCE_DIR="$DS_OPENSOURCE_DIR" \
+    -DBUILD_THREAD_NUM="$jobs" \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$validation_dir/sdk"
 run_logged build cmake --build "$validation_dir/sdk-build" -j "$jobs"
 run_logged install cmake --install "$validation_dir/sdk-build"
