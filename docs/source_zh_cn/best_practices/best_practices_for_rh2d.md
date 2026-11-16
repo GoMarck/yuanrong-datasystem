@@ -269,9 +269,11 @@ export DS_HIXL_CS_ENABLE=0
 ```bash
 export DS_RH2D_LINK_TYPE=HCCS
 export DS_RH2D_HCCS_ENABLE_FABRIC_MEM=1
-# 可选：单个 FabricMem TransferSync descriptor batch 的并发切分数，默认 4，上限 16
-export DS_HIXL_TRANSFER_SYNC_PARALLELISM=4
-# 可选：一次 MGetH2D 命中多个远端来源 group 时的 group 并发数，默认 4，上限 16
+# 可选：每个 FabricMem 传输任务的对象数，默认 1，有效值为正 int32
+export DS_HIXL_TRANSFER_SYNC_CHUNK_COUNT=1
+# 可选：共享同步传输线程池的最大线程数，默认 4，上限 128
+export DS_HIXL_TRANSFER_SYNC_THREAD_NUM=4
+# 可选：一次 MGetH2D 命中多个远端来源 group 时的 group 并发数，默认 4，上限 128
 export DS_HIXL_REMOTE_GROUP_PARALLELISM=4
 ```
 
@@ -285,9 +287,12 @@ FabricMem 模式不使用 HIXL buffer-pool relay，`DS_RH2D_HCCS_BUFFER_POOL`/`r
 | `DS_HIXL_CS_ENABLE` | `0` | 是否通过 HIXL `LocalCommRes` version 1.3 启用 HIXL CS，必须与 Worker 的 `hixl_cs_enable` 一致 |
 | `HCCL_INTRA_ROCE_ENABLE` | 未设置 | HIXL RoCE 链路开关。未设置时 A2 默认使用 RoCE、A3 默认使用 HCCS；设置为 `1` 时使用 RoCE，是否启用 buffer-pool 由 `remote_h2d_hccs_buffer_pool`/`DS_RH2D_HCCS_BUFFER_POOL` 决定。Worker 和 Client 必须一致 |
 | `DS_RH2D_HCCS_ENABLE_FABRIC_MEM` | 未设置 | Client HIXL FabricMem 模式开关。设置为 `1` 或 `true` 时启用 FabricMem，必须与 Worker 一致 |
-| `DS_HIXL_REMOTE_GROUP_PARALLELISM` | `4` | 一个 MGetH2D 请求中包含多个远端来源 group 时的并发处理数，上限为 16；每个 group 对应一组共享同一远端 HIXL root identity 的对象 |
-| `DS_HIXL_TRANSFER_SYNC_PARALLELISM` | `4` | FabricMem 模式下单个 group 内 HIXL `TransferSync()` descriptor batch 的并发切分数，上限为 16；非 FabricMem 模式不使用该切分 |
+| `DS_HIXL_REMOTE_GROUP_PARALLELISM` | `4` | 多个远端来源 group 的并发处理数，有效范围 1–128；每个 group 对应一组共享同一远端 HIXL root identity 的对象。共享线程池大小在首次使用时固定，需在进程启动前配置 |
+| `DS_HIXL_TRANSFER_SYNC_CHUNK_COUNT` | `1` | FabricMem 模式下每个传输任务的对象数，有效值为正 int32；同一对象的全部 blob 保持在同一任务中 |
+| `DS_HIXL_TRANSFER_SYNC_THREAD_NUM` | `4` | 进程共享同步传输线程池的最大线程数，有效范围 1–128；首次使用时固定，需在进程启动前配置 |
 | `DS_RH2D_HCCS_ENABLE_AICPU_UNFOLD` | `0` | FabricMem AICPU 展开开关。默认关闭并使用 Host unfold，此时下发 `fabric_memory.enable_aicpu_unfold=false` 和 `fabric_memory.task_stream_num=8`；设置为 `1` 或 `true` 时下发 `fabric_memory.enable_aicpu_unfold=true` 和 `fabric_memory.task_stream_num=1` |
+
+上述 group 并发数和同步线程数钳制到 1–128，每任务对象数小于 1 时按 1 处理；无法解析为 int32 时使用各自默认值。
 
 ## 快速验证
 

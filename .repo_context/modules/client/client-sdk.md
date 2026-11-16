@@ -29,10 +29,12 @@
   `DS_HIXL_TRANSFER_SYNC_CHUNK_COUNT` bounds objects per chunk (default 1, positive int32).
   The previous parallelism environment variable is no longer read. `HixlTransferDesc::endOfObject` preserves
   object boundaries in reads and both write paths; one object's blobs never split across tasks.
-  `DS_HIXL_TRANSFER_SYNC_THREAD_NUM` bounds the process-shared `hixl_transfer_sync` pool (default 4, range 1–64).
+  `DS_HIXL_TRANSFER_SYNC_THREAD_NUM` bounds the process-shared `hixl_transfer_sync` pool (default 4, range 1–128).
   Pool capacity is captured on first use; configure it before process startup. Two groups of 230 keys each
   produce 460 tasks at the default chunk size, independently of the thread count. Other
   requests, communicator locks and device limits can still cause queueing. No throughput gain is asserted.
+- `DS_HIXL_REMOTE_GROUP_PARALLELISM` controls the shared remote-read group pool (default 4, clamped to 1–128).
+  Pool capacity is captured on first use; configure it before process startup.
 - `HeteroClient` uses `BOUND_READ`: `enableLocalCache=true` (default) keeps synchronous device writes bound;
   false enables placement routing. `UseRoutedReads` explicitly keeps `MGetH2D` bound in both modes, independently
   of the stored cache option. Ordinary Object/KV read policy is unchanged. Async device writes require true.

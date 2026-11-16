@@ -88,7 +88,7 @@ constexpr uint32_t K_FABRIC_MEM_AICPU_TASK_STREAM_NUM = 1;
 constexpr uint32_t K_FABRIC_MEM_HOST_TASK_STREAM_NUM = 8;
 constexpr int32_t K_DEFAULT_HIXL_TRANSFER_SYNC_CHUNK_COUNT = 1;
 constexpr int32_t K_DEFAULT_HIXL_TRANSFER_SYNC_THREAD_NUM = 4;
-constexpr int32_t K_MAX_HIXL_TRANSFER_SYNC_THREAD_NUM = 64;
+constexpr int32_t K_MAX_HIXL_TRANSFER_SYNC_THREAD_NUM = 128;
 
 // HCCL registration limit: keep a small reserve under the 256 MEM_DEVICE limit.
 // Long-lived pre-registrations and temporary fallback registrations share this budget.
