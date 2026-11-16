@@ -87,6 +87,7 @@ const std::string K_HIXL_TRANSFER_SYNC_THREAD_NUM_ENV = "DS_HIXL_TRANSFER_SYNC_T
 constexpr uint32_t K_FABRIC_MEM_AICPU_TASK_STREAM_NUM = 1;
 constexpr uint32_t K_FABRIC_MEM_HOST_TASK_STREAM_NUM = 8;
 constexpr int32_t K_DEFAULT_HIXL_TRANSFER_SYNC_CHUNK_COUNT = 1;
+constexpr int32_t K_HIXL_TRANSFER_SYNC_CHUNKING_DISABLED = -1;
 constexpr int32_t K_DEFAULT_HIXL_TRANSFER_SYNC_THREAD_NUM = 4;
 constexpr int32_t K_MAX_HIXL_TRANSFER_SYNC_THREAD_NUM = 128;
 
@@ -258,10 +259,11 @@ bool IsFabricMemAicpuUnfoldEnabled()
     return datasystem::GetBoolFromEnv(K_FABRIC_MEM_AICPU_UNFOLD_ENV.c_str(), false);
 }
 
-size_t GetHixlTransferSyncChunkCount()
+int32_t GetHixlTransferSyncChunkCount()
 {
-    return static_cast<size_t>(std::max(1, datasystem::GetInt32FromEnv(
-        K_HIXL_TRANSFER_SYNC_CHUNK_COUNT_ENV.c_str(), K_DEFAULT_HIXL_TRANSFER_SYNC_CHUNK_COUNT)));
+    const auto chunkCount = datasystem::GetInt32FromEnv(
+        K_HIXL_TRANSFER_SYNC_CHUNK_COUNT_ENV.c_str(), K_DEFAULT_HIXL_TRANSFER_SYNC_CHUNK_COUNT);
+    return chunkCount == K_HIXL_TRANSFER_SYNC_CHUNKING_DISABLED ? chunkCount : std::max(1, chunkCount);
 }
 
 datasystem::ThreadPool &GetHixlTransferThreadPool()
@@ -275,12 +277,17 @@ datasystem::ThreadPool &GetHixlTransferThreadPool()
 
 std::vector<HixlTransferChunk> BuildHixlTransferChunks(const std::vector<DsHixlTransferDesc> &descs,
                                                        const std::vector<datasystem::HixlTransferDesc> &objects,
-                                                       size_t objectsPerChunk)
+                                                       int32_t chunkCount)
 {
     std::vector<HixlTransferChunk> chunks;
     if (descs.empty()) {
         return chunks;
     }
+    if (chunkCount == K_HIXL_TRANSFER_SYNC_CHUNKING_DISABLED) {
+        chunks.push_back(HixlTransferChunk{ descs.data(), descs.size() });
+        return chunks;
+    }
+    const auto objectsPerChunk = static_cast<size_t>(chunkCount);
     const size_t objectCount = std::count_if(objects.begin(), objects.end(),
                                            [](const auto &desc) { return desc.endOfObject; });
     chunks.reserve(objectCount / objectsPerChunk + (objectCount % objectsPerChunk != 0));

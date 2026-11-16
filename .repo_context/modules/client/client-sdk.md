@@ -26,7 +26,9 @@
   real DMA failure semantics and performance remain hardware verification requirements.
   SDK-independent coverage: `tests/ut/common/rdma/hixl_async_executor_test.cpp` (CMake/Bazel).
 - FabricMem descriptor chunking and executor capacity are independent:
-  `DS_HIXL_TRANSFER_SYNC_CHUNK_COUNT` bounds objects per chunk (default 1, positive int32).
+  `DS_HIXL_TRANSFER_SYNC_CHUNK_COUNT` bounds objects per chunk (default 1, positive int32);
+  `-1` disables chunking and submits the whole non-empty batch once per remote endpoint, in sync and async modes.
+  Zero and values below `-1` still use 1; parse failures use the default.
   The previous parallelism environment variable is no longer read. `HixlTransferDesc::endOfObject` preserves
   object boundaries in reads and both write paths; one object's blobs never split across tasks.
   `DS_HIXL_TRANSFER_SYNC_THREAD_NUM` bounds the process-shared `hixl_transfer_sync` pool (default 4, range 1–128).

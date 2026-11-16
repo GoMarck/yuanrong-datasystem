@@ -459,6 +459,21 @@ TEST_F(HixlTransportPluginTest, FabricMemChunksKeepObjectBlobsTogether)
         g_chunkCounts.push_back(request->descriptorCount);
         return DS_HIXL_OK;
     };
+    api.transfer_async = [](DsHixlEngineHandle, const DsHixlTransferRequest *request,
+                            DsHixlTransferHandle *handle, uint32_t *) {
+        std::lock_guard<std::mutex> lock(g_chunkMutex);
+        g_chunkCounts.push_back(request->descriptorCount);
+        *handle = reinterpret_cast<DsHixlTransferHandle>(new int(0));
+        return DS_HIXL_OK;
+    };
+    api.query_transfer = [](DsHixlEngineHandle, DsHixlTransferHandle, uint32_t *state, uint32_t *) {
+        *state = DS_HIXL_TRANSFER_COMPLETED;
+        return DS_HIXL_OK;
+    };
+    api.release_transfer = [](DsHixlTransferHandle handle) {
+        delete reinterpret_cast<int *>(handle);
+        return DS_HIXL_OK;
+    };
     HixlTransport transport(&api, true);
     transport.SetLocalEndpoint("127.0.0.1");
     ASSERT_TRUE(transport.Init({ 0 }).IsOk());
@@ -503,7 +518,17 @@ TEST_F(HixlTransportPluginTest, FabricMemChunksKeepObjectBlobsTogether)
     verify("2", { 5, 1 });
     verify("100", { 6 });
     verify("0", { 2, 3, 1 });
-    verify("-1", { 2, 3, 1 });
+    verify("-2", { 2, 3, 1 });
+    verify("invalid", { 2, 3, 1 });
+    verify("-1", { 6 });
+    constexpr uint32_t unchunkedObjectCount = 129;
+    writes.assign(unchunkedObjectCount, { localAddress, remoteAddress, blobBytes, true });
+    for (auto op : { HixlTransferOp::READ, HixlTransferOp::WRITE }) {
+        g_chunkCounts.clear();
+        auto rc = transport.TransferBatch(op, writes, "127.0.0.1:12345", nullptr);
+        ASSERT_TRUE(rc.IsOk()) << rc.ToString();
+        EXPECT_EQ(g_chunkCounts, (std::vector<uint32_t>{ unchunkedObjectCount }));
+    }
     writes.back().endOfObject = false;
     EXPECT_EQ(transport.TransferBatch(HixlTransferOp::WRITE, writes, "127.0.0.1:12345", nullptr).GetCode(), K_INVALID);
 }
