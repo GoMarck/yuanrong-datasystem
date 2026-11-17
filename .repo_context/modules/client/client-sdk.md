@@ -45,6 +45,10 @@
   `HixlTransporter` sends `hixl_fabric_mem`, layouts and the RH2D communicator/device information.
   Workers return payload-only `host_info`; the SDK imports segments and groups WRITE descriptors by root identity.
   Neither same-host nor cross-host FabricMem writes use client mmap or TCP payload fallback.
+  Worker flag `remote_h2d_hccs_fabric_mem_shared_engines` (startup-only, requires multi-engine) registers every
+  arena on every worker engine and returns one deterministic root per client communicator, so the SDK's
+  per-root grouping collapses to one connection per worker per client device. The SDK needs no change for this
+  mode; connections reuse the existing `P2PCommInitRootInfo` cache keyed by root identity.
 - Worker Create reuses the routed HiXL pending-write budget and protection until `hixl_write_complete` publication.
   Uncertain writes retain target allocations under the existing bounded protection policy; no persistent format changes.
 - Device pre-registration configures the hetero transport first. FabricMem uses RemoteH2DManager registration once;

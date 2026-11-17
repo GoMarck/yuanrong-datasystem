@@ -64,6 +64,7 @@ DS_DECLARE_string(remote_h2d_hccs_buffer_pool);
 DS_DECLARE_bool(hixl_cs_enable);
 DS_DECLARE_bool(remote_h2d_hccs_enable_fabric_mem);
 DS_DECLARE_bool(remote_h2d_hccs_fabric_mem_multi_engine);
+DS_DECLARE_bool(remote_h2d_hccs_fabric_mem_shared_engines);
 DS_DECLARE_string(l2_cache_type);
 DS_DECLARE_string(distributed_disk_path);
 DS_DECLARE_string(log_dir);

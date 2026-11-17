@@ -783,6 +783,10 @@
         "value": "false",
         "description": "Create one worker HIXL engine per configured device and register each FabricMem arena only on its owning engine. Requires HCCS FabricMem and a nonempty unique device list. Startup-only; changing this option requires a worker restart."
     },
+    "remote_h2d_hccs_fabric_mem_shared_engines": {
+        "value": "false",
+        "description": "Register each FabricMem arena on every worker HIXL engine and route each client communicator to one deterministic engine, collapsing per-worker connections to one per client device. Requires HCCS FabricMem multi-engine mode. Startup-only; changing this option requires a worker restart."
+    },
     "urma_failover_success_rate_ratio": {
         "value": "0.5",
         "description": "Client-side URMA data-plane success-rate ratio threshold for worker failover. If the window success rate is below this ratio, the client tries to switch worker. 0.0 disables URMA failover."

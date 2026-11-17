@@ -108,6 +108,10 @@ DS_DEFINE_bool(remote_h2d_hccs_enable_fabric_mem, false,
 DS_DEFINE_bool(remote_h2d_hccs_fabric_mem_multi_engine, false,
                "Create one worker HIXL engine per remote_h2d_device_ids entry and register each FabricMem arena "
                "only on its owning engine. Requires HCCS FabricMem. Startup-only; default false uses one engine.");
+DS_DEFINE_bool(remote_h2d_hccs_fabric_mem_shared_engines, false,
+               "Register each FabricMem arena on every worker HIXL engine and route each client communicator to one "
+               "deterministic engine, collapsing per-worker connections to one per client device. Requires HCCS "
+               "FabricMem multi-engine mode. Startup-only.");
 DS_DEFINE_string(urma_mode, "UB", "[DEPRECATED] This flag is no longer used and will be removed in a future version.");
 DS_DEFINE_bool(enable_urma, false, "Option to turn on urma for OC worker to worker data transfer, default false.");
 DS_DEFINE_bool(enable_ub_fault_isolation, GetBoolFromEnv("DATASYSTEM_ENABLE_UB_FAULT_ISOLATION", true),

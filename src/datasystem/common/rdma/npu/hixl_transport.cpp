@@ -54,6 +54,7 @@ DS_DECLARE_bool(hixl_cs_enable);
 DS_DECLARE_bool(log_monitor);
 DS_DECLARE_bool(json_log_monitor);
 DS_DECLARE_bool(remote_h2d_hccs_enable_fabric_mem);
+DS_DECLARE_bool(remote_h2d_hccs_fabric_mem_shared_engines);
 
 namespace {
 
@@ -993,8 +994,9 @@ Status HixlTransport::EnsureFabricMemoryRegisteredOnDevice(int32_t devId,
 {
     RETURN_RUNTIME_ERROR_IF_NULL(region);
     RETURN_OK_IF_TRUE(region->registrationHandles.count(devId) != 0);
-    CHECK_FAIL_RETURN_STATUS(region->registrationHandles.empty(), K_INVALID,
-                             "FabricMem arena is already registered on another engine");
+    CHECK_FAIL_RETURN_STATUS(FLAGS_remote_h2d_hccs_fabric_mem_shared_engines
+                                 || region->registrationHandles.empty(),
+                             K_INVALID, "FabricMem arena is already registered on another engine");
     RETURN_IF_NOT_OK(BindDeviceForEngine(devId));
     DsHixlMemHandle handle = nullptr;
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
@@ -1033,10 +1035,20 @@ Status HixlTransport::RegisterFabricMemory(int32_t devId, void *addr, uint64_t s
     region->sourceAddr = addr;
     region->size = size;
     bool needCleanup = true;
-    Raii cleanup([this, &region, &needCleanup]() {
-        if (needCleanup) {
-            LOG_IF_ERROR(DeregisterFabricMemory(region), "Failed to roll back FabricMem registrations");
+    Raii cleanup([this, sourceAddr, &region, &needCleanup]() {
+        if (!needCleanup) {
+            return;
         }
+        const Status rollbackRc = DeregisterFabricMemory(region);
+        if (rollbackRc.IsError()) {
+            // Keep the region and its remaining handles in bookkeeping so UnregisterMemory can retry the cleanup
+            // instead of leaking vendor registrations after a double failure.
+            LOG(ERROR) << "FabricMem registration rollback failed; retaining region for retry: "
+                       << rollbackRc.ToString();
+            fabricMemoryRegions_[sourceAddr] = region;
+            return;
+        }
+        LOG_IF_ERROR(rollbackRc, "Failed to roll back FabricMem registrations");
     });
 
     RETURN_IF_NOT_OK(EnsureFabricMemoryRegisteredOnDevice(devId, region));

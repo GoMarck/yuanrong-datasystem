@@ -57,6 +57,11 @@
     FabricMem and a nonempty unique device list. Each arena has one registration owner, recorded in ShmUnit.
     Create/local Get/remote Get resolve that owner rather than hashing the client UUID. Fixed engine root tables
     replace worker-side per-client HIXL contexts in this mode; P2P-Transfer connection setup remains unchanged.
+    `remote_h2d_hccs_fabric_mem_shared_engines` (default false, startup-only) additionally registers every arena on
+    every worker engine and routes each client communicator to one deterministic engine (reverse modulo of the
+    client physical device id, falling back to the communicator hash), collapsing per-worker connections to one per
+    client device. It requires HCCS FabricMem multi-engine mode; registration is all-or-nothing per arena, and a
+    rollback double failure retains the region in bookkeeping for retried cleanup via `UnregisterMemory`.
     Replacing or releasing an object's local ShmUnit detaches cached host metadata; outstanding Get snapshots
     keep the old map and pinned memory. Leaving a remote-only object without local memory preserves its metadata.
     BatchGet/Multicreate/Get responses use endpoint tables and per-object indexes, including forwarding through a

@@ -12,6 +12,7 @@
  */
 
 #include "datasystem/common/rdma/npu/hixl_transport.h"
+#include "datasystem/common/rdma/npu/remote_h2d_manager.h"
 
 #include <cstdlib>
 #include <cstdint>
@@ -37,6 +38,7 @@ DS_DECLARE_bool(json_log_monitor);
 
 DS_DECLARE_string(remote_h2d_hccs_buffer_pool);
 DS_DECLARE_bool(remote_h2d_hccs_enable_fabric_mem);
+DS_DECLARE_bool(remote_h2d_hccs_fabric_mem_shared_engines);
 
 namespace datasystem {
 namespace {
@@ -431,6 +433,83 @@ TEST_F(HixlTransportPluginTest, FabricMemArenasRegisterOnlyOnTheirOwnerEngine)
     EXPECT_EQ(g_state.deregistrationEngines, (std::vector<int>{ secondEngine, 1 }));
     ASSERT_TRUE(transport.DisconnectAll().IsOk());
     EXPECT_EQ(g_state.destroyCalls, secondEngine);
+}
+
+TEST_F(HixlTransportPluginTest, SharedEnginesRegisterEveryArenaOnEveryEngine)
+{
+    const bool oldFabric = FLAGS_remote_h2d_hccs_enable_fabric_mem;
+    const bool oldShared = FLAGS_remote_h2d_hccs_fabric_mem_shared_engines;
+    Raii restore([oldFabric, oldShared] {
+        FLAGS_remote_h2d_hccs_enable_fabric_mem = oldFabric;
+        FLAGS_remote_h2d_hccs_fabric_mem_shared_engines = oldShared;
+    });
+    FLAGS_remote_h2d_hccs_enable_fabric_mem = true;
+    FLAGS_remote_h2d_hccs_fabric_mem_shared_engines = true;
+    constexpr int32_t deviceCount = 3;
+    constexpr uintptr_t arenaAddress = 0x10000;
+    constexpr uint64_t arenaSize = 4096;
+    auto *arena = reinterpret_cast<void *>(arenaAddress);
+    HixlTransport transport(&FAKE_API, true);
+    transport.SetLocalEndpoint("192.0.2.1");
+    ASSERT_TRUE(transport.Init({ 0, 4, 8 }).IsOk());
+    P2pSegmentInfo segment{};
+    ASSERT_TRUE(transport.RegisterFabricMemory(0, arena, arenaSize, &segment).IsOk());
+    ASSERT_TRUE(transport.RegisterFabricMemory(4, arena, arenaSize, &segment).IsOk());
+    ASSERT_TRUE(transport.RegisterFabricMemory(8, arena, arenaSize, &segment).IsOk());
+    EXPECT_EQ(g_state.registrationEngines, (std::vector<int>{ 1, 2, 3 }));
+    P2pSegmentInfo repeatedSegment{};
+    ASSERT_TRUE(transport.RegisterFabricMemory(0, arena, arenaSize, &repeatedSegment).IsOk());
+    EXPECT_EQ(g_state.registrationEngines.size(), static_cast<size_t>(deviceCount));
+    ASSERT_TRUE(transport.UnregisterMemory(arena).IsOk());
+    EXPECT_EQ(g_state.deregistrationEngines, (std::vector<int>{ 1, 2, 3 }));
+    ASSERT_TRUE(transport.DisconnectAll().IsOk());
+}
+
+TEST_F(HixlTransportPluginTest, SharedEngineRegistrationFailureLeavesCleanablePartialState)
+{
+    const bool oldFabric = FLAGS_remote_h2d_hccs_enable_fabric_mem;
+    const bool oldShared = FLAGS_remote_h2d_hccs_fabric_mem_shared_engines;
+    Raii restore([oldFabric, oldShared] {
+        FLAGS_remote_h2d_hccs_enable_fabric_mem = oldFabric;
+        FLAGS_remote_h2d_hccs_fabric_mem_shared_engines = oldShared;
+    });
+    FLAGS_remote_h2d_hccs_enable_fabric_mem = true;
+    FLAGS_remote_h2d_hccs_fabric_mem_shared_engines = true;
+    DsHixlApi api = FAKE_API;
+    api.register_memory = [](DsHixlEngineHandle engine, const DsHixlRegisterMemoryRequest *, DsHixlMemHandle *handle,
+                             uint32_t *) {
+        if (!g_state.registrationEngines.empty()) {
+            return DS_HIXL_RUNTIME_ERROR;
+        }
+        g_state.registrationEngines.push_back(*reinterpret_cast<int *>(engine));
+        *handle = reinterpret_cast<DsHixlMemHandle>(static_cast<uintptr_t>(1));
+        return DS_HIXL_OK;
+    };
+    constexpr uintptr_t arenaAddress = 0x30000;
+    constexpr uint64_t arenaSize = 4096;
+    auto *arena = reinterpret_cast<void *>(arenaAddress);
+    HixlTransport transport(&api, true);
+    transport.SetLocalEndpoint("192.0.2.1");
+    ASSERT_TRUE(transport.Init({ 0, 4, 8 }).IsOk());
+    P2pSegmentInfo segment{};
+    ASSERT_TRUE(transport.RegisterFabricMemory(0, arena, arenaSize, &segment).IsOk());
+    EXPECT_EQ(transport.RegisterFabricMemory(4, arena, arenaSize, &segment).GetCode(), K_RUNTIME_ERROR);
+    // The partially registered arena stays in bookkeeping so teardown deregisters the successful engine.
+    ASSERT_TRUE(transport.UnregisterMemory(arena).IsOk());
+    EXPECT_EQ(g_state.deregistrationEngines, (std::vector<int>{ 1 }));
+    ASSERT_TRUE(transport.DisconnectAll().IsOk());
+}
+
+TEST_F(HixlTransportPluginTest, SharedFabricEngineIndexSpreadsSelectorsAcrossEngines)
+{
+    constexpr size_t engineCount = 4;
+    EXPECT_EQ(RemoteH2DManager::SharedFabricEngineIndex(engineCount, 0), 3);
+    EXPECT_EQ(RemoteH2DManager::SharedFabricEngineIndex(engineCount, 1), 2);
+    EXPECT_EQ(RemoteH2DManager::SharedFabricEngineIndex(engineCount, 2), 1);
+    EXPECT_EQ(RemoteH2DManager::SharedFabricEngineIndex(engineCount, 3), 0);
+    EXPECT_EQ(RemoteH2DManager::SharedFabricEngineIndex(engineCount, 4), 3);
+    EXPECT_EQ(RemoteH2DManager::SharedFabricEngineIndex(engineCount, 17), 2);
+    EXPECT_EQ(RemoteH2DManager::SharedFabricEngineIndex(1, 12345), 0);
 }
 
 TEST_F(HixlTransportPluginTest, FabricMemChunksKeepObjectBlobsTogether)

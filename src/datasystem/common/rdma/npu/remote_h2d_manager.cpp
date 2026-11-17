@@ -545,6 +545,29 @@ Status RemoteH2DManager::GetFabricRootInfo(int32_t engineIndex, RemoteH2DHostInf
     return Status::OK();
 }
 
+Status RemoteH2DManager::SelectFabricEngineIndexForClient(const std::string &commId,
+                                                          const RemoteH2DClientDeviceInfoPb *clientDeviceInfo,
+                                                          int32_t &engineIndex)
+{
+    RETURN_IF_NOT_OK(initStatus_);
+    RETURN_IF_NOT_OK(GetWorkerDeviceIds());
+    const size_t engineCount = workerDeviceIds_.size();
+    CHECK_FAIL_RETURN_STATUS(!isClient_ && IsHccsFabricMemEnabled() && engineCount > 0,
+                             K_NOT_READY, "Worker FabricMem engines are unavailable");
+    uint64_t selector = 0;
+    if (clientDeviceInfo != nullptr && clientDeviceInfo->physical_device_id() >= 0) {
+        selector = static_cast<uint64_t>(clientDeviceInfo->physical_device_id());
+    } else {
+        CHECK_FAIL_RETURN_STATUS(!commId.empty(), K_INVALID, "HIXL client communicator ID is empty");
+        selector = MurmurHash3_32(commId);
+    }
+    engineIndex = SharedFabricEngineIndex(engineCount, selector);
+    LOG_EVERY_N(INFO, 100) << "[RH2D] Select shared FabricMem engine devId=" << workerDeviceIds_[engineIndex]
+                           << " engineIndex=" << engineIndex << " engineCount=" << engineCount
+                           << " selector=" << selector << " clientDevice=" << ClientDeviceInfoForLog(clientDeviceInfo);
+    return Status::OK();
+}
+
 Status RemoteH2DManager::CompleteConnectionInit(const std::string &key, P2pKind kind,
                                                 std::shared_ptr<RemoteH2DContext> &p2pComm, int32_t devId)
 {
@@ -804,7 +827,15 @@ Status RemoteH2DManager::RegisterFabricHostMemory(void *data, uint64_t dataSize,
     }
     CHECK_FAIL_RETURN_STATUS(owner != workerDeviceIds_.end(), K_INVALID,
                              "FabricMem arena device has no worker engine");
-    RETURN_IF_NOT_OK(RegisterHostMemoryOnDevice(*owner, data, dataSize));
+    if (FLAGS_remote_h2d_hccs_fabric_mem_shared_engines) {
+        // Every engine serves every arena. A partial registration would route clients to engines that cannot reach
+        // this arena, so any per-engine failure fails the whole arena registration.
+        for (auto devId : workerDeviceIds_) {
+            RETURN_IF_NOT_OK(RegisterHostMemoryOnDevice(devId, data, dataSize));
+        }
+    } else {
+        RETURN_IF_NOT_OK(RegisterHostMemoryOnDevice(*owner, data, dataSize));
+    }
     engineIndex = std::distance(workerDeviceIds_.begin(), owner);
     return Status::OK();
 }

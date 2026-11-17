@@ -266,6 +266,13 @@ Status ValidateHccsFabricMemWorkerConfig()
                                      && FLAGS_remote_h2d_hccs_enable_fabric_mem
                                      && !FLAGS_remote_h2d_device_ids.empty()),
                              K_INVALID, "FabricMem multi-engine requires HCCS, FabricMem and remote_h2d_device_ids");
+    CHECK_FAIL_RETURN_STATUS(!FLAGS_remote_h2d_hccs_fabric_mem_shared_engines
+                                 || (FLAGS_remote_h2d_link_type == "HCCS"
+                                     && FLAGS_remote_h2d_hccs_enable_fabric_mem
+                                     && FLAGS_remote_h2d_hccs_fabric_mem_multi_engine
+                                     && !FLAGS_remote_h2d_device_ids.empty()),
+                             K_INVALID, "FabricMem shared-engine registration requires HCCS, FabricMem, "
+                                        "multi-engine mode and remote_h2d_device_ids");
     RETURN_OK_IF_TRUE(!RemoteH2DManager::IsRemoteH2DEnabled());
     RETURN_OK_IF_TRUE(FLAGS_remote_h2d_link_type != "HCCS" || !FLAGS_remote_h2d_hccs_enable_fabric_mem);
 
@@ -2509,8 +2516,9 @@ Status WorkerOCServer::InitRpcAndMemoryRuntime()
 #ifdef USE_NPU
     RETURN_IF_NOT_OK(ValidateHccsFabricMemWorkerConfig());
 #else
-    CHECK_FAIL_RETURN_STATUS(!FLAGS_remote_h2d_hccs_fabric_mem_multi_engine, K_NOT_SUPPORTED,
-                             "FabricMem multi-engine requires an NPU build");
+    CHECK_FAIL_RETURN_STATUS(!FLAGS_remote_h2d_hccs_fabric_mem_multi_engine
+                                 && !FLAGS_remote_h2d_hccs_fabric_mem_shared_engines,
+                             K_NOT_SUPPORTED, "FabricMem multi-engine and shared-engine modes require an NPU build");
 #endif
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(InitializeRemoteH2DManager(), "Remote H2D transport init failed");
 

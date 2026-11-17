@@ -316,7 +316,11 @@ Status FillRemoteH2DHostInfoFromShm(const std::string &commId, const std::shared
     auto &manager = RemoteH2DManager::Instance();
     int32_t devId = preparedDeviceId;
     if (UsePhysicalFabricArena()) {
-        RETURN_IF_NOT_OK(manager.GetFabricRootInfo(shmUnit->GetHixlEngineIndex(), hostInfo, devId));
+        int32_t engineIndex = shmUnit->GetHixlEngineIndex();
+        if (FLAGS_remote_h2d_hccs_fabric_mem_shared_engines) {
+            RETURN_IF_NOT_OK(manager.SelectFabricEngineIndexForClient(commId, clientDeviceInfo, engineIndex));
+        }
+        RETURN_IF_NOT_OK(manager.GetFabricRootInfo(engineIndex, hostInfo, devId));
     } else {
         if (devId < 0) {
             RETURN_IF_NOT_OK(manager.GetDevIdForComm(commId, devId, clientDeviceInfo, avoidClientDeviceForSameNode));

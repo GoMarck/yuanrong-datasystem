@@ -163,7 +163,8 @@ private:
     bool initialized_ = false;
     HixlMemoryMode hixlMemoryMode_ = HixlMemoryMode::BUFFER_POOL;
     bool bufferPoolEnabled_ = false;
-    // Each FabricMem arena has exactly one registering engine for its entire lifetime.
+    // Without shared-engine registration each FabricMem arena has exactly one registering engine for its entire
+    // lifetime; shared-engine mode registers one arena on every worker engine.
     std::map<uintptr_t, std::shared_ptr<FabricMemoryRegion>> fabricMemoryRegions_;
     std::mutex fabricMemoryMutex_;
     bool allowSameDeviceConnection_ = false;

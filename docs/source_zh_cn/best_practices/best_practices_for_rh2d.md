@@ -237,6 +237,7 @@ Worker 参数说明：
 | `hixl_cs_enable` | `False` | 是否由 Worker 通过 HIXL `LocalCommRes` version 1.3 启用 HIXL CS；仅 HCCS 链路使用。启用后支持同节点跨进程、同 NPU 卡建链，并利用 CS 针对小数据传输的专项优化降低通信时延 |
 | `remote_h2d_hccs_enable_fabric_mem` | `false` | HIXL FabricMem 模式开关，仅 HCCS 使用。设置为 `true` 时不使用 HIXL buffer-pool relay |
 | `remote_h2d_hccs_fabric_mem_multi_engine` | `false` | Worker 启动开关，要求 HCCS、FabricMem 和非空设备列表。开启后每块 arena 只注册到其所属设备的 engine，对象读写使用该 engine 的 endpoint。关闭时所有 arena 注册到唯一 engine。不能动态切换 |
+| `remote_h2d_hccs_fabric_mem_shared_engines` | `false` | Worker 启动开关，要求 HCCS、FabricMem 和 multi-engine 模式。开启后每块 arena 注册到**所有** Worker engine，并按客户端设备（物理设备 ID 反向取模，缺失时回退 communicator 哈希）为每个客户端 comm 确定性选择一个 engine 返回 root；客户端到每个 Worker 的连接收敛为每个客户端设备一条，而非每条 engine 一条。注册按 arena 全有或全无，失败即 arena 初始化失败。SDK 无需任何改动，但仍须与 Worker 同步升级。不能动态切换 |
 | `sc_regular_socket_num` | `16` | FabricMem 模式必须设置为 `0`，关闭 StreamCache regular ShmCircularQueue |
 | `sc_stream_socket_num` | `16` | FabricMem 模式必须设置为 `0`，关闭 StreamCache stream ShmCircularQueue |
 | `oc_metadata_header` | `true` | FabricMem 模式必须设置为 `false`，避免在 FabricMem arena 内写入传统 mmap metadata header |
@@ -480,6 +481,7 @@ FabricMem 是 RH2D over HIXL HCCS 的一种可选内存模式。开启后，Work
 6. FabricMem 需要 CANN 9.0.0+ 和 HDK 26.0.0+。如果启动日志出现 `HIXL plugin does not provide FabricMem allocation APIs` 或 `FabricMem allocation APIs are unavailable`，说明当前构建环境或运行时加载的 HIXL plugin 不支持 FabricMem 申请接口。请检查 ADXL header、`libllm_datadist.so`、CANN/HIXL/HDK 版本是否一致，或改用 HCCS buffer-pool 模式。
 7. FabricMem 模式默认关闭 AICPU 展开，并显式设置 `fabric_memory.enable_aicpu_unfold=false` 与 `fabric_memory.task_stream_num=8`，使用 Host 展开路径。若需要测试 AICPU 展开，可设置 `DS_RH2D_HCCS_ENABLE_AICPU_UNFOLD=1`，此时会下发 `fabric_memory.enable_aicpu_unfold=true` 与 `fabric_memory.task_stream_num=1`。
 8. 如果日志中出现 `HIXL plugin malloc_memory(MEM_HOST) failed`，优先检查 Host 物理内存、大页能力、NUMA 配置、容器特权配置以及当前机器是否支持 HIXL FabricMem。FabricMem arena 的具体申请策略由 HIXL/ADXL 内部实现决定。
+9. 连接扇出较大（客户端设备数 × Worker engine 数）时可启用 `remote_h2d_hccs_fabric_mem_shared_engines=true`：Worker 把每块 arena 注册到全部 engine，并按客户端设备确定性选择 engine 返回 root，客户端对每个 Worker 的连接收敛为每个客户端设备一条。该模式要求 multi-engine 开启；arena 注册全有或全无，注册失败会导致对应 arena 初始化失败。开启后同一 Worker 的所有请求共享一条 comm，跨请求并发受 comm 互斥保护，批内 chunk 并行与异步传输不受影响；建议配合 `DS_HIXL_TRANSFER_SYNC_THREAD_NUM` 调优，并通过 `HCCS_FABRIC_QUEUE_WAIT_*` 与 `RH2D_MANAGER_COMM_LOCK_WAIT_*` 打点对比开关前后效果。
 
 ### FabricMem Put/Get 分阶段性能采集
 

@@ -155,6 +155,31 @@ public:
                           bool avoidClientDeviceForSameNode = false);
 
     Status GetFabricRootInfo(int32_t engineIndex, RemoteH2DHostInfo &hostInfo, int32_t &devId);
+
+    /**
+     * @brief Deterministically select the worker FabricMem engine that serves one client communicator when
+     *        shared-engine registration is enabled. Prefers the client physical device id (reverse modulo) for
+     *        cross-process load balance; falls back to the communicator hash when the id is unavailable.
+     * @param[in] commId The client communicator UUID.
+     * @param[in] clientDeviceInfo Optional client logical/physical device info.
+     * @param[out] engineIndex Index into the worker device list.
+     * @return Status of the call.
+     */
+    Status SelectFabricEngineIndexForClient(const std::string &commId,
+                                            const RemoteH2DClientDeviceInfoPb *clientDeviceInfo, int32_t &engineIndex);
+
+    /**
+     * @brief Pure routing formula: reverse-modulo a client selector over the worker engine count.
+     *        Reverse modulo spreads client devices across engines in endpoint publication order.
+     * @param[in] engineCount Number of worker engines, must be greater than 0.
+     * @param[in] selector Client physical device id or communicator hash.
+     * @return Engine index in [0, engineCount).
+     */
+    static int32_t SharedFabricEngineIndex(size_t engineCount, uint64_t selector)
+    {
+        return static_cast<int32_t>(engineCount - 1 - (selector % engineCount));
+    }
+
     Status RegisterFabricHostMemory(void *data, uint64_t dataSize, int32_t allocationDeviceId, int32_t &engineIndex);
 
     /**
