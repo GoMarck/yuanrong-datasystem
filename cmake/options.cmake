@@ -1,3 +1,6 @@
+option(DS_BUILD_STATIC_SDK "Build and install the private static PIC C++ SDK" OFF)
+option(DS_BUILD_CLIENT_ONLY "Build only the source-integrated C++ Client and its dependencies" OFF)
+option(DS_USE_EXTERNAL_DEPS "Reuse host dependency targets for the source-integrated Client" OFF)
 option(WITH_TESTS "Enable run datasystem testcases" OFF)
 option(BUILD_COVERAGE "Build code for coverage statistics" OFF)
 option(FAIL_ON_WARNINGS "Treat compile warnings as errors" ON)

@@ -17,7 +17,7 @@ set(zlib_C_FLAGS ${THIRDPARTY_SAFE_FLAGS})
 
 if (zlib_VERSION STREQUAL "1.2.13")
   set(zlib_PATCHES
-          ${CMAKE_SOURCE_DIR}/third_party/patches/zlib/Backport-CVE-2023-45853-Reject-overflows-of-zip-header-fields-in-mi-c.patch)
+          ${DS_SOURCE_DIR}/third_party/patches/zlib/Backport-CVE-2023-45853-Reject-overflows-of-zip-header-fields-in-mi-c.patch)
 endif()
 
 add_thirdparty_lib(ZLIB

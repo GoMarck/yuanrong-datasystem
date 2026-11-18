@@ -1,0 +1,53 @@
+if (CMAKE_VERSION VERSION_LESS 3.20)
+    message(FATAL_ERROR "Private static SDK requires CMake 3.20 or newer")
+endif()
+if (NOT CMAKE_SOURCE_DIR STREQUAL DS_SOURCE_DIR)
+    message(FATAL_ERROR "Build DS_BUILD_STATIC_SDK separately, then consume the installed DatasystemPrivate package")
+endif()
+if (NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_CROSSCOMPILING)
+    message(FATAL_ERROR "Private static SDK currently supports native Linux builds only")
+endif()
+if (CMAKE_CONFIGURATION_TYPES)
+    message(FATAL_ERROR "Private static SDK requires a single-configuration generator")
+endif()
+if (DS_USE_EXTERNAL_DEPS)
+    message(FATAL_ERROR "DS_BUILD_STATIC_SDK uses DS-owned dependencies; DS_USE_EXTERNAL_DEPS must be OFF")
+endif()
+if (NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+set(DS_BUILD_CLIENT_ONLY ON)
+set(BUILD_SHARED_LIBS OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(CMAKE_FIND_LIBRARY_SUFFIXES .a)
+set(OPENSSL_USE_STATIC_LIBS TRUE)
+set(ZLIB_USE_STATIC_LIBS TRUE)
+set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
+set(CMAKE_FIND_USE_PACKAGE_REGISTRY FALSE)
+set(CMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY FALSE)
+set(CMAKE_PREFIX_PATH "")
+set_property(GLOBAL PROPERTY DS_PRIVATE_SDK_PREFIXES "")
+file(WRITE "${DS_BINARY_DIR}/private-sdk-dependencies.txt" "Datasystem private static SDK dependencies\n")
+include("${DS_SOURCE_DIR}/cmake/private-sdk-dependency-options.cmake")
+
+if (NOT DEFINED DS_GLIBCXX_USE_CXX11_ABI OR DS_GLIBCXX_USE_CXX11_ABI STREQUAL "")
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_REQUIRED_QUIET TRUE)
+    check_cxx_source_compiles("#include <string>
+#if !defined(_GLIBCXX_USE_CXX11_ABI) || _GLIBCXX_USE_CXX11_ABI != 0
+#error Different standard library ABI
+#endif
+int main() { return 0; }" DS_PRIVATE_LIBSTDCXX_ABI_ZERO)
+    if (DS_PRIVATE_LIBSTDCXX_ABI_ZERO)
+        set(DS_GLIBCXX_USE_CXX11_ABI 0)
+    else()
+        check_cxx_source_compiles("#include <string>
+#if !defined(_GLIBCXX_USE_CXX11_ABI) || _GLIBCXX_USE_CXX11_ABI != 1
+#error Different standard library ABI
+#endif
+int main() { return 0; }" DS_PRIVATE_LIBSTDCXX_ABI_ONE)
+        if (DS_PRIVATE_LIBSTDCXX_ABI_ONE)
+            set(DS_GLIBCXX_USE_CXX11_ABI 1)
+        endif()
+    endif()
+endif()

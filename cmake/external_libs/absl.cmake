@@ -31,7 +31,7 @@ else ()
     set(absl_CXX_FLAGS ${THIRDPARTY_SAFE_FLAGS})
 endif ()
 
-set(absl_PATCHES ${CMAKE_SOURCE_DIR}/third_party/patches/absl/absl_failure_signal_handler.patch)
+set(absl_PATCHES ${DS_SOURCE_DIR}/third_party/patches/absl/absl_failure_signal_handler.patch)
 
 add_thirdparty_lib(absl
         URL ${absl_URL}

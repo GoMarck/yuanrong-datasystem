@@ -22,6 +22,18 @@ include(CheckCXXCompilerFlag)
 
 # Options for build.
 include(cmake/options.cmake)
+set(DS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+set(DS_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}")
+if (DS_BUILD_STATIC_SDK)
+    include(cmake/private-sdk-init.cmake)
+endif()
+if (DS_BUILD_CLIENT_ONLY)
+    include(cmake/client-build.cmake)
+    return()
+endif()
+if (DS_USE_EXTERNAL_DEPS)
+    message(FATAL_ERROR "DS_USE_EXTERNAL_DEPS currently requires DS_BUILD_CLIENT_ONLY=ON")
+endif()
 include(cmake/util.cmake)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)

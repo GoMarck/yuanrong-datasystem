@@ -1,0 +1,5 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -27 +27 @@
+-add_library(securec SHARED ${SRCS})
++add_library(securec ${SRCS})

@@ -55,6 +55,36 @@
 - Do not claim non-openEuler source-build support without source-backed verification.
 - Do not describe Bazel target internals except where `build.sh` chooses between build systems.
 
+## Private installed SDK boundary
+
+The production static SDK has an independent opt-in CMake entry and DS-owned dependency policy. It keeps the same
+Client source closure but exports a relocated installed graph under `DatasystemPrivate::` names, never generic host
+protobuf/gRPC targets. Its exporter rejects shared third-party dependencies, unresolved names, out-of-prefix archives
+and thin archives; DS-internal objects remain inside normal static archives. System thread/runtime libraries are separate.
+This build/package-only interface introduces no Bazel runtime source change. Existing design/playbook cover the boundary.
+
+Compiler and ABI requirements are recorded at build time and carried by the client target. Static/PIC packaging is not
+ELF symbol isolation: the final bridge controls exports, binding and C ABI ownership. TBB's static runtime constraints
+also require consumer-side isolation review. Package relocation fixtures and real SDK/container/Worker evidence must be
+reported separately. Source files and validation commands are indexed in `docs/private-static-sdk.md`.
+
+## Source integration boundary
+
+The opt-in build is owned by `cmake/client-build.cmake`, with target-based external dependency selection in
+`cmake/client-external-deps.cmake`. It precedes standalone flags/output/install policy. The Client uses the same source
+list and shared helpers; aliases of client protocol targets prevent compiling/registering duplicate DS descriptors.
+`common_flags`, `rpc_option_protos` and `etcdapi_proto` are static in this path; standalone library types stay unchanged.
+
+Host owns the common dependency graph, runtime lifetime, compiler/standard-library ABI and brpc/TBB build contracts.
+Do not infer ABI compatibility from package versions or successful configuration. Keep protoc/plugin host tools distinct
+from target libraries and retain coordinator-client/lightweight transport helpers when excluding service directories.
+The existing Bazel lightweight transport target already serves the same sources; this CMake integration adds no Bazel
+runtime source or protocol change. Existing build design and optimization playbook cover this feature, so no new module
+or metadata record is needed.
+
+Validation distinguishes configuration fixtures, public-header syntax, real dependency link/probe, ELF/map audit and
+Worker lifecycle execution. Commands and current evidence limits are in `docs/client-source-integration.md`.
+
 ## Platform And Toolchain Boundary
 
 | Item | Current verified state | Source |

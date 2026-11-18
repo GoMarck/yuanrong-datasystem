@@ -13,11 +13,11 @@ set(spdlog_CMAKE_OPTIONS
     -DCMAKE_BUILD_TYPE:STRING=Release
     -DSPDLOG_BUILD_SHARED:BOOL=ON)
 
-set(spdlog_PATCHES 
-    ${CMAKE_SOURCE_DIR}/third_party/patches/spdlog/change-filename.patch
-    ${CMAKE_SOURCE_DIR}/third_party/patches/spdlog/change-namespace.patch 
-    ${CMAKE_SOURCE_DIR}/third_party/patches/spdlog/change-rotating-file-sink.patch
-    ${CMAKE_SOURCE_DIR}/third_party/patches/spdlog/recover-from-broken-sink.patch)
+set(spdlog_PATCHES
+    ${DS_SOURCE_DIR}/third_party/patches/spdlog/change-filename.patch
+    ${DS_SOURCE_DIR}/third_party/patches/spdlog/change-namespace.patch
+    ${DS_SOURCE_DIR}/third_party/patches/spdlog/change-rotating-file-sink.patch
+    ${DS_SOURCE_DIR}/third_party/patches/spdlog/recover-from-broken-sink.patch)
 
 add_thirdparty_lib(SPDLOG
     URL ${spdlog_URL}
@@ -29,14 +29,22 @@ add_thirdparty_lib(SPDLOG
     CONF_OPTIONS ${spdlog_CMAKE_OPTIONS}
     PATCHES ${spdlog_PATCHES})
 
-find_library(SPDLOG
-    NAMES ds-spdlog
-    PATHS ${SPDLOG_ROOT}
-    PATH_SUFFIXES lib lib64
-    REQUIRED
-    NO_DEFAULT_PATH)
-
-set(CMAKE_PREFIX_PATH ${SPDLOG_ROOT})
-find_package(spdlog ${spdlog_VERSION} REQUIRED)
+if (DS_BUILD_CLIENT_ONLY)
+    file(GLOB _DS_SPDLOG_CONFIG "${SPDLOG_ROOT}/lib*/cmake/spdlog/spdlogConfig.cmake")
+    if (NOT _DS_SPDLOG_CONFIG)
+        message(FATAL_ERROR "Patched ds_spdlog package config missing under ${SPDLOG_ROOT}")
+    endif()
+    list(GET _DS_SPDLOG_CONFIG 0 _DS_SPDLOG_CONFIG_FILE)
+    include("${_DS_SPDLOG_CONFIG_FILE}")
+else()
+    find_library(SPDLOG
+        NAMES ds-spdlog
+        PATHS ${SPDLOG_ROOT}
+        PATH_SUFFIXES lib lib64
+        REQUIRED
+        NO_DEFAULT_PATH)
+    set(CMAKE_PREFIX_PATH ${SPDLOG_ROOT})
+    find_package(spdlog ${spdlog_VERSION} REQUIRED)
+endif()
 get_property(spdlog_INCLUDE_DIR TARGET ds_spdlog::spdlog PROPERTY INTERFACE_INCLUDE_DIRECTORIES)
 include_directories(SYSTEM ${spdlog_INCLUDE_DIR})

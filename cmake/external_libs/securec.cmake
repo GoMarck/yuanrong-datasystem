@@ -9,7 +9,11 @@ set(securec_VERSION v1.1.16)
 
 set(securec_C_FLAGS ${THIRDPARTY_SAFE_FLAGS})
 
-set(securec_PATCHES ${CMAKE_SOURCE_DIR}/third_party/patches/securec/libboundscheck-cmake-support.patch)
+set(securec_PATCHES ${DS_SOURCE_DIR}/third_party/patches/securec/libboundscheck-cmake-support.patch)
+
+if (DS_BUILD_STATIC_SDK)
+    list(APPEND securec_PATCHES "${DS_SOURCE_DIR}/third_party/patches/securec/static-sdk.patch")
+endif()
 
 add_thirdparty_lib(SecureC
   URL ${securec_URL}
@@ -18,7 +22,11 @@ add_thirdparty_lib(SecureC
   C_FLAGS ${securec_C_FLAGS}
   PATCHES ${securec_PATCHES})
 
-set(CMAKE_PREFIX_PATH ${SecureC_ROOT})
+set(_DS_SAVED_CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH}")
+set(CMAKE_PREFIX_PATH "${SecureC_ROOT}")
 find_package(SecureC REQUIRED)
+if (DS_BUILD_CLIENT_ONLY)
+    set(CMAKE_PREFIX_PATH "${_DS_SAVED_CMAKE_PREFIX_PATH}")
+endif()
 
 include_directories(${SECUREC_INCLUDE_DIR})
