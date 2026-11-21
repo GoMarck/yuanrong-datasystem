@@ -16,6 +16,10 @@ endif()
 if (NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
+include("${DS_SOURCE_DIR}/cmake/static-sdk/jobs.cmake")
+if (DEFINED DS_STATIC_SDK_JOBS OR NOT BUILD_THREAD_NUM)
+    ds_static_sdk_jobs(BUILD_THREAD_NUM 8)
+endif()
 set(DS_BUILD_CLIENT_ONLY ON)
 set(BUILD_SHARED_LIBS OFF)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -39,7 +43,7 @@ if (NOT DEFINED DS_GLIBCXX_USE_CXX11_ABI OR DS_GLIBCXX_USE_CXX11_ABI STREQUAL ""
 #endif
 int main() { return 0; }" DS_PRIVATE_LIBSTDCXX_ABI_ZERO)
     if (DS_PRIVATE_LIBSTDCXX_ABI_ZERO)
-        set(DS_GLIBCXX_USE_CXX11_ABI 0)
+        set(DS_GLIBCXX_USE_CXX11_ABI 0 CACHE STRING "Static SDK libstdc++ ABI" FORCE)
     else()
         check_cxx_source_compiles("#include <string>
 #if !defined(_GLIBCXX_USE_CXX11_ABI) || _GLIBCXX_USE_CXX11_ABI != 1
@@ -47,7 +51,7 @@ int main() { return 0; }" DS_PRIVATE_LIBSTDCXX_ABI_ZERO)
 #endif
 int main() { return 0; }" DS_PRIVATE_LIBSTDCXX_ABI_ONE)
         if (DS_PRIVATE_LIBSTDCXX_ABI_ONE)
-            set(DS_GLIBCXX_USE_CXX11_ABI 1)
+            set(DS_GLIBCXX_USE_CXX11_ABI 1 CACHE STRING "Static SDK libstdc++ ABI" FORCE)
         endif()
     endif()
 endif()

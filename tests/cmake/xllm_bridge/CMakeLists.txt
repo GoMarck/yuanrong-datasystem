@@ -10,7 +10,6 @@ if (NOT HOST_ABI MATCHES "^[01]$" OR NOT SDK_ABI MATCHES "^[01]$" OR HOST_ABI ST
 endif()
 add_compile_options("-D_GLIBCXX_USE_CXX11_ABI=${HOST_ABI}")
 if (DS_STATIC_SDK_SOURCE_DIR)
-    set(DS_GLIBCXX_USE_CXX11_ABI "${SDK_ABI}")
     add_subdirectory("${DS_STATIC_SDK_SOURCE_DIR}/cmake/static-sdk" ds-sdk)
 else()
     find_package(Datasystem CONFIG REQUIRED)

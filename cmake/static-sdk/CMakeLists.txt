@@ -6,16 +6,8 @@ if (CMAKE_CROSSCOMPILING OR NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     message(FATAL_ERROR "The embedded static SDK requires a native Linux toolchain")
 endif()
 
-set(_jobs "${DS_STATIC_SDK_JOBS}")
-if (_jobs STREQUAL "")
-    set(_jobs "$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
-endif()
-if (_jobs STREQUAL "")
-    set(_jobs 8)
-endif()
-if (NOT _jobs MATCHES "^[1-9][0-9]*$")
-    message(FATAL_ERROR "DS_STATIC_SDK_JOBS requires a positive integer, got '${_jobs}'")
-endif()
+include("${CMAKE_CURRENT_LIST_DIR}/jobs.cmake")
+ds_static_sdk_jobs(_jobs 8)
 
 get_filename_component(_source "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 set(_producer "${CMAKE_CURRENT_BINARY_DIR}/producer")
@@ -24,7 +16,7 @@ set(_env "${CMAKE_COMMAND}" -E env --unset=CFLAGS --unset=CXXFLAGS --unset=CPPFL
     --unset=CPATH --unset=CPLUS_INCLUDE_PATH --unset=C_INCLUDE_PATH --unset=LIBRARY_PATH
     --unset=CMAKE_PREFIX_PATH --unset=CMAKE_TOOLCHAIN_FILE --unset=PKG_CONFIG_PATH
     "CMAKE_BUILD_PARALLEL_LEVEL=${_jobs}")
-set(_options "-DCMAKE_INSTALL_PREFIX=${_prefix}" "-DBUILD_THREAD_NUM=${_jobs}"
+set(_options "-DCMAKE_INSTALL_PREFIX=${_prefix}" "-DDS_STATIC_SDK_JOBS=${_jobs}"
     "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}" "-DDS_GLIBCXX_USE_CXX11_ABI=${DS_GLIBCXX_USE_CXX11_ABI}")
 if (CMAKE_C_COMPILER)
     list(APPEND _options "-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}")

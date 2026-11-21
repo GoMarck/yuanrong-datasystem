@@ -16,7 +16,8 @@ bridge 的 C 接口、符号导出白名单、绑定隔离、dlopen 和 wheel �
 ## 作为父工程的子模块
 
 源码和安装模式都提供 `Datasystem::client_static`（CMake 类型为 `STATIC_LIBRARY`）。
-安装包名和 target 命名空间均为 `Datasystem`。静态 SDK 使用独立安装前缀；同时安装多种 SDK 时可用 `Datasystem_DIR` 精确选择。更新子模块或安装包时，消费方需同步更新链接 target。
+安装包名和 target 命名空间均为 `Datasystem`。静态 SDK 使用独立安装前缀。
+同时安装多种 SDK 时可用 `Datasystem_DIR` 精确选择。
 父工程可以在引入 DS 之前定义自己的 protobuf、gflags、brpc 等 target。
 
 ```cmake
@@ -60,15 +61,15 @@ xLLM 负责最终 C 导出表、ELF 检查和运行生命周期。
 使用新的构建目录和专用第三方缓存，避免复用共享构建的 CMake 搜索缓存：
 
 ```bash
-export DS_OPENSOURCE_DIR=<private-sdk-dependency-cache>
-cmake -S <ds-source> -B <private-sdk-build> \
+export CMAKE_BUILD_PARALLEL_LEVEL=8
+export DS_OPENSOURCE_DIR=<static-sdk-dependency-cache>
+cmake -S <ds-source> -B <static-sdk-build> \
   -DDS_BUILD_STATIC_SDK=ON \
   -DDS_OPENSOURCE_DIR="$DS_OPENSOURCE_DIR" \
-  -DBUILD_THREAD_NUM=<jobs> \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_INSTALL_PREFIX=<private-sdk-install>
-cmake --build <private-sdk-build> -j <jobs>
-cmake --install <private-sdk-build>
+  -DCMAKE_INSTALL_PREFIX=<static-sdk-install>
+cmake --build <static-sdk-build>
+cmake --install <static-sdk-build>
 ```
 
 直接构建生产工程使用 DS 源码根目录；父工程使用上面的 `cmake/static-sdk` 入口。
@@ -90,7 +91,7 @@ spdlog 源包的 README 行尾先归一化为 LF，使现有 DS 命名空间补�
 cmake_minimum_required(VERSION 3.20)
 project(MyBridge LANGUAGES CXX)
 find_package(Datasystem CONFIG REQUIRED
-    PATHS "<private-sdk-install>/lib/cmake/Datasystem" NO_DEFAULT_PATH)
+    PATHS "<static-sdk-install>/lib/cmake/Datasystem" NO_DEFAULT_PATH)
 add_library(my_bridge SHARED bridge.cpp)
 target_link_libraries(my_bridge PRIVATE Datasystem::client_static)
 ```
@@ -180,16 +181,16 @@ DS 日志、flags/metrics、brpc 参数仍存在进程级状态，静态构建�
 
 ## 实际 KVClient 共享库示例
 
-`example/cpp/static_sdk` 只从安装后的 package 构建 `libds_static_sdk_consumer.so`，
+`example/cpp/static_sdk` 支持源码和安装两种模式，均构建 `libds_static_sdk_consumer.so`，
 并链接一个 runner。共享库中的 C++ smoke 函数调用真实 Init、MSet、批量 Get、Del、ShutDown，
 检查失败 keys 和读取结果，并在关闭前释放返回 Buffer。这不是最终 bridge C ABI 或符号隔离实现。
 
 ```bash
 cmake -S <ds-source>/example/cpp/static_sdk -B <consumer-build> \
-  -DCMAKE_PREFIX_PATH=<private-sdk-install>
+  -DCMAKE_PREFIX_PATH=<static-sdk-install>
 cmake --build <consumer-build> -j <jobs>
 python3 <ds-source>/scripts/verify_static_sdk.py \
-  --prefix <private-sdk-install> \
+  --prefix <static-sdk-install> \
   --library <consumer-build>/libds_static_sdk_consumer.so \
   --link-map <consumer-build>/ds_static_sdk_consumer.map
 <consumer-build>/ds_static_sdk_smoke <worker-host> <worker-port>
@@ -204,7 +205,7 @@ python3 <ds-source>/scripts/verify_static_sdk.py \
 远端按仓库 `ds-test` 准备和同步确切源码，在实际 CANN 9.0.0 的 vLLM Ascend 容器中以验证用户执行：
 
 ```bash
-export DS_OPENSOURCE_DIR=<container-visible-private-cache>
+export DS_OPENSOURCE_DIR=<container-visible-sdk-cache>
 export DS_VALIDATION_JOBS=4
 bash scripts/validate_static_sdk.sh <fresh-validation-directory> [worker-host worker-port]
 ```
@@ -214,12 +215,12 @@ bash scripts/validate_static_sdk.sh <fresh-validation-directory> [worker-host wo
 镜像必须记录 tag/digest、架构和容器内实际 CANN 版本，不能仅按标签推断。root 只用于明确授权的依赖安装/服务管理，
 源码构建和测试按验证用户执行；不能绕过 Git-only 源码同步规则。
 
-本次已在 CANN 9.0.0 的 vLLM Ascend aarch64 容器完成真实第三方及 Client 静态编译、安装迁移、
+早期安装包已在 CANN 9.0.0 的 vLLM Ascend aarch64 容器完成真实第三方及 Client 静态编译、安装迁移、
 共享消费者链接和 ELF 审计。另一个不挂载 DS 源码、构建目录及依赖缓存的容器，仅从安装包重新构建
 消费者，并对同一源码版本的独立 Host Worker 完成 Init/MSet/Get/Del/ShutDown，退出码为 0。
 安装包包含 160 个完整静态 archive，示例 link map 实际选入其中 105 个；没有 DS 私有共享库或公共第三方 DSO。
 
 本地 fixture 另外覆盖父工程同名 protobuf/gRPC target 干扰、静态环和同一 archive 去重，
-并实际加载共享消费者验证返回值。最终 xllm 符号绑定/卸载、ABI=0、其他平台、并发压力、性能、
-Python/共享 SDK 及 Bazel 发布包回归未验证。完整命令、失败修复过程、产物校验值和日志索引见
+并实际加载共享消费者验证返回值。该次测试未覆盖最终 xllm 符号绑定/卸载、ABI=0、其他平台、并发压力、性能、
+Python/共享 SDK 及 Bazel 发布包回归。完整命令、失败修复过程、产物校验值和日志索引见
 [验证记录](private-static-sdk-validation.md)。
