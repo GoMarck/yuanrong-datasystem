@@ -58,7 +58,7 @@
 ## Private installed SDK boundary
 
 The production static SDK has an independent opt-in CMake entry and DS-owned dependency policy. It keeps the same
-Client source closure but exports a relocated installed graph under `DatasystemPrivate::` names, never generic host
+Client source closure but exports a relocated installed graph under `Datasystem::` names, never generic host
 protobuf/gRPC targets. Its exporter rejects shared third-party dependencies, unresolved names, out-of-prefix archives
 and thin archives; DS-internal objects remain inside normal static archives. System thread/runtime libraries are separate.
 This build/package-only interface introduces no Bazel runtime source change. Existing design/playbook cover the boundary.
@@ -66,7 +66,7 @@ This build/package-only interface introduces no Bazel runtime source change. Exi
 Compiler and ABI requirements are recorded at build time and carried by the client target. Static/PIC packaging is not
 ELF symbol isolation: the final bridge controls exports, binding and C ABI ownership. TBB's static runtime constraints
 also require consumer-side isolation review. Package relocation fixtures and real SDK/container/Worker evidence must be
-reported separately. Source files and validation commands are indexed in `docs/private-static-sdk.md`.
+reported separately. Source files and validation commands are indexed in `docs/static-sdk.md`.
 
 ## Source integration boundary
 

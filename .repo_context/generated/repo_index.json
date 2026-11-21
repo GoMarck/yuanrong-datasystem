@@ -1,6 +1,6 @@
 {
   "repo_root": ".",
-  "generated_at_utc": "2026-11-15T14:26:22+00:00",
+  "generated_at_utc": "2026-11-21T07:33:43+00:00",
   "root_files": [
     "README.md",
     "build.sh",
@@ -355,6 +355,9 @@
         "  - hetero_h2d_d2h_benchmark.py",
         "  - kv_set_exist_get_steady.py",
         "- cmake/",
+        "  - xllm_bridge/",
+        "    - CMakeLists.txt",
+        "    - abi.cpp",
         "  - test_client_integration.py",
         "  - test_client_linkage_audit.py",
         "  - test_private_sdk_package.py",
@@ -496,6 +499,7 @@
         "    - support/",
         "    - conftest.py",
         "  - test_ds_pr_review_helper.py",
+        "  - test_worker_perf_signals.py",
         "- st/",
         "  - client/",
         "    - kv_cache/",
@@ -723,8 +727,8 @@
       "exists": true,
       "tree": [
         "- cpp/",
-        "  - private_static_sdk/",
         "  - source_client/",
+        "  - static_sdk/",
         "  - BUILD.bazel",
         "  - CMakeLists.txt",
         "  - datasystem_example.cpp",
@@ -945,7 +949,6 @@
       "exists": true,
       "tree": [
         "- context/",
-        "  - cluster-cleanup-review.md",
         "  - module-map.json",
         "- hooks/",
         "  - context_survival.py",

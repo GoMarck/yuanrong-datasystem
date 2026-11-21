@@ -216,6 +216,6 @@ pip install output/openyuanrong_datasystem-*.whl
 ## 独立私有静态 PIC SDK
 
 默认关闭的 `DS_BUILD_STATIC_SDK=ON` 提供独立 CMake 构建和安装入口，保留 DS 自身第三方版本。
-消费方从安装目录 `find_package(DatasystemPrivate CONFIG)`，仅链接 `Datasystem::client_static`。
+消费方从安装目录 `find_package(Datasystem CONFIG)`，仅链接 `Datasystem::client_static`。
 完整构建命令、版本补丁、动态系统依赖、共享库示例和验证状态见
-[私有静态 SDK 契约](../../../private-static-sdk.md)。
+[私有静态 SDK 契约](../../../static-sdk.md)。

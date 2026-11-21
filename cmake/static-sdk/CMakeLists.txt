@@ -6,7 +6,7 @@ if (CMAKE_CROSSCOMPILING OR NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
     message(FATAL_ERROR "The embedded static SDK requires a native Linux toolchain")
 endif()
 
-set(_jobs "${DS_PRIVATE_SDK_JOBS}")
+set(_jobs "${DS_STATIC_SDK_JOBS}")
 if (_jobs STREQUAL "")
     set(_jobs "$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
 endif()
@@ -14,7 +14,7 @@ if (_jobs STREQUAL "")
     set(_jobs 8)
 endif()
 if (NOT _jobs MATCHES "^[1-9][0-9]*$")
-    message(FATAL_ERROR "DS_PRIVATE_SDK_JOBS requires a positive integer, got '${_jobs}'")
+    message(FATAL_ERROR "DS_STATIC_SDK_JOBS requires a positive integer, got '${_jobs}'")
 endif()
 
 get_filename_component(_source "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
@@ -41,14 +41,14 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_source}/CMake
 
 set(_package "${_producer}/private-sdk-package")
 file(STRINGS "${_package}/archives.txt" _archives)
-list(TRANSFORM _archives PREPEND "${_prefix}/lib/datasystem-private/")
+list(TRANSFORM _archives PREPEND "${_prefix}/lib/datasystem-static/")
 file(MAKE_DIRECTORY "${_prefix}/include")
 find_package(Threads REQUIRED)
 set(_DS_PRIVATE_PREFIX "${_prefix}")
 set(_DS_PRIVATE_IMPORT_SCOPE GLOBAL)
-include("${_package}/DatasystemPrivateTargets.cmake")
-add_custom_target(datasystem_private_sdk_install
+include("${_package}/DatasystemTargets.cmake")
+add_custom_target(datasystem_static_sdk_install
     COMMAND ${_env} "${CMAKE_COMMAND}" --build "${_producer}" --parallel "${_jobs}" --target install
-    BYPRODUCTS ${_archives} "${_prefix}/lib/datasystem-private/tls.o"
+    BYPRODUCTS ${_archives} "${_prefix}/lib/datasystem-static/tls.o"
     VERBATIM)
-add_dependencies(Datasystem::client_static datasystem_private_sdk_install)
+add_dependencies(Datasystem::client_static datasystem_static_sdk_install)

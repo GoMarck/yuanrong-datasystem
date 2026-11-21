@@ -101,14 +101,14 @@
 ## Private static PIC SDK for a dynamically loaded bridge
 
 - Current delivery: independently configure `DS_BUILD_STATIC_SDK=ON`, retain DS-owned third-party versions, install
-  `DatasystemPrivate`, consume `Datasystem::client_static` without source/build paths or generic third-party targets.
+  `Datasystem`, consume `Datasystem::client_static` without source/build paths or generic third-party targets.
 - Client source and lightweight helper closure are reused; service targets, bindings and device backends are excluded.
   Public API, request paths, buffer ownership, shutdown, protocol and persistence semantics do not change.
-- `example/cpp/private_static_sdk` builds a shared consumer against the installed SDK and exercises real KVClient API;
+- `example/cpp/static_sdk` builds a shared consumer against the installed SDK and exercises real KVClient API;
   its public-header syntax check and package plumbing fixtures are distinct from real DS build/Worker evidence.
 - Host Client requires no CANN/HIXL link libraries even when its validation container contains CANN. Existing process-wide
   DS/brpc logging/config state remains; ELF export and runtime isolation in the final bridge is the consumer's duty.
-- Source of truth: `docs/private-static-sdk.md`, `cmake/private-sdk-*.cmake`, and the client CMake source list.
+- Source of truth: `docs/static-sdk.md`, `cmake/private-sdk-*.cmake`, and the client CMake source list.
 
 ## Source-integrated Host Client build
 
@@ -1246,6 +1246,6 @@ distinct-worker budget and API deadline bound retry. Ambiguous failures remain t
 The manual Coordinator backend ST `CoordinatorWriteRedirectTest.ThreeExitingWorkersReturnLiveCandidateAndWritesSucceed`
 checks both two-step SHM Create/Publish and Set while three exiting workers are still ACTIVE in the committed ring.
 
-The isolated static SDK producer is shared by the installed `DatasystemPrivate` package and the source entry point
-`cmake/embed`. Both expose the static target `Datasystem::client_static` with its C++ ABI and producer-generated
-ELF weak TLS references. See `docs/private-static-sdk.md` for the build and consumption contract.
+The isolated static SDK producer is shared by the installed `Datasystem` package and the source entry point
+`cmake/static-sdk`. Both expose the static target `Datasystem::client_static` with its C++ ABI and producer-generated
+ELF weak TLS references. See `docs/static-sdk.md` for the build and consumption contract.

@@ -20,7 +20,7 @@ def tool(*args):
 
 def audit(prefix, library, link_map):
     prefix = prefix.resolve()
-    archives = sorted((prefix / "lib/datasystem-private").glob("*.a"))
+    archives = sorted((prefix / "lib/datasystem-static").glob("*.a"))
     errors = []
     if not archives:
         errors.append("No private SDK archives installed")
@@ -54,7 +54,7 @@ def audit(prefix, library, link_map):
             archive = link_map.parent / archive
         archive = archive.resolve()
         selected.add(str(archive))
-        if not archive.is_relative_to(prefix / "lib/datasystem-private") and archive.name not in SYSTEM_ARCHIVE:
+        if not archive.is_relative_to(prefix / "lib/datasystem-static") and archive.name not in SYSTEM_ARCHIVE:
             errors.append(f"Archive selected outside installed SDK: {archive}")
     if not selected:
         errors.append("No selected archive members found in link map")

@@ -1,9 +1,9 @@
-# DS 私有静态 PIC SDK
+# DS 静态 PIC SDK
 
 ## 对接契约
 
 DS 独立构建自身 Client 和所需第三方依赖，保留仓库固定版本及补丁。xllm 从安装目录消费
-`DatasystemPrivate` CMake package，仅链接 `Datasystem::client_static`，再自行构建最终 bridge。
+`Datasystem` CMake package，仅链接 `Datasystem::client_static`，再自行构建最终 bridge。
 生产入口是默认关闭的 `DS_BUILD_STATIC_SDK`，不依赖任何测试构建入口。
 
 此模式目前限定原生 Linux、CMake 3.20+、单配置生成器。它自动选择 Host Client 必需实现，
@@ -16,16 +16,16 @@ bridge 的 C 接口、符号导出白名单、绑定隔离、dlopen 和 wheel �
 ## 作为父工程的子模块
 
 源码和安装模式都提供 `Datasystem::client_static`（CMake 类型为 `STATIC_LIBRARY`）。
-安装包名为 `DatasystemPrivate`。更新子模块或安装包时，消费方需同步更新链接 target。
+安装包名和 target 命名空间均为 `Datasystem`。静态 SDK 使用独立安装前缀；同时安装多种 SDK 时可用 `Datasystem_DIR` 精确选择。更新子模块或安装包时，消费方需同步更新链接 target。
 父工程可以在引入 DS 之前定义自己的 protobuf、gflags、brpc 等 target。
 
 ```cmake
 cmake_minimum_required(VERSION 3.20)
 project(Host LANGUAGES CXX)
-if(DS_SDK_SOURCE_DIR)
-    add_subdirectory("${DS_SDK_SOURCE_DIR}/cmake/embed" ds-sdk)
+if(DS_STATIC_SDK_SOURCE_DIR)
+    add_subdirectory("${DS_STATIC_SDK_SOURCE_DIR}/cmake/static-sdk" ds-sdk)
 else()
-    find_package(DatasystemPrivate CONFIG REQUIRED)
+    find_package(Datasystem CONFIG REQUIRED)
 endif()
 add_library(my_bridge SHARED bridge.cpp)
 target_link_libraries(my_bridge PRIVATE Datasystem::client_static)
@@ -33,7 +33,7 @@ target_link_libraries(my_bridge PRIVATE Datasystem::client_static)
 
 ```bash
 # 源码模式，首次 configure 同步准备 DS 私有依赖
-CMAKE_BUILD_PARALLEL_LEVEL=8 cmake -S parent -B build -DDS_SDK_SOURCE_DIR=/path/to/ds
+CMAKE_BUILD_PARALLEL_LEVEL=8 cmake -S parent -B build -DDS_STATIC_SDK_SOURCE_DIR=/path/to/ds
 cmake --build build --target my_bridge
 # 安装模式，SDK 可整体移到新前缀
 cmake -S parent -B build-installed -DCMAKE_PREFIX_PATH=/path/to/relocated-sdk
@@ -42,7 +42,7 @@ cmake --build build-installed --target my_bridge
 
 源码入口在自己的二进制目录中独立配置 Release 生产工程，消费者构建时按目标依赖完成增量编译和安装。
 缓存保存在嵌入目录的 `producer/`，可搬迁的 SDK 位于其同级 `sdk/`。
-在父工程 configure 时给定正整数 `DS_PRIVATE_SDK_JOBS`，或设置环境变量
+在父工程 configure 时给定正整数 `DS_STATIC_SDK_JOBS`，或设置环境变量
 `CMAKE_BUILD_PARALLEL_LEVEL`（前者优先，默认 8）。同一数值传给第三方构建和客户端编译。
 构建同一目录下的 bridge 会检查 SDK 源码更新并复用已有对象。
 
@@ -52,7 +52,7 @@ cmake --build build-installed --target my_bridge
 SDK 构建时扫描实际 archive 中可选的弱 TLS 初始化符号，生成 PIC 对象并通过 target 自动链接。
 xLLM 负责最终 C 导出表、ELF 检查和运行生命周期。
 
-安装目录中的 `share/datasystem-private/build-info.txt` 记录构建 SHA、工作树状态、编译器和 ABI。
+安装目录中的 `share/datasystem-static/build-info.txt` 记录构建 SHA、工作树状态、编译器和 ABI。
 历史验收记录见[静态 SDK 验证](private-static-sdk-validation.md)。
 
 ## 独立构建与安装
@@ -71,7 +71,7 @@ cmake --build <private-sdk-build> -j <jobs>
 cmake --install <private-sdk-build>
 ```
 
-直接构建生产工程使用 DS 源码根目录；父工程使用上面的 `cmake/embed` 入口。
+直接构建生产工程使用 DS 源码根目录；父工程使用上面的 `cmake/static-sdk` 入口。
 不要从 xllm 的第三方前缀寻找包。依赖构建使用 DS 自身前缀，禁用 package registry，并优先解析静态库。
 导出阶段拒绝私有前缀之外的第三方 archive/头文件、共享 target、共享库路径、无法解析的裸库名和薄 archive。
 必需补丁应用失败会停止配置，不继续生成可能不兼容的包。
@@ -89,8 +89,8 @@ spdlog 源包的 README 行尾先归一化为 LF，使现有 DS 命名空间补�
 ```cmake
 cmake_minimum_required(VERSION 3.20)
 project(MyBridge LANGUAGES CXX)
-find_package(DatasystemPrivate CONFIG REQUIRED
-    PATHS "<private-sdk-install>/lib/cmake/DatasystemPrivate" NO_DEFAULT_PATH)
+find_package(Datasystem CONFIG REQUIRED
+    PATHS "<private-sdk-install>/lib/cmake/Datasystem" NO_DEFAULT_PATH)
 add_library(my_bridge SHARED bridge.cpp)
 target_link_libraries(my_bridge PRIVATE Datasystem::client_static)
 ```
@@ -99,15 +99,15 @@ target_link_libraries(my_bridge PRIVATE Datasystem::client_static)
 
 ```text
 include/datasystem/                       # 公开 C++ 头文件
-lib/datasystem-private/*.a                # 已选择的静态依赖，使用唯一文件名
-lib/datasystem-private/tls.o              # ELF 可选弱 TLS 引用
-lib/cmake/DatasystemPrivate/              # 可迁移的 config/version/targets
-share/datasystem-private/archives.txt      # 实际交付 archive 清单
-share/datasystem-private/private-sdk-dependencies.txt
-share/datasystem-private/build-info.txt
+lib/datasystem-static/*.a                # 已选择的静态依赖，使用唯一文件名
+lib/datasystem-static/tls.o              # ELF 可选弱 TLS 引用
+lib/cmake/Datasystem/              # 可迁移的 config/version/targets
+share/datasystem-static/archives.txt      # 实际交付 archive 清单
+share/datasystem-static/dependencies.txt
+share/datasystem-static/build-info.txt
 ```
 
-所有私有依赖 target 均重写为 `DatasystemPrivate::...`；客户端 target 本身是 IMPORTED STATIC。
+所有私有依赖 target 均重写为 `DatasystemStaticDeps::...`；客户端 target 本身是 IMPORTED STATIC。
 包配置不执行 protobuf/gRPC/Abseil 等共同依赖的 find_package，不引用宿主的通用第三方 target。
 同一个实际 archive 被多条路径引用时只复制一份。静态库之间的依赖图交给 CMake 管理顺序和静态环。
 第三方导入名使用该静态 archive target 的别名，传递依赖保留在静态 target 上。
@@ -180,19 +180,19 @@ DS 日志、flags/metrics、brpc 参数仍存在进程级状态，静态构建�
 
 ## 实际 KVClient 共享库示例
 
-`example/cpp/private_static_sdk` 只从安装后的 package 构建 `libds_private_sdk_consumer.so`，
+`example/cpp/static_sdk` 只从安装后的 package 构建 `libds_static_sdk_consumer.so`，
 并链接一个 runner。共享库中的 C++ smoke 函数调用真实 Init、MSet、批量 Get、Del、ShutDown，
 检查失败 keys 和读取结果，并在关闭前释放返回 Buffer。这不是最终 bridge C ABI 或符号隔离实现。
 
 ```bash
-cmake -S <ds-source>/example/cpp/private_static_sdk -B <consumer-build> \
+cmake -S <ds-source>/example/cpp/static_sdk -B <consumer-build> \
   -DCMAKE_PREFIX_PATH=<private-sdk-install>
 cmake --build <consumer-build> -j <jobs>
-python3 <ds-source>/scripts/verify_private_sdk.py \
+python3 <ds-source>/scripts/verify_static_sdk.py \
   --prefix <private-sdk-install> \
-  --library <consumer-build>/libds_private_sdk_consumer.so \
-  --link-map <consumer-build>/ds_private_sdk_consumer.map
-<consumer-build>/ds_private_sdk_smoke <worker-host> <worker-port>
+  --library <consumer-build>/libds_static_sdk_consumer.so \
+  --link-map <consumer-build>/ds_static_sdk_consumer.map
+<consumer-build>/ds_static_sdk_smoke <worker-host> <worker-port>
 ```
 
 共享库使用 `--no-undefined`，配合 link map、DT_NEEDED、动态符号表、TEXTREL 和安装 archive SHA256 审计。
@@ -206,7 +206,7 @@ python3 <ds-source>/scripts/verify_private_sdk.py \
 ```bash
 export DS_OPENSOURCE_DIR=<container-visible-private-cache>
 export DS_VALIDATION_JOBS=4
-bash scripts/validate_private_sdk.sh <fresh-validation-directory> [worker-host worker-port]
+bash scripts/validate_static_sdk.sh <fresh-validation-directory> [worker-host worker-port]
 ```
 
 脚本分别保存 configure/build/install、迁移后 consumer configure/build、链接审计和可选 runtime 日志，

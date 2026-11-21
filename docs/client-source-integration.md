@@ -1,6 +1,6 @@
 # Client 源码集成契约
 
-当前 xllm 交付目标已调整为独立私有静态 PIC SDK，请使用 [私有静态 SDK 契约](private-static-sdk.md)。
+当前 xllm 交付目标已调整为独立私有静态 PIC SDK，请使用 [私有静态 SDK 契约](static-sdk.md)。
 本文保留为可选的共同依赖源码集成接口说明，不是当前 xllm 的接入方式。
 
 ## 1. 源码版本

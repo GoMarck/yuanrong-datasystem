@@ -57,7 +57,7 @@
 
 - Current bridge delivery uses `DS_BUILD_STATIC_SDK=ON` (default OFF), a native Linux, single-configuration,
   independent CMake build. It selects the real Client-only closure and DS-owned versions; external mode is rejected.
-- Installed package: `DatasystemPrivate`, target `Datasystem::client_static`. All private imported targets and archive
+- Installed package: `Datasystem`, target `Datasystem::client_static`. All private imported targets and archive
   filenames are DS-specific. `cmake/private-sdk-package.cmake` exports the actual link graph, rejects shared and
   out-of-prefix private inputs, preserves static cycles, and installs public headers without source/build/cache paths.
   Constant `BOOL` link conditions are folded before export so system-library probes do not leak build-host paths.
@@ -68,9 +68,9 @@
   spdlog README line endings are normalized before applying its existing DS namespace patch.
   SecureC receives a mode-specific static patch, brpc tools use protobuf config targets for their static closure.
   Required patch failures stop this mode. Existing standalone defaults remain outside the opt-in policy.
-- `docs/private-static-sdk.md` owns build/install, ABI, archive/patch inventory and scope limits. The installed-package
-  shared consumer is `example/cpp/private_static_sdk`; `scripts/validate_private_sdk.sh` preserves per-step logs and
-  `scripts/verify_private_sdk.py` inspects installed archives, ELF, link map and system runtime dependencies.
+- `docs/static-sdk.md` owns build/install, ABI, archive/patch inventory and scope limits. The installed-package
+  shared consumer is `example/cpp/static_sdk`; `scripts/validate_static_sdk.sh` preserves per-step logs and
+  `scripts/verify_static_sdk.py` inspects installed archives, ELF, link map and system runtime dependencies.
 - Local package fixture checks do not establish real DS compatibility. Real validation uses ds-test on a selected
   server inside a vLLM Ascend container with verified CANN 9.0.0. Final bridge C ABI/export/binding isolation belongs
   to its consumer. No protocol/data migration is introduced; rollback disables this build option.
