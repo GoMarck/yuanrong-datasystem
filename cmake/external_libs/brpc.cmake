@@ -84,6 +84,11 @@ if (KVTEST_BUILD_STATIC)
     set(_KVTEST_STATIC_LDFLAGS "-Wl,--whole-archive ${_PROTOBUF_WHOLE_A_SPACES} -Wl,--no-whole-archive ${Protobuf_LIB_PATH}/libutf8_range.a ${Protobuf_LIB_PATH}/libutf8_validity.a ${Protobuf_LIB_PATH}/libprotobuf-lite.a")
 endif()
 
+if (DS_BUILD_STATIC_SDK)
+    set(_BRPC_PROTOBUF_LIB "${Protobuf_LIB_PATH}/libprotobuf.a")
+    set(_BRPC_PROTOC_LIB "${Protobuf_LIB_PATH}/libprotoc.a")
+endif()
+
 set(brpc_CMAKE_OPTIONS
     -DCMAKE_BUILD_TYPE:STRING=Release
     -DCMAKE_POSITION_INDEPENDENT_CODE:BOOL=ON
@@ -159,10 +164,20 @@ set(brpc_CXX_FLAGS ${THIRDPARTY_SAFE_FLAGS})
 set(brpc_C_FLAGS ${THIRDPARTY_SAFE_FLAGS})
 
 set(brpc_PATCHES
-    ${CMAKE_SOURCE_DIR}/third_party/patches/brpc/fix-boringssl-compat.patch
-    ${CMAKE_SOURCE_DIR}/third_party/patches/brpc/avoid-glog-flag-conflicts.patch
-    ${CMAKE_SOURCE_DIR}/third_party/patches/brpc/link-pthread-runtime.patch
-    ${CMAKE_SOURCE_DIR}/third_party/patches/brpc/link-configured-zlib.patch)
+    ${DS_SOURCE_DIR}/third_party/patches/brpc/fix-boringssl-compat.patch
+    ${DS_SOURCE_DIR}/third_party/patches/brpc/avoid-glog-flag-conflicts.patch
+    ${DS_SOURCE_DIR}/third_party/patches/brpc/link-pthread-runtime.patch
+    ${DS_SOURCE_DIR}/third_party/patches/brpc/link-configured-zlib.patch)
+
+if (DS_BUILD_STATIC_SDK)
+    list(APPEND brpc_PATCHES
+        "${DS_SOURCE_DIR}/third_party/patches/brpc/static-sdk-protobuf-targets.patch"
+        "${DS_SOURCE_DIR}/third_party/patches/brpc/static-sdk-lazy-concurrency-default.patch")
+    get_filename_component(_BRPC_PROTOBUF_PACKAGE_PARENT "${_BRPC_PROTOBUF_CMAKE_DIR}" DIRECTORY)
+    list(APPEND brpc_CMAKE_OPTIONS
+        "-Dutf8_range_DIR:PATH=${_BRPC_PROTOBUF_PACKAGE_PARENT}/utf8_range"
+        "-DCMAKE_CPP_FLAGS:STRING=${THIRDPARTY_SAFE_FLAGS} -I${absl_INCLUDE_DIR} -I${ZLIB_INCLUDE_DIRS} -DNO_PTHREAD_MUTEX_HOOK")
+endif()
 
 # brpc's build runs the project's protoc which dlopen-s libprotoc.so.<ver> at runtime.
 # Without LD_LIBRARY_PATH the protoc invocation fails with "cannot open shared object file".
@@ -197,6 +212,9 @@ set(BRPC_LIB_DIR ${brpc_ROOT}/lib)
 if (EXISTS ${brpc_ROOT}/lib64)
     set(BRPC_LIB_DIR ${brpc_ROOT}/lib64)
 endif()
+if (DS_BUILD_STATIC_SDK)
+    unset(BRPC_LIBRARY CACHE)
+endif()
 find_library(BRPC_LIBRARY
     NAMES brpc
     PATHS ${BRPC_LIB_DIR}
@@ -216,6 +234,15 @@ set(BRPC_LIBRARIES
     ${leveldb_LIBRARY}
     protobuf::libprotobuf
     Threads::Threads)
+
+if (DS_BUILD_STATIC_SDK)
+    add_library(ds_private_brpc STATIC IMPORTED)
+    set_target_properties(ds_private_brpc PROPERTIES
+        IMPORTED_LOCATION "${BRPC_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${BRPC_INCLUDE_DIR}"
+        INTERFACE_LINK_LIBRARIES "${gflags_LIBRARY};${leveldb_LIBRARY};protobuf::libprotobuf;OpenSSL::SSL;OpenSSL::Crypto;ZLIB::ZLIB;Threads::Threads;${CMAKE_DL_LIBS}")
+    set(BRPC_LIBRARIES ds_private_brpc)
+endif()
 
 if (DEFINED EXPORT_TO_USER_ENV_FILE)
     file(APPEND "${EXPORT_TO_USER_ENV_FILE}"

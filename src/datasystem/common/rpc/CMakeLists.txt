@@ -1,9 +1,16 @@
+if (NOT DS_RPC_GENERATOR_TARGET)
+    set(DS_RPC_GENERATOR_TARGET rpc_generator)
+endif()
+if (NOT DS_ZMQ_PLUGIN_TARGET)
+    set(DS_ZMQ_PLUGIN_TARGET zmq_plugin)
+endif()
+if (NOT DS_BUILD_CLIENT_ONLY OR NOT CMAKE_CROSSCOMPILING)
 # protoc plugin
 set(ZMQ_PLUGIN_DEPEND_LIBS
         protobuf::libprotobuf
         protobuf::libprotoc
         common_util
-        $<TARGET_FILE:utils_protos>
+        utils_protos
         rpc_option_protos
         )
 
@@ -17,15 +24,23 @@ set(ZMQ_RPC_GENERATOR_SRC
         plugin_generator/brpc_stub_generator.cpp
 )
 
-add_library(rpc_generator ${ZMQ_RPC_GENERATOR_SRC})
-target_link_libraries(rpc_generator PRIVATE ${ZMQ_PLUGIN_DEPEND_LIBS})
-add_dependencies(rpc_generator utils_protos rpc_option_protos)
+if (DS_BUILD_CLIENT_ONLY)
+    add_library(${DS_RPC_GENERATOR_TARGET} STATIC ${ZMQ_RPC_GENERATOR_SRC})
+else()
+    add_library(${DS_RPC_GENERATOR_TARGET} ${ZMQ_RPC_GENERATOR_SRC})
+endif()
+target_link_libraries(${DS_RPC_GENERATOR_TARGET} PRIVATE ${ZMQ_PLUGIN_DEPEND_LIBS})
+add_dependencies(${DS_RPC_GENERATOR_TARGET} utils_protos rpc_option_protos)
 
-add_executable(zmq_plugin plugin_generator/zmq_plugin.cpp)
-target_link_libraries(zmq_plugin PRIVATE rpc_generator)
+add_executable(${DS_ZMQ_PLUGIN_TARGET} plugin_generator/zmq_plugin.cpp)
+target_link_libraries(${DS_ZMQ_PLUGIN_TARGET} PRIVATE ${DS_RPC_GENERATOR_TARGET})
 
-add_executable(rpc_plugin plugin_generator/rpc_plugin.cpp)
-target_link_libraries(rpc_plugin PRIVATE rpc_generator)
+if (NOT DS_BUILD_CLIENT_ONLY)
+    add_executable(rpc_plugin plugin_generator/rpc_plugin.cpp)
+    target_link_libraries(rpc_plugin PRIVATE ${DS_RPC_GENERATOR_TARGET})
+endif()
+
+endif()
 
 # zmq server library
 set(COMMON_RPC_ZMQ_SRCS
@@ -98,13 +113,19 @@ if (BUILD_WITH_URMA)
                 common_rdma)
 endif()
 
+if (NOT DS_BUILD_CLIENT_ONLY)
 add_library(common_rpc_zmq STATIC ${COMMON_RPC_ZMQ_SRCS})
 target_link_libraries(common_rpc_zmq PUBLIC ${COMMON_RPC_ZMQ_DEPENDS_LIBS})
 add_dependencies(common_rpc_zmq rpc_option_protos)
 
+endif()
+
 add_library(common_rpc_zmq_client STATIC ${COMMON_RPC_ZMQ_SRCS})
 target_link_libraries(common_rpc_zmq_client PUBLIC ${COMMON_RPC_ZMQ_CLIENT_DEPENDS_LIBS})
 add_dependencies(common_rpc_zmq_client rpc_option_protos)
+if (DS_BUILD_CLIENT_ONLY)
+    add_library(common_rpc_zmq ALIAS common_rpc_zmq_client)
+endif()
 
 set(RPC_STUB_CACHE_MGR_SRCS
         rpc_stub_cache_mgr.cpp

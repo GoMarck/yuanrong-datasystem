@@ -63,6 +63,32 @@
   - whether tests enable extra sources or proto targets;
   - whether hetero, RDMA, URMA, or pipeline H2D flags change the dependency edge.
 
+## Private static SDK checks
+
+- Use the independent `DS_BUILD_STATIC_SDK` entry and installed `Datasystem::client_static` package; do not mix the
+  host-shared source mode into this delivery. Review static dependency policy and required patches with SDK/build owners.
+- Exercise relocation with source/build/dependency directories removed, imported archive deduplication, host target
+  name collisions, and rejection of shared/unmanaged dependencies. Fixtures establish packaging behavior only.
+- Run the installed-package shared consumer with `--no-undefined`, then inspect map/ELF/PIC/system dependencies and
+  actual Worker lifecycle. For the current request use ds-test inside a verified CANN 9.0.0 vLLM Ascend container.
+- Keep default Worker/shared/Python release paths intact. The bridge's final export whitelist/C ABI/loading/wheel and
+  symbol isolation belong to the consumer; static packaging alone cannot prove multi-runtime safety.
+
+## Source-integrated Client checks
+
+When editing the opt-in `DS_BUILD_CLIENT_ONLY` / `DS_USE_EXTERNAL_DEPS` path:
+
+- Verify `Datasystem::client` static closure with a parent that already owns dependencies, including regular source
+  targets, imported targets, ABI flags and host code generators. Never prove real compatibility with fixtures.
+- Keep common dependency acquisition outside external mode. Review brpc logging, mutex hook, shared dependency and
+  TBB cooperative-yield requirements; version numbers alone cannot establish those properties.
+- Check Client-only excludes service/binding/package targets while retaining coordinator client and lightweight
+  worker transport helpers. Keep standalone types, install/package contracts and Bazel source targets intact.
+- Run `python3 tests/cmake/test_client_integration.py -v` and public example syntax checks, then real build/probe,
+  ELF/link-map audit and Worker lifecycle tests when the repository validation environment permits them.
+- Record any unexecuted real build, ABI, concurrency, runtime and cross-toolchain checks explicitly. Do not copy source
+  to remote hosts outside the Git synchronization rules or commit/push when the user has forbidden those actions.
+
 ## Risk Classification
 
 | Risk Area | Question to answer before implementation | Low-risk signal | Escalation signal |

@@ -113,6 +113,33 @@ companion. The source currently implements the following consolidation boundary:
 - Regression: `ShmFdReceiveTest.*` in `tests/ut/client/transport_test.cpp` covers abandoned RPC responses,
   stale FD closure, an expired budget before reception, and reuse after validation failure.
 
+## Private static PIC SDK for a dynamically loaded bridge
+
+- Current delivery: independently configure `DS_BUILD_STATIC_SDK=ON`, retain DS-owned third-party versions, install
+  `Datasystem`, consume `Datasystem::client_static` without source/build paths or generic third-party targets.
+- Client source and lightweight helper closure are reused; service targets, bindings and device backends are excluded.
+  Public API, request paths, buffer ownership, shutdown, protocol and persistence semantics do not change.
+- `example/cpp/static_sdk` builds a shared consumer against the installed SDK and exercises real KVClient API;
+  its public-header syntax check and package plumbing fixtures are distinct from real DS build/Worker evidence.
+- Host Client requires no CANN/HIXL link libraries even when its validation container contains CANN. Existing process-wide
+  DS/brpc logging/config state remains; ELF export and runtime isolation in the final bridge is the consumer's duty.
+- Source of truth: `docs/static-sdk.md`, `cmake/private-sdk-*.cmake`, and the client CMake source list.
+
+## Source-integrated Host Client build
+
+- Root `DS_BUILD_CLIENT_ONLY=ON` exposes `Datasystem::client` as a production STATIC target with public SDK
+  includes and CMake-managed link closure. `DS_USE_EXTERNAL_DEPS=ON` reuses host common dependencies and rejects
+  missing versions/targets and required brpc/TBB build contracts. Both options default OFF.
+- Client-only retains discovery, coordinator-client, routing and transport protocol code without Worker/Coordinator
+  service targets, language packages, hetero backends or packaging. The lightweight transport API definition is reused
+  from `worker/object_cache/transport_api.cmake`; source implementations are not copied or replaced.
+- `example/cpp/source_client/main.cpp` uses only public KVClient API and is syntax-checked separately from real linking.
+  Initialization/shutdown belong to the host lifecycle; stop callers and release buffers before shutdown.
+- DS logging/config/metrics and shared brpc parameters still have process scope. Plain Client Init does not call the
+  Worker crash-handler installer; source integration does not mean zero process-global effects.
+- See `docs/client-source-integration.md` for dependency contracts, partial-Get Optional semantics, executable
+  validation commands and explicit unverified Linux/ABI/runtime limits. No API, timeout, persistence or protocol change.
+
 ## Scope
 
 - Paths:
@@ -1204,3 +1231,7 @@ checks both two-step SHM Create/Publish and Set while three exiting workers are 
 Automatic transport selection uses `DataPlaneManager::ResolveTransportHint` to prefer an established live SHM session when the worker hostId is missing and membership is non-draining. An immutable snapshot reuse-candidate set prevents overriding explicit remote locality or draining policy and avoids connection lookup for ordinary remote workers. The map accessor is released before the check takes an entry read lock and never closes data planes. An allocated transporter without a registered session is insufficient; draining and dead sessions are excluded. Explicit fallback hints bypass resolution, and UB write allocations retain their existing publish override. Topology publication is unchanged.
 
 RPC heartbeat recovery: `ClientWorkerRemoteCommonApi::SendHeartbeat` retries a peer-dead control channel once through an isolated connection group within the original heartbeat deadline. Only a successful heartbeat response can trigger existing restart/session recovery; business writes are not replayed by this probe. Regression coverage is in `tests/ut/client/client_worker_remote_api_reconnect_test.cpp`.
+
+The isolated static SDK producer is shared by the installed `Datasystem` package and the source entry point
+`cmake/static-sdk`. Both expose the static target `Datasystem::client_static` with its C++ ABI and producer-generated
+ELF weak TLS references. See `docs/static-sdk.md` for the build and consumption contract.

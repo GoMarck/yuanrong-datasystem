@@ -1,16 +1,23 @@
+if (NOT DS_SOURCE_DIR)
+  get_filename_component(DS_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+endif()
+if (NOT DS_BINARY_DIR)
+  set(DS_BINARY_DIR "${CMAKE_BINARY_DIR}")
+endif()
+
 include(FetchContent)
 
 set(DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 
 set(THIRDPARTY_SAFE_FLAGS "-fPIC -D_FORTIFY_SOURCE=2 -O2 -fstack-protector-strong -ffunction-sections -fdata-sections -Wl,--gc-sections -Wl,--build-id=none -Wl,-z,relro,-z,noexecstack,-z,now ${EXT_FLAGS}")
 
-if (CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "aarch64" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER "9.1.0")
+if (NOT DS_BUILD_CLIENT_ONLY AND CMAKE_HOST_SYSTEM_PROCESSOR STREQUAL "aarch64" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER "9.1.0")
     set(EXT_FLAGS "-mtune=tsv110 -march=armv8-a")
     message("Add compiler flags ${EXT_FLAGS} for aarch64")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${EXT_FLAGS}")
 endif()
 
-list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/modules)
+list(APPEND CMAKE_MODULE_PATH ${DS_SOURCE_DIR}/cmake/modules)
 
 # We provide a way to cache the third party libs to avoid the repeated third-party compilation.
 # User can configure the cache by setting the environment variables or CMake configuration, and
@@ -19,7 +26,7 @@ if(NOT DS_OPENSOURCE_DIR)
   if(DEFINED ENV{DS_OPENSOURCE_DIR})
     set(DS_OPENSOURCE_DIR $ENV{DS_OPENSOURCE_DIR})
   else()
-    string(SHA256 _TEMP_PATH ${CMAKE_BINARY_DIR})
+    string(SHA256 _TEMP_PATH ${DS_BINARY_DIR})
     set(DS_OPENSOURCE_DIR "/tmp/${_TEMP_PATH}")
   endif()
 endif()
@@ -45,6 +52,9 @@ function(__EXEC_COMMAND)
   set(multi_value_args COMMAND)
   cmake_parse_arguments(ARG "${options}" "${one_value_args}" "${multi_value_args}" ${ARGN})
 
+  if (DS_BUILD_STATIC_SDK AND "${ARG_COMMAND}" MATCHES ";-j[0-9;]")
+    set(CMAKE_EXECUTE_PROCESS_COMMAND_ECHO STDOUT)
+  endif()
   execute_process(COMMAND ${ARG_COMMAND}
       WORKING_DIRECTORY ${ARG_WORKING_DIRECTORY}
       RESULT_VARIABLE _RET)
@@ -242,7 +252,21 @@ function(ADD_THIRDPARTY_LIB LIB_NAME)
   set(multi_value_args COMPONENTS CONF_OPTIONS PRE_CONFIGURE PATCHES CXX_FLAGS C_FLAGS LINK_FLAGS EXTRA_MSGS)
   cmake_parse_arguments(ARG "${options}" "${one_value_args}" "${multi_value_args}" ${ARGN})
 
+  if (DS_BUILD_STATIC_SDK)
+    ds_private_sdk_dependency_options("${LIB_NAME}")
+  endif()
   string(TOLOWER ${LIB_NAME} _LIB_NAME_LOWER)
+  if (DS_BUILD_CLIENT_ONLY)
+    set(ARG_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${ARG_CXX_FLAGS}")
+    set(ARG_C_FLAGS "${CMAKE_C_FLAGS} ${ARG_C_FLAGS}")
+    list(APPEND ARG_EXTRA_MSGS "${CMAKE_CXX_COMPILER}" "${CMAKE_C_COMPILER}")
+    if (NOT ARG_TOOLCHAIN OR ARG_TOOLCHAIN STREQUAL "cmake")
+      list(APPEND ARG_CONF_OPTIONS
+          "-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}" "-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}")
+    elseif (ARG_TOOLCHAIN STREQUAL "configure")
+      list(APPEND ARG_CONF_OPTIONS "CC=${CMAKE_C_COMPILER}" "CXX=${CMAKE_CXX_COMPILER}")
+    endif()
+  endif()
 
   if(NOT ARG_TOOLCHAIN)
     set(ARG_TOOLCHAIN "cmake")
@@ -301,6 +325,9 @@ function(ADD_THIRDPARTY_LIB LIB_NAME)
       else()
         set(${LIB_NAME}_LIB_PATH ${${LIB_NAME}_ROOT}/lib)
       endif()
+      if (DS_BUILD_STATIC_SDK)
+        ds_private_sdk_record_dependency("${LIB_NAME}" "${${LIB_NAME}_ROOT}")
+      endif()
       set(${LIB_NAME}_LIB_PATH ${${LIB_NAME}_LIB_PATH} PARENT_SCOPE)
       set(${LIB_NAME}_ROOT "${${LIB_NAME}_ROOT}" PARENT_SCOPE)
       if (DEFINED EXPORT_TO_USER_ENV_FILE)
@@ -319,7 +346,14 @@ function(ADD_THIRDPARTY_LIB LIB_NAME)
   endif()
 
   # Fetch the package first.
+  if (DS_BUILD_STATIC_SDK)
+    set(FETCHCONTENT_BASE_DIR "${DS_BINARY_DIR}/_deps/private-sdk/${_LIB_NAME_LOWER}")
+    file(REMOVE_RECURSE "${FETCHCONTENT_BASE_DIR}")
+  endif()
   download_lib_pkg(${_LIB_NAME_LOWER} ${ARG_URL} ${ARG_SHA256})
+  if (DS_BUILD_STATIC_SDK)
+    ds_private_sdk_prepare_source("${LIB_NAME}" "${${_LIB_NAME_LOWER}_SOURCE_DIR}")
+  endif()
 
   # Apply the patches if need.
   foreach(_PATCH ${ARG_PATCHES})
@@ -330,6 +364,9 @@ function(ADD_THIRDPARTY_LIB LIB_NAME)
                     WORKING_DIRECTORY ${${_LIB_NAME_LOWER}_SOURCE_DIR}
                     RESULT_VARIABLE _RET)
     if(NOT _RET EQUAL "0")
+      if (DS_BUILD_STATIC_SDK)
+        message(FATAL_ERROR "Required private SDK patch ${_PATCH} failed, error: ${_RET}")
+      endif()
       message("Patch ${_PATCH} failed, error: ${_RET}")
     endif()
   endforeach()
@@ -343,16 +380,33 @@ function(ADD_THIRDPARTY_LIB LIB_NAME)
     if (NOT MAKE_PROGRAM)
       message(FATAL_ERROR "make program not found! Please install make.")
     endif()
-    if (ARG_CXX_FLAGS)
+    if (ARG_CXX_FLAGS AND NOT DS_BUILD_STATIC_SDK)
       list(APPEND ${LIB_NAME}_MAKE_CXXFLAGS "CXXFLAGS=${ARG_CXX_FLAGS}")
     endif()
-    if (ARG_C_FLAGS)
+    if (ARG_C_FLAGS AND NOT DS_BUILD_STATIC_SDK)
       list(APPEND ${LIB_NAME}_MAKE_CFLAGS "CFLAGS=${ARG_C_FLAGS}")
     endif()
     if (ARG_LINK_FLAGS)
       list(APPEND ${LIB_NAME}_MAKE_LDFLAGS "LDFLAGS=${ARG_LINK_FLAGS}")
     endif()
-    __exec_command(COMMAND ${MAKE_PROGRAM}
+    if (DS_BUILD_STATIC_SDK)
+      # TBB clears MAKEOVERRIDES; environment flags survive its recursive make.
+      set(_ds_make_command ${CMAKE_COMMAND} -E env
+          "CXXFLAGS=${ARG_CXX_FLAGS}" "CFLAGS=${ARG_C_FLAGS}" "LDFLAGS=" "${MAKE_PROGRAM}")
+      list(APPEND ${LIB_NAME}_MAKE_CXXFLAGS
+          "CPLUS=${CMAKE_CXX_COMPILER}" "CONLY=${CMAKE_C_COMPILER}" extra_inc=big_iron.inc
+          tbb_build_prefix=ds_private_sdk "tbb_build_dir=${${_LIB_NAME_LOWER}_SOURCE_DIR}/build" tbb)
+      if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        list(APPEND ${LIB_NAME}_MAKE_CXXFLAGS compiler=clang)
+      elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        list(APPEND ${LIB_NAME}_MAKE_CXXFLAGS compiler=gcc)
+      else()
+        message(FATAL_ERROR "Private static TBB requires a GCC or Clang toolchain")
+      endif()
+    else()
+      set(_ds_make_command "${MAKE_PROGRAM}")
+    endif()
+    __exec_command(COMMAND ${_ds_make_command}
                           ${${LIB_NAME}_MAKE_CFLAGS}
                           ${${LIB_NAME}_MAKE_CXXFLAGS}
                           ${${LIB_NAME}_MAKE_LDFLAGS}
@@ -362,7 +416,14 @@ function(ADD_THIRDPARTY_LIB LIB_NAME)
     file(COPY ${${_LIB_NAME_LOWER}_SOURCE_DIR}/include/tbb
          DESTINATION ${${LIB_NAME}_ROOT}/include)
     # Copy libs
-    file(GLOB_RECURSE _LIBS_LIST "${${_LIB_NAME_LOWER}_SOURCE_DIR}/*lib*.so*")
+    if (DS_BUILD_STATIC_SDK)
+      set(_LIBS_LIST "${${_LIB_NAME_LOWER}_SOURCE_DIR}/build/ds_private_sdk_release/libtbb.a")
+      if (NOT EXISTS "${_LIBS_LIST}")
+        message(FATAL_ERROR "TBB static build did not produce libtbb.a")
+      endif()
+    else()
+      file(GLOB_RECURSE _LIBS_LIST "${${_LIB_NAME_LOWER}_SOURCE_DIR}/*lib*.so*")
+    endif()
     foreach(_LIB ${_LIBS_LIST})
       file(COPY "${_LIB}" DESTINATION ${${LIB_NAME}_ROOT}/lib)
     endforeach()
@@ -378,6 +439,10 @@ function(ADD_THIRDPARTY_LIB LIB_NAME)
     endif()
     list(APPEND ARG_CONF_OPTIONS "-DCMAKE_INSTALL_PREFIX=${${LIB_NAME}_ROOT}")
 
+    if (DS_BUILD_STATIC_SDK AND CMAKE_VERSION VERSION_GREATER_EQUAL 4.0)
+      # Pinned projects such as brpc still declare the CMake 2.8 policy baseline.
+      list(APPEND ARG_CONF_OPTIONS -DCMAKE_POLICY_VERSION_MINIMUM=3.5)
+    endif()
     __exec_command(COMMAND ${CMAKE_COMMAND} -G ${CMAKE_GENERATOR}
                             ${ARG_CONF_OPTIONS}
                             ${${_LIB_NAME_LOWER}_SOURCE_DIR}/${ARG_CONF_PATH}
@@ -415,16 +480,21 @@ function(ADD_THIRDPARTY_LIB LIB_NAME)
                    WORKING_DIRECTORY ${${_LIB_NAME_LOWER}_SOURCE_DIR})
 
     # make -j && make install
-    if (NOT CMAKE_MAKE_PROGRAM)
+    set(_ds_configure_make "${CMAKE_MAKE_PROGRAM}")
+    if (DS_BUILD_STATIC_SDK)
+      unset(_ds_configure_make)
+      find_program(_ds_configure_make NAMES gmake make REQUIRED)
+    endif()
+    if (NOT _ds_configure_make)
       message(FATAL_ERROR "make program not found!")
     endif()
-    __exec_command(COMMAND ${CMAKE_MAKE_PROGRAM}
+    __exec_command(COMMAND ${_ds_configure_make}
                            ${${LIB_NAME}_MAKE_CFLAGS}
                            ${${LIB_NAME}_MAKE_CXXFLAGS}
                            ${${LIB_NAME}_MAKE_LDFLAGS}
                            -j ${BUILD_THREAD_NUM}
                    WORKING_DIRECTORY ${${_LIB_NAME_LOWER}_SOURCE_DIR})
-    __exec_command(COMMAND ${CMAKE_MAKE_PROGRAM} install
+    __exec_command(COMMAND ${_ds_configure_make} install
                    WORKING_DIRECTORY ${${_LIB_NAME_LOWER}_SOURCE_DIR})
   else()
     message(FATAL_ERROR "Unrecognized toolchain: ${ARG_TOOLCHAIN}")
@@ -433,6 +503,9 @@ function(ADD_THIRDPARTY_LIB LIB_NAME)
   # Write install text to root dir for verify purpose.
   file(WRITE "${_VERIFY_FILE}" "${${LIB_NAME}_CONF_TXT}")
 
+  if (DS_BUILD_STATIC_SDK)
+    ds_private_sdk_record_dependency("${LIB_NAME}" "${${LIB_NAME}_ROOT}")
+  endif()
   # For output package variables.
   if (EXISTS ${${LIB_NAME}_ROOT}/lib64)
     set(${LIB_NAME}_LIB_PATH ${${LIB_NAME}_ROOT}/lib64)
@@ -571,7 +644,7 @@ function(ADD_DATASYSTEM_TEST TARGET)
 
   set(_CTEST_INCLUDE_FILE "${CMAKE_CURRENT_BINARY_DIR}/${TARGET}_include.cmake")
   set(_CTEST_TEST_FILE "${CMAKE_CURRENT_BINARY_DIR}/${TARGET}_tests.cmake")
-  set(_CTEST_GEN_SCRIPT "${CMAKE_SOURCE_DIR}/cmake/scripts/GoogleTestToCTest.cmake")
+  set(_CTEST_GEN_SCRIPT "${DS_SOURCE_DIR}/cmake/scripts/GoogleTestToCTest.cmake")
 
   add_custom_command(
     TARGET ${TARGET} POST_BUILD
@@ -608,7 +681,7 @@ function(CLEAN_BUILD_RPATH TARGET)
     message(FATAL_ERROR "TARGET not specified!")
   endif()
 
-  set(_BUILD_RPATH_REMOVE_SCRIPT "${CMAKE_SOURCE_DIR}/cmake/scripts/CleanBuildRpath.cmake")
+  set(_BUILD_RPATH_REMOVE_SCRIPT "${DS_SOURCE_DIR}/cmake/scripts/CleanBuildRpath.cmake")
 
   add_custom_command(
     TARGET ${TARGET} POST_BUILD
@@ -626,7 +699,7 @@ endfunction()
 # DST_DIR <directory-path>
 #    Specify the destination directory path of StripAndGenHash run.
 function(STRIP_LIBS_IN_INSTALL_STAGE LIB_LIST DST_DIR)
-  set(STRIP_GEN_HASH_SCRIPT ${CMAKE_SOURCE_DIR}/cmake/scripts/StripAndGenHash.cmake)
+  set(STRIP_GEN_HASH_SCRIPT ${DS_SOURCE_DIR}/cmake/scripts/StripAndGenHash.cmake)
   foreach(_LIB ${${LIB_LIST}})
     # Use install code to pass variables to cmake script
     # Packaging python don't need to generate so.properties, set IGNORE_SO_PROPERTY to TRUE
@@ -678,29 +751,29 @@ function(PACKAGE_DATASYSTEM_WHEEL PACKAGE_NAME)
   cmake_parse_arguments(ARG "${options}" "${one_value_args}"  "${multi_value_args}" ${ARGN})
 
   # Store all temporary package files, will be deleted after package finish.
-  set(DATASYSTEM_WHEEL_PATH ${CMAKE_BINARY_DIR}/dist/yr/datasystem)
-  set(DATASYSTEM_SETUP_PATH ${CMAKE_BINARY_DIR}/dist)
+  set(DATASYSTEM_WHEEL_PATH ${DS_BINARY_DIR}/dist/yr/datasystem)
+  set(DATASYSTEM_SETUP_PATH ${DS_BINARY_DIR}/dist)
   install(CODE "file(REMOVE_RECURSE \"${DATASYSTEM_SETUP_PATH}\")")
-  set(DATASYSTEM_PACKAGE_LIBPATH ${CMAKE_SOURCE_DIR})
+  set(DATASYSTEM_PACKAGE_LIBPATH ${DS_SOURCE_DIR})
   if (SUPPORT_JEPROF)
     set(JEMALLOC_PROF_ENABLED True)
   else()
     set(JEMALLOC_PROF_ENABLED False)
   endif()
-  set(JEMALLOC_BUILD_CONFIG_DIR ${CMAKE_BINARY_DIR}/generated/yr/datasystem)
+  set(JEMALLOC_BUILD_CONFIG_DIR ${DS_BINARY_DIR}/generated/yr/datasystem)
   file(MAKE_DIRECTORY ${JEMALLOC_BUILD_CONFIG_DIR})
   configure_file(
-    ${CMAKE_SOURCE_DIR}/cmake/jemalloc_build_config.py.in
+    ${DS_SOURCE_DIR}/cmake/jemalloc_build_config.py.in
     ${JEMALLOC_BUILD_CONFIG_DIR}/jemalloc_build_config.py
     @ONLY)
 
   # Store helm chart
-  set(HELM_CHART_PATH ${CMAKE_SOURCE_DIR}/k8s/helm_chart)
+  set(HELM_CHART_PATH ${DS_SOURCE_DIR}/k8s/helm_chart)
   set(SERVER_LIB ${CMAKE_INSTALL_PREFIX}/datasystem/service/lib)
   set(OUTPUT_INCLUDE_DIF ${CMAKE_INSTALL_PREFIX}/datasystem/sdk/cpp/include)
   set(SDK_LIB ${CMAKE_INSTALL_PREFIX}/datasystem/sdk/cpp/lib)
-  set(PYTHON_SDK ${CMAKE_SOURCE_DIR}/python)
-  set(PYTHON_LIBPATH ${CMAKE_BINARY_DIR}/python_lib)
+  set(PYTHON_SDK ${DS_SOURCE_DIR}/python)
+  set(PYTHON_LIBPATH ${DS_BINARY_DIR}/python_lib)
 
   FILE(GLOB_RECURSE THIRDPARTY_LIBS_PATH "${PYTHON_LIBPATH}/*.so*")
   LIST(FILTER THIRDPARTY_LIBS_PATH EXCLUDE REGEX ".*sym.*")
@@ -746,11 +819,11 @@ function(PACKAGE_DATASYSTEM_WHEEL PACKAGE_NAME)
           DESTINATION ${DATASYSTEM_WHEEL_PATH}/helm_chart)
 
   # Copy cpp include files to package lib path
-  install(DIRECTORY ${CMAKE_SOURCE_DIR}/include
+  install(DIRECTORY ${DS_SOURCE_DIR}/include
           DESTINATION ${DATASYSTEM_WHEEL_PATH}/
           ${DATASYSTEM_STREAM_HEADER_EXCLUDES})
-  if (BUILD_TRANSFER_ENGINE AND EXISTS ${CMAKE_SOURCE_DIR}/transfer_engine/include/datasystem/transfer_engine)
-    install(DIRECTORY ${CMAKE_SOURCE_DIR}/transfer_engine/include/datasystem/transfer_engine
+  if (BUILD_TRANSFER_ENGINE AND EXISTS ${DS_SOURCE_DIR}/transfer_engine/include/datasystem/transfer_engine)
+    install(DIRECTORY ${DS_SOURCE_DIR}/transfer_engine/include/datasystem/transfer_engine
             DESTINATION ${DATASYSTEM_WHEEL_PATH}/include/datasystem)
   endif()
 
@@ -768,37 +841,37 @@ function(PACKAGE_DATASYSTEM_WHEEL PACKAGE_NAME)
                                    PATTERN "setup.py" EXCLUDE)
 
   # Copy ds cli source files to package lib path
-  install(DIRECTORY ${CMAKE_SOURCE_DIR}/cli
+  install(DIRECTORY ${DS_SOURCE_DIR}/cli
     DESTINATION ${DATASYSTEM_WHEEL_PATH})
   install(FILES ${JEMALLOC_BUILD_CONFIG_DIR}/jemalloc_build_config.py
     DESTINATION ${DATASYSTEM_WHEEL_PATH})
 
   #Copy setup.py
-  install(FILES ${CMAKE_SOURCE_DIR}/setup.py DESTINATION ${DATASYSTEM_SETUP_PATH}/)
+  install(FILES ${DS_SOURCE_DIR}/setup.py DESTINATION ${DATASYSTEM_SETUP_PATH}/)
 
   # Copy VERSION and LICENSE to package lib path
-  install(FILES ${CMAKE_SOURCE_DIR}/VERSION ${CMAKE_SOURCE_DIR}/LICENSE ${CMAKE_SOURCE_DIR}/README.md
+  install(FILES ${DS_SOURCE_DIR}/VERSION ${DS_SOURCE_DIR}/LICENSE ${DS_SOURCE_DIR}/README.md
           DESTINATION ${DATASYSTEM_WHEEL_PATH})
   # Copy cpp template to package lib path
-  install(DIRECTORY ${CMAKE_SOURCE_DIR}/cli/cpp_template
+  install(DIRECTORY ${DS_SOURCE_DIR}/cli/cpp_template
           DESTINATION ${DATASYSTEM_WHEEL_PATH})
   # Copy docker entrypoint files to package lib path
-  install(DIRECTORY ${CMAKE_SOURCE_DIR}/k8s/docker/entrypoint/
+  install(DIRECTORY ${DS_SOURCE_DIR}/k8s/docker/entrypoint/
           DESTINATION ${DATASYSTEM_WHEEL_PATH}/docker_entryfile/daemonset)
-  install(DIRECTORY ${CMAKE_SOURCE_DIR}/k8s/docker/exitpoint/
+  install(DIRECTORY ${DS_SOURCE_DIR}/k8s/docker/exitpoint/
           DESTINATION ${DATASYSTEM_WHEEL_PATH}/docker_entryfile/daemonset)
   # Copy service binaries and default service configs to package lib path
   install(PROGRAMS ${CMAKE_INSTALL_PREFIX}/datasystem/service/datasystem_worker ${CMAKE_INSTALL_PREFIX}/datasystem/service/datasystem_coordinator
           DESTINATION ${DATASYSTEM_WHEEL_PATH})
-  install(FILES ${CMAKE_SOURCE_DIR}/cli/deploy/conf/worker_config.json ${CMAKE_SOURCE_DIR}/cli/deploy/conf/coordinator_config.json ${CMAKE_SOURCE_DIR}/cli/deploy/conf/cluster_config.json
+  install(FILES ${DS_SOURCE_DIR}/cli/deploy/conf/worker_config.json ${DS_SOURCE_DIR}/cli/deploy/conf/coordinator_config.json ${DS_SOURCE_DIR}/cli/deploy/conf/cluster_config.json
           DESTINATION ${DATASYSTEM_WHEEL_PATH})
   # Copy dsbench_cpp to package lib path
   install(TARGETS dsbench_cpp DESTINATION ${DATASYSTEM_WHEEL_PATH})
 
   find_package(Python3 COMPONENTS Interpreter Development)
-  set(CONFIG_PACKAGE_SCRIPT ${CMAKE_BINARY_DIR}/PackageDatasystem.cmake)
+  set(CONFIG_PACKAGE_SCRIPT ${DS_BINARY_DIR}/PackageDatasystem.cmake)
   # Generate PackagePythonSDK.cmake to run setup.py
-  configure_file(${CMAKE_SOURCE_DIR}/cmake/scripts/PackageDatasystem.cmake.in
+  configure_file(${DS_SOURCE_DIR}/cmake/scripts/PackageDatasystem.cmake.in
                   ${CONFIG_PACKAGE_SCRIPT} @ONLY)
   install(SCRIPT ${CONFIG_PACKAGE_SCRIPT})
 endfunction()
@@ -810,12 +883,12 @@ function(PACKAGE_PYTHON PACKAGE_NAME)
   cmake_parse_arguments(ARG "${options}" "${one_value_args}" "${multi_value_args}" ${ARGN})
 
   # Store all temporary package files, will be deleted after package finish.
-  set(PYTHON_PACKAGE_PATH ${CMAKE_BINARY_DIR}/python_api)
+  set(PYTHON_PACKAGE_PATH ${DS_BINARY_DIR}/python_api)
   install(CODE "file(REMOVE_RECURSE \"${PYTHON_PACKAGE_PATH}\")")
   # Store python source files and libraries.
   set(PYTHON_PACKAGE_LIBPATH ${PYTHON_PACKAGE_PATH}/${PACKAGE_NAME})
   # Store installed libraries, also store sym files if ENABLE_STRIP.
-  set(PYTHON_LIBPATH ${CMAKE_BINARY_DIR}/python_lib)
+  set(PYTHON_LIBPATH ${DS_BINARY_DIR}/python_lib)
 
   FILE(GLOB_RECURSE THIRDPARTY_LIBS_PATH "${PYTHON_LIBPATH}/*.so*")
   LIST(FILTER THIRDPARTY_LIBS_PATH EXCLUDE REGEX ".*sym.*")
@@ -845,11 +918,11 @@ function(PACKAGE_PYTHON PACKAGE_NAME)
   # Copy python source files to package lib path
   install_datasystem_python_sources(${ARG_PYTHON_SRC_DIR} ${PYTHON_PACKAGE_PATH})
   # Copy VERSION and LICENSE to package lib path
-  install(FILES ${CMAKE_SOURCE_DIR}/VERSION ${CMAKE_SOURCE_DIR}/LICENSE
+  install(FILES ${DS_SOURCE_DIR}/VERSION ${DS_SOURCE_DIR}/LICENSE
           DESTINATION ${PYTHON_PACKAGE_LIBPATH})
-  set(CONFIG_PACKAGE_SCRIPT ${CMAKE_BINARY_DIR}/PackagePythonSDK.cmake)
+  set(CONFIG_PACKAGE_SCRIPT ${DS_BINARY_DIR}/PackagePythonSDK.cmake)
   # Generate PackagePythonSDK.cmake to run setup.py
-  configure_file(${CMAKE_SOURCE_DIR}/cmake/scripts/PackagePython.cmake.in
+  configure_file(${DS_SOURCE_DIR}/cmake/scripts/PackagePython.cmake.in
           ${CONFIG_PACKAGE_SCRIPT} @ONLY)
   install(SCRIPT ${CONFIG_PACKAGE_SCRIPT})
 endfunction()
@@ -967,7 +1040,7 @@ endfunction()
 #
 #   SOURCE_ROOT <dir>
 #       Protobuf source files root directory, default is ${CMAKE_CURRENT_SOURCE_DIR},
-#       if protobuf source files are not in ${CMAKE_SOURCE_DIR}, this variable must
+#       if protobuf source files are not in ${DS_SOURCE_DIR}, this variable must
 #       be set.
 #
 #   PROTO_DEPEND <target>
@@ -989,6 +1062,13 @@ function(GENERATE_PROTO_CPP SRCS HDRS TARGET_DIR)
   set(${SRCS})
   set(${HDRS})
 
+  ds_protoc_command(_ds_protoc)
+  if (NOT DS_PROTOC_TARGET)
+    set(DS_PROTOC_TARGET protobuf::protoc)
+  endif()
+  ds_proto_include_args(_ds_proto_include_args)
+  file(GLOB_RECURSE _ds_imports CONFIGURE_DEPENDS "${ARG_SOURCE_ROOT}/*.proto")
+
   # Import paths will be set per proto file in the loop below
 
   foreach (_PROTO_FILE ${ARG_PROTO_FILES})
@@ -997,9 +1077,9 @@ function(GENERATE_PROTO_CPP SRCS HDRS TARGET_DIR)
     get_filename_component(_PROTO_NAME ${_PROTO_FILE} NAME_WE)
 
     # 1. 计算相对路径（逻辑保持，但确保它是相对于 src 的）
-    string(FIND "${_ABS_DIR}" "${CMAKE_SOURCE_DIR}/src" _SRC_POS)
+    string(FIND "${_ABS_DIR}" "${DS_SOURCE_DIR}/src" _SRC_POS)
     if(_SRC_POS EQUAL 0)
-      file(RELATIVE_PATH _REL_DIR "${CMAKE_SOURCE_DIR}/src" "${_ABS_DIR}")
+      file(RELATIVE_PATH _REL_DIR "${DS_SOURCE_DIR}/src" "${_ABS_DIR}")
     else()
       file(RELATIVE_PATH _REL_DIR "${ARG_SOURCE_ROOT}" "${_ABS_DIR}")
     endif()
@@ -1017,14 +1097,13 @@ function(GENERATE_PROTO_CPP SRCS HDRS TARGET_DIR)
     list(APPEND ${HDRS} "${_OUTPUT_DIR}/${_PROTO_NAME}.pb.h")
 
     # 3. --cpp_out 指向 TARGET_DIR (即 build/src)
-    set(_PROTO_IMPORT_ARGS -I "${CMAKE_SOURCE_DIR}/src" -I "${ARG_SOURCE_ROOT}")
+    set(_PROTO_IMPORT_ARGS -I "${DS_SOURCE_DIR}/src" -I "${ARG_SOURCE_ROOT}" ${_ds_proto_include_args})
 
     add_custom_command(
             OUTPUT "${_OUTPUT_DIR}/${_PROTO_NAME}.pb.cc" "${_OUTPUT_DIR}/${_PROTO_NAME}.pb.h"
-            COMMAND ${CMAKE_COMMAND} -E env LD_LIBRARY_PATH=${Protobuf_LIB_PATH}:$ENV{LD_LIBRARY_PATH}
-            $<TARGET_FILE:protobuf::protoc>
+            COMMAND ${_ds_protoc}
             ARGS ${_PROTO_IMPORT_ARGS} --cpp_out=${TARGET_DIR} ${_ABS_FILE} # 注意这里用 TARGET_DIR
-            DEPENDS ${_ABS_FILE}
+            DEPENDS ${_ABS_FILE} ${_ds_imports} ${DS_PROTOC_TARGET}
             COMMENT "Running c++ protocol buffer compiler on ${_PROTO_FILE}" VERBATIM)
 
     if (ARG_PROTO_DEPEND)
@@ -1039,3 +1118,5 @@ function(GENERATE_PROTO_CPP SRCS HDRS TARGET_DIR)
   set(${SRCS} ${${SRCS}} PARENT_SCOPE)
   set(${HDRS} ${${HDRS}} PARENT_SCOPE)
 endfunction()
+
+include("${DS_SOURCE_DIR}/cmake/codegen.cmake")

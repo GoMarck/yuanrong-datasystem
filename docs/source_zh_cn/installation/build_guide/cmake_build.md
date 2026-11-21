@@ -219,3 +219,19 @@ output/
 ```bash
 pip install output/openyuanrong_datasystem-*.whl
 ```
+
+
+## 作为父工程的 Host Client 子项目
+
+源码集成可以启用默认关闭的 `DS_BUILD_CLIENT_ONLY` 和 `DS_USE_EXTERNAL_DEPS`，
+并只链接生产静态 target `Datasystem::client`。此路径不构建服务端、语言绑定和发布包。
+依赖 target、brpc/TBB 构建契约、完整父工程示例和验证限制见
+[Client 源码集成契约](../../../client-source-integration.md)。
+
+
+## 独立私有静态 PIC SDK
+
+默认关闭的 `DS_BUILD_STATIC_SDK=ON` 提供独立 CMake 构建和安装入口，保留 DS 自身第三方版本。
+消费方从安装目录 `find_package(Datasystem CONFIG)`，仅链接 `Datasystem::client_static`。
+完整构建命令、版本补丁、动态系统依赖、共享库示例和验证状态见
+[私有静态 SDK 契约](../../../static-sdk.md)。

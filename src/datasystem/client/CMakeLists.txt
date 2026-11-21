@@ -1,6 +1,11 @@
+if (NOT DS_TOKEN_TARGET)
+    set(DS_TOKEN_TARGET token)
+endif()
 add_subdirectory(mmap_manager)
-add_subdirectory(cluster_query)
-add_subdirectory(cluster_admin)
+if (NOT DS_BUILD_CLIENT_ONLY)
+    add_subdirectory(cluster_query)
+    add_subdirectory(cluster_admin)
+endif()
 
 list(APPEND CLIENT_SRCS
         worker_api/client_worker_common_api.cpp
@@ -79,7 +84,7 @@ list(APPEND CLIENT_DEPEND_LIBS
         ${SECUREC_LIBRARY}
         ${TBB_LIBRARY}
         protobuf::libprotobuf
-        token
+        ${DS_TOKEN_TARGET}
         ak_sk_signature
         common_buffer
         common_event_loop
@@ -135,6 +140,15 @@ if (ENABLE_PERF)
     list(APPEND CLIENT_DEPEND_LIBS perf_posix_protos_client)
 endif ()
 
+if (DS_BUILD_CLIENT_ONLY)
+    add_library(datasystem_client STATIC ${CLIENT_SRCS})
+    add_library(Datasystem::client ALIAS datasystem_client)
+    target_link_libraries(datasystem_client PRIVATE ${CLIENT_DEPEND_LIBS})
+    target_include_directories(datasystem_client PUBLIC "${DS_SOURCE_DIR}/include")
+    target_compile_features(datasystem_client PUBLIC cxx_std_17)
+    return()
+endif()
+
 # static library for ut.
 add_library(datasystem_static STATIC ${CLIENT_SRCS})
 target_link_libraries(datasystem_static PRIVATE "${CLIENT_DEPEND_LIBS}")
@@ -147,7 +161,7 @@ add_custom_command(TARGET datasystem POST_BUILD
     COMMAND ${CMAKE_COMMAND}
         -D ELF_FILE=$<TARGET_FILE:datasystem>
         -D ELF_ROLE=CORE
-        -P ${CMAKE_SOURCE_DIR}/cmake/tests/check_datasystem_cann_needed.cmake
+        -P ${DS_SOURCE_DIR}/cmake/tests/check_datasystem_cann_needed.cmake
     COMMENT "Checking that libdatasystem.so has no direct CANN dependencies"
     VERBATIM)
 
@@ -168,7 +182,7 @@ if (BUILD_PIPLN_H2D)
 endif()
 
 add_custom_target(clean_datasystem_rpath
-    COMMAND ${CMAKE_COMMAND} -D "BIN_FILE=$<TARGET_FILE:datasystem>" -P "${CMAKE_SOURCE_DIR}/cmake/scripts/CleanBuildRpath.cmake"
+    COMMAND ${CMAKE_COMMAND} -D "BIN_FILE=$<TARGET_FILE:datasystem>" -P "${DS_SOURCE_DIR}/cmake/scripts/CleanBuildRpath.cmake"
     COMMENT "Cleaning RPATH for datasystem.so"
 )
 
