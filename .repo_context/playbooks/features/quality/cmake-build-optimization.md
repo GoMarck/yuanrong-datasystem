@@ -65,7 +65,7 @@
 
 ## Private static SDK checks
 
-- Use the independent `DS_BUILD_STATIC_SDK` entry and installed `DatasystemPrivate::client` package; do not mix the
+- Use the independent `DS_BUILD_STATIC_SDK` entry and installed `Datasystem::client_static` package; do not mix the
   host-shared source mode into this delivery. Review static dependency policy and required patches with SDK/build owners.
 - Exercise relocation with source/build/dependency directories removed, imported archive deduplication, host target
   name collisions, and rejection of shared/unmanaged dependencies. Fixtures establish packaging behavior only.

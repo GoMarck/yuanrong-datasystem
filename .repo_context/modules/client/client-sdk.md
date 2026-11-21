@@ -101,7 +101,7 @@
 ## Private static PIC SDK for a dynamically loaded bridge
 
 - Current delivery: independently configure `DS_BUILD_STATIC_SDK=ON`, retain DS-owned third-party versions, install
-  `DatasystemPrivate`, consume `DatasystemPrivate::client` without source/build paths or generic third-party targets.
+  `DatasystemPrivate`, consume `Datasystem::client_static` without source/build paths or generic third-party targets.
 - Client source and lightweight helper closure are reused; service targets, bindings and device backends are excluded.
   Public API, request paths, buffer ownership, shutdown, protocol and persistence semantics do not change.
 - `example/cpp/private_static_sdk` builds a shared consumer against the installed SDK and exercises real KVClient API;
@@ -1245,3 +1245,7 @@ also enters the existing routing failure filter, which isolates the failed worke
 distinct-worker budget and API deadline bound retry. Ambiguous failures remain terminal.
 The manual Coordinator backend ST `CoordinatorWriteRedirectTest.ThreeExitingWorkersReturnLiveCandidateAndWritesSucceed`
 checks both two-step SHM Create/Publish and Set while three exiting workers are still ACTIVE in the committed ring.
+
+The isolated static SDK producer is shared by the installed `DatasystemPrivate` package and the source entry point
+`cmake/embed`. Both expose the static target `Datasystem::client_static` with its C++ ABI and producer-generated
+ELF weak TLS references. See `docs/private-static-sdk.md` for the build and consumption contract.

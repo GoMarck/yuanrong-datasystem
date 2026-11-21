@@ -57,7 +57,7 @@
 
 - Current bridge delivery uses `DS_BUILD_STATIC_SDK=ON` (default OFF), a native Linux, single-configuration,
   independent CMake build. It selects the real Client-only closure and DS-owned versions; external mode is rejected.
-- Installed package: `DatasystemPrivate`, target `DatasystemPrivate::client`. All private imported targets and archive
+- Installed package: `DatasystemPrivate`, target `Datasystem::client_static`. All private imported targets and archive
   filenames are DS-specific. `cmake/private-sdk-package.cmake` exports the actual link graph, rejects shared and
   out-of-prefix private inputs, preserves static cycles, and installs public headers without source/build/cache paths.
   Constant `BOOL` link conditions are folded before export so system-library probes do not leak build-host paths.

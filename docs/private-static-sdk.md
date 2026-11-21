@@ -3,7 +3,7 @@
 ## 对接契约
 
 DS 独立构建自身 Client 和所需第三方依赖，保留仓库固定版本及补丁。xllm 从安装目录消费
-`DatasystemPrivate` CMake package，仅链接 `DatasystemPrivate::client`，再自行构建最终 bridge。
+`DatasystemPrivate` CMake package，仅链接 `Datasystem::client_static`，再自行构建最终 bridge。
 生产入口是默认关闭的 `DS_BUILD_STATIC_SDK`，不依赖任何测试构建入口。
 
 此模式目前限定原生 Linux、CMake 3.20+、单配置生成器。它自动选择 Host Client 必需实现，
@@ -13,15 +13,47 @@ DS 独立构建自身 Client 和所需第三方依赖，保留仓库固定版本
 本 SDK 的 CMake 私有命名只解决消费端 target 选择问题，不自动解决 ELF 符号抢占。
 bridge 的 C 接口、符号导出白名单、绑定隔离、dlopen 和 wheel 打包由 xllm 负责。
 
-## 源码与构建信息
+## 作为父工程的子模块
 
-实现基线是 `8991b50cb6b8519bae7b47bf75b3a5c190d073de`；远端验证使用临时分支
-`codex/private-static-sdk-validation`，不更新 `perf_opt_1020`，不创建 PR。
-不能把基线 SHA 当作包含本次改动的交付 commit。
-安装包 `share/datasystem-private/build-info.txt` 的 `BASE_COMMIT` 记录实际构建源码的 HEAD，
-另记录分支、工作树状态、版本和编译器信息；detached HEAD 的分支字段为空。
-本次真实验证源码为 `7fa20a784473a8cffa758759ac81984d0967ba30`，
-已推送 `sync` 对应的 GitCode 仓库；详情见[验证记录](private-static-sdk-validation.md)。
+源码和安装模式都提供 `Datasystem::client_static`（CMake 类型为 `STATIC_LIBRARY`）。
+安装包名为 `DatasystemPrivate`。更新子模块或安装包时，消费方需同步更新链接 target。
+父工程可以在引入 DS 之前定义自己的 protobuf、gflags、brpc 等 target。
+
+```cmake
+cmake_minimum_required(VERSION 3.20)
+project(Host LANGUAGES CXX)
+if(DS_SDK_SOURCE_DIR)
+    add_subdirectory("${DS_SDK_SOURCE_DIR}/cmake/embed" ds-sdk)
+else()
+    find_package(DatasystemPrivate CONFIG REQUIRED)
+endif()
+add_library(my_bridge SHARED bridge.cpp)
+target_link_libraries(my_bridge PRIVATE Datasystem::client_static)
+```
+
+```bash
+# 源码模式，首次 configure 同步准备 DS 私有依赖
+CMAKE_BUILD_PARALLEL_LEVEL=8 cmake -S parent -B build -DDS_SDK_SOURCE_DIR=/path/to/ds
+cmake --build build --target my_bridge
+# 安装模式，SDK 可整体移到新前缀
+cmake -S parent -B build-installed -DCMAKE_PREFIX_PATH=/path/to/relocated-sdk
+cmake --build build-installed --target my_bridge
+```
+
+源码入口在自己的二进制目录中独立配置 Release 生产工程，消费者构建时按目标依赖完成增量编译和安装。
+缓存保存在嵌入目录的 `producer/`，可搬迁的 SDK 位于其同级 `sdk/`。
+在父工程 configure 时给定正整数 `DS_PRIVATE_SDK_JOBS`，或设置环境变量
+`CMAKE_BUILD_PARALLEL_LEVEL`（前者优先，默认 8）。同一数值传给第三方构建和客户端编译。
+构建同一目录下的 bridge 会检查 SDK 源码更新并复用已有对象。
+
+将访问 DS C++ 接口的代码放在单独的 bridge target 中。公开 target 在该 target 的 C++ 编译参数中
+取消宿主的 libstdc++ ABI 宏并设置 SDK 的 ABI。宿主的 Torch target 可使用自己的 ABI。
+若 bridge 同时链接导出冲突 ABI 的 C++ 库，应将使用该库的代码放到 C ABI 边界的另一侧。
+SDK 构建时扫描实际 archive 中可选的弱 TLS 初始化符号，生成 PIC 对象并通过 target 自动链接。
+xLLM 负责最终 C 导出表、ELF 检查和运行生命周期。
+
+安装目录中的 `share/datasystem-private/build-info.txt` 记录构建 SHA、工作树状态、编译器和 ABI。
+历史验收记录见[静态 SDK 验证](private-static-sdk-validation.md)。
 
 ## 独立构建与安装
 
@@ -39,7 +71,7 @@ cmake --build <private-sdk-build> -j <jobs>
 cmake --install <private-sdk-build>
 ```
 
-此入口必须单独配置，不能 add_subdirectory 到 xllm，也不能与 `DS_USE_EXTERNAL_DEPS=ON` 混用。
+直接构建生产工程使用 DS 源码根目录；父工程使用上面的 `cmake/embed` 入口。
 不要从 xllm 的第三方前缀寻找包。依赖构建使用 DS 自身前缀，禁用 package registry，并优先解析静态库。
 导出阶段拒绝私有前缀之外的第三方 archive/头文件、共享 target、共享库路径、无法解析的裸库名和薄 archive。
 必需补丁应用失败会停止配置，不继续生成可能不兼容的包。
@@ -60,7 +92,7 @@ project(MyBridge LANGUAGES CXX)
 find_package(DatasystemPrivate CONFIG REQUIRED
     PATHS "<private-sdk-install>/lib/cmake/DatasystemPrivate" NO_DEFAULT_PATH)
 add_library(my_bridge SHARED bridge.cpp)
-target_link_libraries(my_bridge PRIVATE DatasystemPrivate::client)
+target_link_libraries(my_bridge PRIVATE Datasystem::client_static)
 ```
 
 安装布局：
@@ -68,6 +100,7 @@ target_link_libraries(my_bridge PRIVATE DatasystemPrivate::client)
 ```text
 include/datasystem/                       # 公开 C++ 头文件
 lib/datasystem-private/*.a                # 已选择的静态依赖，使用唯一文件名
+lib/datasystem-private/tls.o              # ELF 可选弱 TLS 引用
 lib/cmake/DatasystemPrivate/              # 可迁移的 config/version/targets
 share/datasystem-private/archives.txt      # 实际交付 archive 清单
 share/datasystem-private/private-sdk-dependencies.txt

@@ -52,6 +52,9 @@ function(__EXEC_COMMAND)
   set(multi_value_args COMMAND)
   cmake_parse_arguments(ARG "${options}" "${one_value_args}" "${multi_value_args}" ${ARGN})
 
+  if (DS_BUILD_STATIC_SDK AND "${ARG_COMMAND}" MATCHES ";-j[0-9;]")
+    set(CMAKE_EXECUTE_PROCESS_COMMAND_ECHO STDOUT)
+  endif()
   execute_process(COMMAND ${ARG_COMMAND}
       WORKING_DIRECTORY ${ARG_WORKING_DIRECTORY}
       RESULT_VARIABLE _RET)
