@@ -743,3 +743,49 @@ Host selection is opt-in through `--host-filter` JSON (`include`/`exclude` array
   cancellation/deadline/lock handling, and drain retry retaining versioned handoff. These are unit tests, not real
   network, power-loss, or background-IO fault tests.
 - Use the current UB mock where UB hardware is unavailable. A skipped case is not validation.
+
+## HIXL D2RH manual ST
+
+- Release-wheel Python E2E: `tests/st/device/hixl_d2rh_release_e2e.py`, uses installed PyACL/public SDK APIs.
+  Default single-Worker mode checks D2RH; dual mode (`--enable-remote-h2d`) binds SDK to Worker A and
+  requires another Worker for remote-object RH2D. Samples 32 fresh random keys by default using
+  PREFERRED_META_OWNER, one key with two Blobs per API to avoid mixed-placement attribution.
+  Each object has 2 MiB and 4 MiB Blobs in reusable 2 MiB-aligned arenas. Its size exceeds the 512 KiB
+  QueryMeta inline-payload cap: smaller objects can be returned with metadata and copied into bound-Worker SHM,
+  bypassing RH2D even when the fresh write used HIXL. Free original overallocated pointers after SDK teardown.
+  Dual-mode preflight requires SDK routing INFO to confirm a nonempty SDK host ID matching active bound
+  Worker A. Workers must publish distinct per-host IDs with host_id_env_name, and A's UDS/SHM must be accessible;
+  otherwise even local keys can enter HIXL and fail same-NPU rank-table validation.
+  Every sample validates bytes, layout, NX and deletion; local/TCP/SHM samples do not count as HIXL coverage.
+  Collects access logs once after sampling (up to 60s; default LogManager flush period 30s), correlating key,
+  API and ordered stage. NX/no-op writes and repeated NX reads do not count as fresh direction coverage.
+  Requires at least two HIXL write samples (configurable); dual mode requires WRITE+first READ HIXL on the
+  same distinct keys, covering both Python write interfaces. Missing evidence or insufficient coverage fails.
+  Writes verified_samples.json and coverage.json with per-stage paths/trace IDs/timings. No placement pinning,
+  no claim of concurrent DMA or all-card coverage. Companion run_hixl_d2rh_multidevice.sh requires each SDK
+  device process to reach the same dual coverage threshold. No ST binary/test build/inject hooks required;
+  native errors cause exit without freeing device arenas. Runtime hardware coverage remains unexecuted here.
+  `HeteroD2RHWithRH2DTest.DISABLED_RemoteWriteWithRH2DEnabled` and
+  `HixlTransportPluginTest.SixteenWorkerDevicesShareRoundRobinEndpoints` add coverage at different levels;
+  the fake plugin does not validate hardware DMA.
+  `ClientUsesAllocatedDeviceCommPort` and `WorkerKeepsFixedDeviceCommPort` check SDK explicit device-port
+  configuration and the existing Worker port using the fake plugin.
+- Source: `tests/st/device/hetero_d2rh_test.cpp`; fixture `HeteroD2RHTest`, cases default to `DISABLED_`.
+- CMake collects the source into `ds_device_llt`; Bazel target `//tests/st/device:hetero_d2rh_test` is manual.
+- Requires real Ascend/HIXL, external Workers, buffer-pool configuration and explicit worker opt-in.
+- Covers multi-Blob round trips, arena reuse, NX, unregistered sources, legacy bound async round trips, pre-submit WRITE failure,
+  same-host SHM, and concurrent client registration. Remote tests assert HIXL to avoid accidental SHM coverage.
+- Setup/run commands, failure ownership and unverified hardware-fence boundaries:
+  `tests/st/device/README_hixl_d2rh.md`. Added without local build/test execution at the user's request.
+
+- Focused regressions: `ObjRefTableTest.Hixl*` (reservation/backpressure, concurrent quota, owner lifetime and
+  bad_alloc rollback), `HixlTransportPluginTest` explicit options/Connect budget cases, and Python constructor/import
+  coverage in `tests/python/test_hetero_client_multi_buffer.py`. These are separate from hardware ST evidence.
+
+- Master-port regression: `ObjectClientImplTest.NonHixlDeviceModePreservesLocalCacheAndLegacyWrites` in the existing
+  transport test target checks that requesting the heterogeneous routing mode in a non-HiXL build preserves the caller's
+  local-cache setting and legacy write selection. Run with Ascend off and URMA on; this is not hardware transfer evidence.
+
+- Bazel `transport_test` and `kv_client_transport_set_test` explicitly link the existing test-only URMA provider under
+  `--config=urma_mock`. A compiled weak dispatch wrapper alone is insufficient: missing `ds_urma_mock_dlopen_ops`
+  makes runtime initialization fail. This dependency does not apply to real URMA or non-URMA builds.

@@ -356,6 +356,9 @@ TransportLayer::TransportLayer(std::shared_ptr<Signature> signature, std::shared
       boundWorker_(std::move(options.boundWorker)),
       allowUbRuntimeFailure_(options.allowUbRuntimeFailure)
 {
+#ifdef ASCEND_HIXL_AVAILABLE
+    hixlTransporter_ = std::make_unique<HixlTransporter>();
+#endif
     localUbSenderState_ = std::make_shared<LocalUbSenderState>();
     localUbSenderState_->reconcileMutex = reconcileMutex_;
     localUbSenderState_->reconcileCv = reconcileCv_;
@@ -419,6 +422,9 @@ TransportLayer::TransportLayer(std::shared_ptr<DataPlaneManager> dataPlaneManage
       healthFilter_(readSourceFilter == nullptr ? std::make_shared<UbHealthFilter>() : std::move(readSourceFilter)),
       boundWorker_()
 {
+#ifdef ASCEND_HIXL_AVAILABLE
+    hixlTransporter_ = std::make_unique<HixlTransporter>();
+#endif
     localUbSenderState_ = std::make_shared<LocalUbSenderState>();
     localUbSenderState_->reconcileMutex = reconcileMutex_;
     localUbSenderState_->reconcileCv = reconcileCv_;
@@ -1552,6 +1558,33 @@ void TransportLayer::ReconcileLoop()
     }
 }
 
+Status TransportLayer::RegisterD2RHDeviceMemory(int32_t deviceId, const std::string &localIp,
+                                                 const std::vector<void *> &addresses,
+                                                 const std::vector<uint64_t> &sizes)
+{
+#ifdef ASCEND_HIXL_AVAILABLE
+    return hixlTransporter_->RegisterDeviceMemory(deviceId, localIp, addresses, sizes);
+#else
+    (void)deviceId; (void)localIp; (void)addresses; (void)sizes;
+    RETURN_STATUS(K_NOT_SUPPORTED, "D2RH requires a build with HIXL support");
+#endif
+}
+
+Status TransportLayer::MSetDevice(const HostPort &worker, const std::vector<std::string> &keys,
+                                   const std::vector<const DeviceBlobList *> &blobs, TransportCreateParam createParam,
+                                   const TransportSetParam &setParam, TransportMSetResult &result,
+                                   std::vector<std::string> *confirmedKeys)
+{
+#ifdef ASCEND_HIXL_AVAILABLE
+    std::shared_ptr<WorkerRpcClient> rpc;
+    RETURN_IF_NOT_OK(manager_->GetOrCreateRpcClient(worker, rpc));
+    return hixlTransporter_->MSetDevice(rpc, keys, blobs, std::move(createParam), setParam, result, confirmedKeys);
+#else
+    (void)worker; (void)keys; (void)blobs; (void)createParam; (void)setParam; (void)result; (void)confirmedKeys;
+    RETURN_STATUS(K_NOT_SUPPORTED, "D2RH requires a build with HIXL support");
+#endif
+}
+
 void TransportLayer::Shutdown()
 {
     std::lock_guard<bthread::Mutex> shutdownLock(shutdownMutex_);
@@ -1576,6 +1609,9 @@ void TransportLayer::Shutdown()
     if (reconcileThread.joinable()) {
         reconcileThread.join();
     }
+#ifdef ASCEND_HIXL_AVAILABLE
+    hixlTransporter_->Shutdown();
+#endif
     // Drain cleanup and regular DecreaseReference tasks before closing their endpoint connections.
     ambiguousCreateCleanupPool_.reset();
     releasePool_.reset();

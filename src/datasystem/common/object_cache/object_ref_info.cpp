@@ -22,7 +22,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
+#include <limits>
+#include <new>
 
+#include "datasystem/common/flags/common_flags.h"
 #include "datasystem/common/immutable_string/immutable_string.h"
 #include "datasystem/common/inject/inject_point.h"
 #include "datasystem/common/log/log.h"
@@ -38,6 +42,7 @@
 #include "datasystem/common/util/strings_util.h"
 #include "datasystem/common/util/thread_local.h"
 #include "datasystem/common/util/timer.h"
+#include "datasystem/common/util/uri.h"
 #include "datasystem/common/util/uuid_generator.h"
 #include "datasystem/utils/status.h"
 
@@ -209,6 +214,154 @@ void SharedMemoryRefTable::AddShmUnits(TbbMemoryClientRefTable::const_accessor &
         metrics::GetGauge(static_cast<uint16_t>(metrics::KvMetricId::WORKER_SHM_REF_TABLE_BYTES))
             .Inc(static_cast<int64_t>(firstRefBytes));
     }
+}
+
+Status SharedMemoryRefTable::InitHixlWriteBudget()
+{
+    constexpr uint64_t bytesPerMiB = 1024ULL * 1024;
+    uint64_t limitMb = FLAGS_hixl_d2rh_protected_memory_mb;
+    const char *env = std::getenv("DS_HIXL_D2RH_PROTECTED_MEMORY_MB");
+    if (env != nullptr) {
+        const std::string value(env);
+        CHECK_FAIL_RETURN_STATUS(!value.empty() && value.find_first_not_of("0123456789") == std::string::npos
+                                     && Uri::StrToUint64(env, limitMb), K_INVALID,
+                                 "DS_HIXL_D2RH_PROTECTED_MEMORY_MB must be an unsigned integer in MiB");
+    }
+    CHECK_FAIL_RETURN_STATUS(limitMb > 0 && limitMb <= std::numeric_limits<uint64_t>::max() / bytesPerMiB,
+                             K_INVALID, "HIXL D2RH protected memory budget must be positive and fit in uint64 bytes");
+    hixlWriteLimitBytes_ = limitMb * bytesPerMiB;
+    LOG(INFO) << "HIXL D2RH protected memory budget: limit_mb=" << limitMb
+              << ", limit_bytes=" << hixlWriteLimitBytes_ << ", max_allocations=" << MAX_HIXL_WRITE_ALLOCATIONS;
+    return Status::OK();
+}
+
+Status SharedMemoryRefTable::CloseHixlWriteAdmissionAndWait(std::chrono::milliseconds timeout)
+{
+    std::unique_lock<std::mutex> lock(hixlWriteMutex_);
+    hixlWriteAdmissionClosed_ = true;
+    CHECK_FAIL_RETURN_STATUS(
+        hixlWriteDrainCv_.wait_for(lock, timeout, [this] { return hixlWriteAllocations_ == 0 && hixlWriteBytes_ == 0; }),
+        K_NOT_READY, FormatString("Waiting for D2RH completion: pending_allocations=%zu, pending_bytes=%llu",
+                                  hixlWriteAllocations_, hixlWriteBytes_));
+    return Status::OK();
+}
+
+Status SharedMemoryRefTable::ReserveHixlWriteBudget(uint64_t bytes, size_t count)
+{
+    std::lock_guard<std::mutex> lock(hixlWriteMutex_);
+    CHECK_FAIL_RETURN_STATUS(!hixlWriteAdmissionClosed_, K_SCALE_DOWN, "Worker is draining D2RH writes");
+    CHECK_FAIL_RETURN_STATUS(bytes <= hixlWriteLimitBytes_ && count <= MAX_HIXL_WRITE_ALLOCATIONS, K_OUT_OF_MEMORY,
+                             FormatString("HIXL write batch exceeds the protected memory budget: requested_bytes=%llu, "
+                                          "limit_bytes=%llu, requested_allocations=%zu, max_allocations=%zu",
+                                          bytes, hixlWriteLimitBytes_, count, MAX_HIXL_WRITE_ALLOCATIONS));
+    CHECK_FAIL_RETURN_STATUS(hixlWriteBytes_ <= hixlWriteLimitBytes_ - bytes
+                                 && hixlWriteAllocations_ <= MAX_HIXL_WRITE_ALLOCATIONS - count, K_OUT_OF_MEMORY,
+                             FormatString("HIXL pending writes exhausted their memory budget: requested_bytes=%llu, "
+                                          "pending_bytes=%llu, limit_bytes=%llu, requested_allocations=%zu, "
+                                          "pending_allocations=%zu, max_allocations=%zu",
+                                          bytes, hixlWriteBytes_, hixlWriteLimitBytes_, count,
+                                          hixlWriteAllocations_, MAX_HIXL_WRITE_ALLOCATIONS));
+    hixlWriteBytes_ += bytes;
+    hixlWriteAllocations_ += count;
+    return Status::OK();
+}
+
+void SharedMemoryRefTable::ReleaseHixlWriteBudget(uint64_t bytes, size_t count)
+{
+    std::lock_guard<std::mutex> lock(hixlWriteMutex_);
+    ReleaseHixlWriteBudgetLocked(bytes, count);
+}
+
+void SharedMemoryRefTable::ReleaseHixlWriteBudgetLocked(uint64_t bytes, size_t count)
+{
+    hixlWriteBytes_ -= bytes;
+    hixlWriteAllocations_ -= count;
+    if (hixlWriteAdmissionClosed_ && hixlWriteAllocations_ == 0 && hixlWriteBytes_ == 0) {
+        hixlWriteDrainCv_.notify_all();
+    }
+}
+
+Status SharedMemoryRefTable::ProtectHixlWrites(
+    const ClientKey &clientId, const std::vector<std::shared_ptr<ShmUnit>> &units,
+    uint64_t reservedBytes, size_t reservedCount)
+{
+    std::lock_guard<std::mutex> lock(hixlWriteMutex_);
+    CHECK_FAIL_RETURN_STATUS(reservedBytes <= hixlWriteBytes_ && reservedCount <= hixlWriteAllocations_, K_INVALID,
+                             "HIXL write budget was not reserved");
+    uint64_t bytes = 0;
+    size_t count = 0;
+    for (const auto &unit : units) {
+        if (unit == nullptr) {
+            continue;
+        }
+        CHECK_FAIL_RETURN_STATUS(unit->size <= reservedBytes - bytes, K_INVALID, "HIXL write exceeds its reservation");
+        CHECK_FAIL_RETURN_STATUS(hixlWrites_.find(unit->GetId()) == hixlWrites_.end(), K_DUPLICATED,
+                                 "HIXL allocation is already protected");
+        bytes += unit->size;
+        ++count;
+    }
+    CHECK_FAIL_RETURN_STATUS(count <= reservedCount, K_INVALID, "HIXL allocation count exceeds its reservation");
+    size_t insertedUntil = 0;
+    bool committed = false;
+    Raii rollback([&]() {
+        if (!committed) {
+            for (size_t i = 0; i < insertedUntil; ++i) {
+                if (units[i] != nullptr) {
+                    hixlWrites_.erase(units[i]->GetId());
+                }
+            }
+        }
+    });
+    try {
+        for (size_t i = 0; i < units.size(); ++i) {
+            if (units[i] != nullptr) {
+                INJECT_POINT("SharedMemoryRefTable.ProtectHixlWrites.insert", []() -> Status {
+                    throw std::bad_alloc();
+                });
+                CHECK_FAIL_RETURN_STATUS(hixlWrites_.emplace(units[i]->GetId(), HixlWriteOwner{ clientId, units[i] }).second,
+                                         K_DUPLICATED, "Duplicate HIXL allocation in batch");
+            }
+            insertedUntil = i + 1;
+        }
+    } catch (const std::bad_alloc &) {
+        RETURN_STATUS(K_OUT_OF_MEMORY, "Failed to protect HIXL write allocations");
+    }
+    ReleaseHixlWriteBudgetLocked(reservedBytes - bytes, reservedCount - count);
+    committed = true;
+    return Status::OK();
+}
+
+Status SharedMemoryRefTable::CompleteHixlWrites(const std::string &tenantId, const ClientKey &clientId,
+                                               const std::vector<ShmKey> &ids, HixlRelease mode,
+                                               std::vector<std::shared_ptr<ShmUnit>> &completed)
+{
+    std::lock_guard<std::mutex> lock(hixlWriteMutex_);
+    try {
+        std::unordered_set<ShmKey> unique;
+        for (const auto &id : ids) {
+            const auto it = hixlWrites_.find(id);
+            if (mode == HixlRelease::CLEANUP && it == hixlWrites_.end()) {
+                continue;
+            }
+            CHECK_FAIL_RETURN_STATUS(it != hixlWrites_.end() && unique.emplace(id).second, K_INVALID,
+                                     "Invalid HIXL completion allocation");
+            CHECK_FAIL_RETURN_STATUS(it->second.clientId == clientId && it->second.unit->GetTenantId() == tenantId,
+                                     K_NOT_AUTHORIZED, "HIXL completion does not own the protected allocation");
+        }
+        completed.reserve(completed.size() + unique.size());
+    } catch (const std::bad_alloc &) {
+        RETURN_STATUS(K_OUT_OF_MEMORY, "Failed to prepare HIXL allocation completion");
+    }
+    for (const auto &id : ids) {
+        auto it = hixlWrites_.find(id);
+        if (it == hixlWrites_.end()) {
+            continue;
+        }
+        ReleaseHixlWriteBudgetLocked(it->second.unit->size, 1);
+        completed.emplace_back(std::move(it->second.unit));
+        hixlWrites_.erase(it);
+    }
+    return Status::OK();
 }
 
 Status SharedMemoryRefTable::RemoveShmUnit(const ClientKey &clientId, const ShmKey &shmId,

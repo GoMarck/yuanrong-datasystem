@@ -46,7 +46,8 @@ struct MetaInfo {
 class __attribute((visibility("default"))) HeteroClient : public std::enable_shared_from_this<HeteroClient> {
 public:
     /// \brief Constructor a HeteroClient.
-    /// \param[in] connectOptions The connection options.
+    /// \param[in] connectOptions The connection options. In HiXL builds with the HCCS transport selected, reads use the bound Worker
+    ///     and synchronous device writes follow the configured placement policy.
     explicit HeteroClient(const ConnectOptions &connectOptions = {});
 
     /// \brief Destructor.
@@ -76,6 +77,9 @@ public:
     /// \brief Pre-register device memory regions for RemoteH2D/HCCS transfers.
     ///     Call this before MGetH2D when the following MGetH2D destination blobs will be allocated from these regions.
     ///     Datasystem keeps the device memory registrations until the client shuts down.
+    ///     Register source arenas before synchronous HIXL D2RH writes
+    ///     on one device per SDK process. With enableRemoteH2D=true, also registers the ranges for RH2D reads.
+    ///     Keep it allocated until shutdown; after a transfer error, keep it until process exit.
     /// \param[in] devPtrs Starting addresses of the device memory regions.
     /// \param[in] sizes Sizes of the device memory regions in bytes.
     /// \return K_OK on success; the error code otherwise.
@@ -87,6 +91,8 @@ public:
     /// \param[in] devBlobList Pointers to the HBM memory in a group of devices. Data is obtained from these pointers
     ///     and written to the key of the host. If the DeviceBlobList contains multiple HBM pointers, the data is
     ///     combined and written to the shared memory corresponding to the host key.
+    ///     On the HiXL routed path, remote targets require an enabled Worker and buffer pool.
+    ///     A same-host bound Worker uses the local D2H path. Existing keys are skipped before validating their payload descriptors.
     /// \param[in] setParam Configuration parameters for the MSetD2H operation.
     /// \return K_OK when the operation completes successfully; the error code otherwise.
     Status MSetD2H(const std::vector<std::string> &keys, const std::vector<DeviceBlobList> &devBlobList,
@@ -98,7 +104,7 @@ public:
     /// \param[in] setParam Configuration parameters for the MSetD2H operation.
     /// \param[out] outLocalSetKeys Optional keys confirmed to be newly set on the connected Worker by this call.
     ///     The vector is cleared when the call begins. Existing local keys and unconfirmed publish results are
-    ///     excluded.
+    ///     excluded. A connected Worker can be on another host.
     ///     It may be empty when K_OK is returned if no key was newly set. If an error is returned after a trusted
     ///     publish response, it may contain keys confirmed successfully set by the partial operation; it remains empty
     ///     when no publish result was confirmed.
@@ -114,6 +120,7 @@ public:
     Status Delete(const std::vector<std::string> &keys, std::vector<std::string> &failedKeys);
 
     /// @brief For device object Async set multiple objects, and return before publish rpc called.
+    ///     Uses the existing bound-Worker path; routed HIXL D2RH writes are synchronous only.
     /// \param[in] keys Keys in the host. Constraint: The number of keys cannot exceed 10,000.
     ///     For performance reasons, only the validity of the first key is validated.
     /// \param[in] devBlobList Pointers to the HBM memory in a group of devices. Data is obtained from these pointers

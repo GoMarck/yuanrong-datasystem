@@ -110,7 +110,9 @@ using P2PPeerTable = tbb::concurrent_hash_map<std::string, P2PPeer>;
 class __attribute((visibility("default"))) ObjectClientImpl : public std::enable_shared_from_this<ObjectClientImpl> {
     friend class WorkerFailover;
 public:
-    explicit ObjectClientImpl(const ConnectOptions &connectOptions);
+    enum class DeviceAccessMode { FOLLOW_LOCAL_CACHE, BOUND_READ_ROUTED_WRITE };
+    explicit ObjectClientImpl(const ConnectOptions &connectOptions,
+                              DeviceAccessMode deviceAccessMode = DeviceAccessMode::FOLLOW_LOCAL_CACHE);
 
     ~ObjectClientImpl();
 
@@ -766,6 +768,8 @@ private:
     /**
      * @brief The core synchronous implementation shared by MSetD2H and AsyncMSetD2H.
      */
+    Status MSetD2HRouted(const std::vector<std::string> &keys, const std::vector<DeviceBlobList> &blobs,
+                         const SetParam &param, std::vector<std::string> *confirmedKeys);
     Status MSetD2HImpl(const std::vector<std::string> &objectKeys, const std::vector<DeviceBlobList> &devBlobList,
                        const SetParam &setParam, std::vector<std::string> *outLocalSetKeys);
 
@@ -1416,6 +1420,11 @@ private:
     uint64_t fastTransportMemSize_;
     SensitiveValue token_;
     std::string tenantId_;
+    bool UseRoutedDeviceWrites() const
+    {
+        return deviceAccessMode_ == DeviceAccessMode::BOUND_READ_ROUTED_WRITE;
+    }
+    const DeviceAccessMode deviceAccessMode_;
     bool enableLocalCache_ = true;
     client::DataPlacementPolicy dataPlacementPolicy_ = client::DataPlacementPolicy::PREFERRED_SAME_NODE;
     std::shared_ptr<Signature> signature_{ nullptr };

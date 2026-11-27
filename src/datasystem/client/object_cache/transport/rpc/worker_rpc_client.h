@@ -103,6 +103,9 @@ public:
     virtual Status InvokeDecreaseReferences(const TransportRequestContext &context,
                                             const std::vector<ShmKey> &shmIds, bool delayRelease = false);
 
+    /** @brief Release D2RH targets after confirming no DMA can still access them. */
+    Status ReleaseFinishedHixlWrites(const TransportRequestContext &context, const std::vector<ShmKey> &shmIds);
+
     /** @brief Exchange URMA connection data over this worker's cached brpc channel. */
     virtual Status ExchangeUrmaConnectInfo(UrmaHandshakeRspPb &response);
 
@@ -193,6 +196,9 @@ protected:
     void ObserveUbHealthSummary(const UbHealthSummaryPb &encoded);
 
 private:
+    Status DecreaseReferences(const TransportRequestContext &context, const std::vector<ShmKey> &shmIds,
+                              bool delayRelease, bool releaseHixlWrite);
+
     HostPort workerAddress_;
     std::shared_ptr<Signature> signature_;
     BrpcChannelConfig channelConfig_;

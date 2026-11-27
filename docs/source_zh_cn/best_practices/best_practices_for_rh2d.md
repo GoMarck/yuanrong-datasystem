@@ -605,3 +605,14 @@ acl错误码107001对应无效的Device ID，请检查Device ID是否合法。�
 ::::
 
 其他acl错误码可以参考[aclError定义](https://www.hiascend.com/document/detail/zh/CANNCommunityEdition/850/API/appdevgapi/aclcppdevg_03_1345.html)
+
+## 配合同步 D2RH 写入使用
+
+在包含 HiXL 的构建中，可以让同一个 HeteroClient 同时执行跨节点写入和读回。每个 SDK 进程绑定一张 NPU，Worker 使用 `remote_h2d_device_ids` 配置设备列表。每个 SDK communicator 在同一个 Worker 上的读写使用同一张卡。
+
+1. 在目标 Worker 上设置 `--enable_hixl_d2rh true`、`--remote_h2d_link_type HCCS` 和非零的 `--remote_h2d_hccs_buffer_pool`。所有 SDK 和 Worker 使用配套版本。
+2. 创建 SDK 前设置 `DS_RH2D_LINK_TYPE=HCCS`、`DS_RH2D_HCCS_BUFFER_POOL` 和可被对端访问的 `DS_HIXL_D2RH_LOCAL_IP`。需要按元数据归属节点写入时，Python 构造参数使用 `data_placement_policy=DataPlacementPolicy.PREFERRED_META_OWNER`。默认策略优先同节点。
+3. 使用 `pre_register_device_memory` 注册应用自己的设备源内存。开启 `enable_remote_h2d=True` 时一并注册读回用的设备目标内存。Worker 分配远端主机内存。
+4. 使用同步 `mset_d2h` 或 `mset_d2h_from_multi_buffers` 写入。写到同机绑定 Worker 时复用本地 D2H。读回调用 `mget_h2d`。按单 key 核对 SDK access 日志中的 API 和 `transportType:HIXL`，可分别确认两个方向。
+
+每个 Worker 默认最多保护 256 MiB、1024 个在途分配。字节上限可通过 `--hixl_d2rh_protected_memory_mb` 调整，也可在 Worker 启动前设置优先级更高的 `DS_HIXL_D2RH_PROTECTED_MEMORY_MB`。传输结果不确定时应停止复用源 arena 并保留至进程退出。硬件验证步骤见 [D2RH 双节点手工验证](../../../tests/st/device/README_hixl_d2rh.md)。

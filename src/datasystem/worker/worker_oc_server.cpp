@@ -544,8 +544,16 @@ WorkerOCServer::WorkerOCServer(HostPort workerAddr, HostPort bindAddr,
 {
 }
 
+void WorkerOCServer::DrainHixlWritesBeforeShutdown()
+{
+    if (objCacheClientWorkerSvc_ != nullptr) {
+        objCacheClientWorkerSvc_->DrainHixlWritesBeforeShutdown();
+    }
+}
+
 WorkerOCServer::~WorkerOCServer()
 {
+    DrainHixlWritesBeforeShutdown();
     StopScaleInExitPublisher();
     StopConnectionWarmup();
     StopWorkerMasterRpcWarmup();
@@ -3239,6 +3247,7 @@ void WorkerOCServer::StopRebalanceExecutor()
 
 Status WorkerOCServer::Shutdown()
 {
+    DrainHixlWritesBeforeShutdown();
     INJECT_POINT("worker.BeforeShutdown");
     LOG(INFO) << "WorkerOCServer::Shutdown started.";
     StopConnectionWarmup();

@@ -1263,6 +1263,8 @@ std::string StreamResponseParam::ToString() const
 const char *AccessTransportTracker::KindToName(AccessTransportKind kind)
 {
     switch (kind) {
+        case AccessTransportKind::HIXL:
+            return "HIXL";
         case AccessTransportKind::UB:
             return "UB";
         case AccessTransportKind::TCP:

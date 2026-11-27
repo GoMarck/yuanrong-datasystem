@@ -64,6 +64,27 @@
   - deprecated `Hget/Hset/Hdel/Hgetall` RPC declarations remain in `WorkerOCService` to preserve generated method
     indexes, but their handlers return `K_INVALID`. `UpdateObjectInfoPb.secondary_keys` is removed with field 5
     reserved, and worker cache-invalidation notifications no longer carry a field-level hash erase path.
+
+  - routed HeteroClient HIXL D2RH is opt-in via `enable_hixl_d2rh=false` by default. Create's existing MultiCreate
+    handler prepares the composed Blob header and returns the host address and an endpoint from the existing
+    process-owned RH2D HIXL transport. Both directions select the same per-device engine for each SDK communicator
+    UUID through MurmurHash3 modulo the immutable startup device list, including 16-device Workers. This avoids
+    importing one peer's IPC resources through multiple engines in the Worker process; distribution across SDKs
+    is statistical, not guaranteed full-card utilization. HCCS and a nonzero buffer pool are required.
+    MultiCreate requires and echoes `hixl_comm_id`; upgrade SDK and Workers together, and roll back both together.
+    Existing MultiPublish consumes
+    the authenticated client's WRITE-complete flag, retaining local ShmUnit owners throughout publication.
+    `SharedMemoryRefTable::ProtectHixlWrites/CompleteHixlWrites` holds strong owners independently of normal client
+    ref cleanup; incomplete writes remain protected while serving, with a per-Worker budget (default 256 MiB/1024 allocations).
+    Graceful shutdown drains reservations and protected targets before stopping completion RPCs; see below.
+    Startup flag `hixl_d2rh_protected_memory_mb` controls the byte limit; `DS_HIXL_D2RH_PROTECTED_MEMORY_MB`
+    overrides it, including dscli/JSON values. Worker service Init rejects nonpositive/overflow values and freezes
+    the effective limit in SharedMemoryRefTable before serving. Single-batch and cumulative reservations use that
+    same limit, including headers/metadata. Changes require restart; restoring the default needs no protocol change.
+    HIXL allocations disable aggregation; budget is reserved before allocator/eviction and canceled on failure.
+    Installing strong owners rolls back partial insertions on allocation errors before committing the reservation.
+    This is conservative quarantine, not a DMA fence or automatic failure recovery. Read
+    `tests/st/device/README_hixl_d2rh.md` before rollout/rollback and hardware fault testing.
   - global-reference decrease treats a missing worker-to-master API after a successful owner lookup as
     `K_RPC_UNAVAILABLE`; affected ids enter the existing RPC-failure path instead of being silently skipped during a
     connection rebuild window.
@@ -653,3 +674,15 @@ Coordinator WORKER adds a membership-prefix watch. `TopologyEngine::EnqueueCoord
 
 - Heartbeat recovery probes reuse the client RPC authentication mode and owned credential provider through
   `CreateRpcChannel`; the stable per-Worker connection group isolates stale pooled sockets without bypassing signing.
+
+### D2RH shutdown drain
+
+Worker shutdown closes D2RH reservations before invoking the embedding stop callback or stopping RPC handlers.
+Existing reservations may still roll back, install their protected owners, or complete through the authenticated
+publish/cleanup RPC. The drain finishes when both reserved bytes and allocations reach zero. Direct shutdown and
+destructor paths perform the same check before releasing the reference table or any arena.
+
+A lost acknowledgement or an ambiguous transfer can hold graceful shutdown open. The Worker keeps its RPC handlers
+and mapped targets alive and logs the outstanding count and bytes every 30 seconds. Operators must quiesce the
+sending devices before forcing process termination. Forced termination, node loss, and device-level DMA recovery
+require hardware validation.

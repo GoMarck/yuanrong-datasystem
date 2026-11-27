@@ -17,6 +17,24 @@ ds_cc_test_library(
     ],
 )
 
+# !2701 removed the client "add_client_miss_libs_fixme" link workaround, so bazel targets that enter
+# through the client closure no longer inherit the worker service providers their .so's reference.
+# Manual ST targets must list the providers explicitly to link.
+ST_WORKER_LINK_PROVIDERS = [
+    "//src/datasystem/common/l2cache:persistence_api",
+    "//src/datasystem/master/object_cache:master_worker_oc_local_api",
+    "//src/datasystem/worker:worker_liveness_check",
+    "//src/datasystem/worker:worker_oc_server",
+    "//src/datasystem/worker:worker_service_impl",
+    "//src/datasystem/worker/object_cache:worker_oc_eviction_manager",
+    "//src/datasystem/worker/object_cache:worker_worker_oc_service_impl",
+    "//src/datasystem/worker/object_cache/device:worker_device_oc_manager",
+    "//src/datasystem/worker/object_cache/service:worker_oc_service_delete_impl",
+    "//src/datasystem/worker/object_cache/service:worker_oc_service_multi_publish_impl",
+    "//src/datasystem/worker/object_cache/service:worker_oc_service_publish_impl",
+]
+
+
 KV_COMMON_DEPS = [
     ":kv_client_common",
     "//src/datasystem/client:datasystem",
@@ -220,7 +238,7 @@ ds_cc_test(
     name = "kv_client_transport_set_test",
     srcs = ["kv_client_transport_set_test.cpp"],
     tags = ["manual"],
-    deps = KV_COMMON_DEPS + [
+    deps = KV_COMMON_DEPS + ST_WORKER_LINK_PROVIDERS + [
         "//src/datasystem/common/ak_sk:ak_sk_manager",
         "//src/datasystem/common/flags:ds_flags",
         "//src/datasystem/common/kvstore/etcd:etcd_constants",
@@ -231,7 +249,10 @@ ds_cc_test(
         "//src/datasystem/common/util:request_context",
         "//src/datasystem/protos:cluster_topology_cc_proto",
         "//src/datasystem/worker/object_cache:worker_master_oc_api",
-    ],
+    ] + select({
+        "//:enable_urma_mock": ["//tests/support/datasystem/common/urma_mock:urma_mock_backend"],
+        "//conditions:default": [],
+    }),
 )
 
 ds_cc_test(
@@ -270,22 +291,6 @@ ds_cc_test(
     ],
 )
 
-# !2701 removed the client "add_client_miss_libs_fixme" link workaround, so bazel targets that enter
-# through the client closure no longer inherit the worker service providers their .so's reference.
-# Manual ST targets must list the providers explicitly to link.
-ST_WORKER_LINK_PROVIDERS = [
-    "//src/datasystem/common/l2cache:persistence_api",
-    "//src/datasystem/master/object_cache:master_worker_oc_local_api",
-    "//src/datasystem/worker:worker_liveness_check",
-    "//src/datasystem/worker:worker_oc_server",
-    "//src/datasystem/worker:worker_service_impl",
-    "//src/datasystem/worker/object_cache:worker_oc_eviction_manager",
-    "//src/datasystem/worker/object_cache:worker_worker_oc_service_impl",
-    "//src/datasystem/worker/object_cache/device:worker_device_oc_manager",
-    "//src/datasystem/worker/object_cache/service:worker_oc_service_delete_impl",
-    "//src/datasystem/worker/object_cache/service:worker_oc_service_multi_publish_impl",
-    "//src/datasystem/worker/object_cache/service:worker_oc_service_publish_impl",
-]
 
 ds_cc_test(
     name = "fast_isolation_guard_test",

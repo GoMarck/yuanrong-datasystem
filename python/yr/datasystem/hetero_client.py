@@ -20,7 +20,7 @@ from typing import List
 
 from yr.datasystem.lib import libds_client_py as ds
 from yr.datasystem.util import Validator as validator
-from yr.datasystem.kv_client import SetParam
+from yr.datasystem.kv_client import SetParam, DataPlacementPolicy
 
 
 class Future:
@@ -91,6 +91,7 @@ class HeteroClient:
         req_timeout_ms(int): The timeout of request, when req_timeout_ms<=0, req_timeout_ms is the same with
         connect_timeout_ms.
         enable_remote_h2d(bool): Whether the remote h2d feature is enabled or not, default off.
+        data_placement_policy(DataPlacementPolicy): Placement for synchronous routed D2H writes.
 
     Raises:
         TypeError: Raise a type error if the input parameter is invalid.
@@ -109,7 +110,8 @@ class HeteroClient:
         secret_key="",
         tenant_id="",
         req_timeout_ms=0,
-        enable_remote_h2d=False
+        enable_remote_h2d=False,
+        data_placement_policy=DataPlacementPolicy.PREFERRED_SAME_NODE
     ):
         """Constructor of the HeteroClient class
 
@@ -127,6 +129,8 @@ class HeteroClient:
             req_timeout_ms(int): The timeout of request, when req_timeout_ms<=0, req_timeout_ms is the same with
             connect_timeout_ms.
             enable_remote_h2d(bool): Whether the remote h2d feature is enabled or not, default off.
+            data_placement_policy(DataPlacementPolicy): Synchronous D2H write placement. Reads use the bound
+                Worker path; remote writes require a pre-registered HIXL arena and an enabled target Worker.
 
         Raises:
             TypeError: Raise a type error if the input parameter is invalid.
@@ -143,6 +147,7 @@ class HeteroClient:
             ["secret_key", secret_key, str],
             ["tenant_id", tenant_id, str],
             ["enable_remote_h2d", enable_remote_h2d, bool],
+            ["data_placement_policy", data_placement_policy, DataPlacementPolicy],
         ]
         validator.check_args_types(args)
         self._client = ds.HeteroClient(
@@ -157,7 +162,8 @@ class HeteroClient:
             secret_key,
             tenant_id,
             req_timeout_ms,
-            enable_remote_h2d
+            enable_remote_h2d,
+            data_placement_policy.value
         )
 
     @staticmethod
@@ -295,7 +301,10 @@ class HeteroClient:
 
     def pre_register_device_memory(self, dev_ptrs: list, sizes: list) -> None:
         """
-        Pre-register device memory ranges for remote H2D.
+        Pre-register device memory ranges for remote H2D and routed D2RH.
+
+        Each SDK process uses one device. When enable_remote_h2d=True, this registers the ranges for both
+        directions. Source and destination arenas may be registered together or in successive calls.
 
         Args:
             dev_ptrs(list): The start addresses of the device memory ranges.

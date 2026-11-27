@@ -25,6 +25,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <functional>
 #include <future>
@@ -389,10 +390,33 @@ Status RunFixedWorkerQuery(int32_t timeoutMs, const std::function<Status()> &que
                         FIXED_WORKER_RETRY_CODES, timeoutMs);
 }
 
+ObjectClientImpl::DeviceAccessMode SelectDeviceAccessMode(ObjectClientImpl::DeviceAccessMode requested,
+                                                         const ConnectOptions &options)
+{
+#ifdef ASCEND_HIXL_AVAILABLE
+    const char *linkType = std::getenv("DS_RH2D_LINK_TYPE");
+    const bool hccs = linkType != nullptr && linkType[0] != '\0'
+                          ? std::string(linkType) == "HCCS" : FLAGS_remote_h2d_link_type == "HCCS";
+    const char *pool = std::getenv("DS_RH2D_HCCS_BUFFER_POOL");
+    const std::string_view bufferPool =
+        pool != nullptr && pool[0] != '\0' ? std::string_view(pool) : std::string_view(FLAGS_remote_h2d_hccs_buffer_pool);
+    const bool legacyRead = options.enableRemoteH2D && bufferPool == "0:0"
+                            && options.dataPlacementPolicy == datasystem::DataPlacementPolicy::PREFERRED_SAME_NODE;
+    if (hccs && !legacyRead) {
+        return requested;
+    }
+#else
+    (void)options;
+    (void)requested;
+#endif
+    return ObjectClientImpl::DeviceAccessMode::FOLLOW_LOCAL_CACHE;
+}
+
 }  // namespace
 
-ObjectClientImpl::ObjectClientImpl(const ConnectOptions &connectOptions1)
-    : hostMemoryPinManager_(std::make_shared<client::HostMemoryPinManager>()),
+ObjectClientImpl::ObjectClientImpl(const ConnectOptions &connectOptions1, DeviceAccessMode deviceAccessMode)
+    : deviceAccessMode_(SelectDeviceAccessMode(deviceAccessMode, connectOptions1)),
+      hostMemoryPinManager_(std::make_shared<client::HostMemoryPinManager>()),
       shmRecoveryState_(std::make_unique<ShmRecoveryState>())
 {
     failover_ = std::make_unique<WorkerFailover>(*this);
@@ -408,7 +432,8 @@ ObjectClientImpl::ObjectClientImpl(const ConnectOptions &connectOptions1)
     transportToken_ = std::make_shared<const SensitiveValue>(connectOptions.token);
     tenantId_ = connectOptions.tenantId;
     signature_ = std::make_shared<Signature>(connectOptions.accessKey, connectOptions.secretKey);
-    enableLocalCache_ = connectOptions.enableLocalCache;
+    enableLocalCache_ =
+        deviceAccessMode_ == DeviceAccessMode::BOUND_READ_ROUTED_WRITE || connectOptions.enableLocalCache;
     dataPlacementPolicy_ = static_cast<client::DataPlacementPolicy>(connectOptions.dataPlacementPolicy);
     transportSignature_ = std::make_shared<Signature>(connectOptions.accessKey, connectOptions.secretKey);
     (void)authKeys_.SetClientPublicKey(connectOptions.clientPublicKey);
@@ -1341,6 +1366,7 @@ Status ObjectClientImpl::MGetH2D(const std::vector<std::string> &objectKeys,
     PerfPoint perfPoint(PerfKey::HETERO_CLIENT_MGET_H2D);
     auto access = AccessRecorder::Object(AccessRecorderKey::DS_HETERO_CLIENT_MGETH2D);
     access.ObjectKeysSummaryRef(objectKeys)
+        .TrackedTransportType()
         .DataSizeProvider([&devBlobList] { return CalculateDeviceBlobSize(devBlobList); });
 
     auto rc = CheckMGetH2DInput(objectKeys, devBlobList);
@@ -1601,6 +1627,7 @@ Status ObjectClientImpl::PreRegisterDeviceMemory(const std::vector<void *> &data
     (void)dataSize;
     return Status(K_NOT_SUPPORTED, "RemoteH2D device memory pre-registration is only supported in NPU builds.");
 #else
+    std::shared_lock<std::shared_timed_mutex> shutdownLock(shutdownMux_);
     RETURN_IF_NOT_OK(IsClientReady());
     CHECK_FAIL_RETURN_STATUS(!data.empty(), K_INVALID, "Device memory address list cannot be empty.");
     CHECK_FAIL_RETURN_STATUS(data.size() == dataSize.size(), K_INVALID,
@@ -1617,10 +1644,20 @@ Status ObjectClientImpl::PreRegisterDeviceMemory(const std::vector<void *> &data
     RETURN_IF_NOT_OK(acl::AclDeviceManager::Instance()->GetDeviceIdx(deviceId));
     CHECK_FAIL_RETURN_STATUS(deviceId >= 0, K_INVALID,
                              "Device id is not initialized. Set current device before pre-registering device memory.");
-    RETURN_IF_NOT_OK(UpdateClientRemoteH2DConfig(deviceId));
-    RETURN_IF_NOT_OK(RemoteH2DManager::Instance().PreRegisterDeviceMemory(data, dataSize));
+    if (enableRemoteH2D_) {
+        RETURN_IF_NOT_OK(UpdateClientRemoteH2DConfig(deviceId));
+    }
+    if (UseRoutedDeviceWrites()) {
+        RETURN_RUNTIME_ERROR_IF_NULL(transportLayer_);
+        return transportLayer_->RegisterD2RHDeviceMemory(deviceId, ipAddress_.Host(), data, dataSize);
+    }
+    if (!enableRemoteH2D_) {
+        RETURN_IF_NOT_OK(UpdateClientRemoteH2DConfig(deviceId));
+    }
     {
         std::lock_guard<std::mutex> lock(preRegisteredDeviceMemoryMutex_);
+        preRegisteredDeviceMemoryAddrs_.reserve(preRegisteredDeviceMemoryAddrs_.size() + data.size());
+        RETURN_IF_NOT_OK(RemoteH2DManager::Instance().PreRegisterDeviceMemory(data, dataSize));
         preRegisteredDeviceMemoryAddrs_.insert(preRegisteredDeviceMemoryAddrs_.end(), data.begin(), data.end());
     }
     return Status::OK();
@@ -1754,6 +1791,9 @@ static Status ImportSegAndReadHostMemory(const std::vector<H2DObjectView> &objec
     RETURN_IF_NOT_OK_PRINT_ERROR_MSG(
         RemoteH2DManager::Instance().ScatterBatch(storage.entries.data(), storage.entries.size(), p2pComm),
         FormatString("[RH2D][ScatterBatch][Client] ScatterBatch failed, entries=%zu", storage.entries.size()));
+    if (p2pComm->linkType == P2P_LINK_HCCS) {
+        AccessTransportTracker::Record(AccessTransportKind::HIXL);
+    }
 #endif
     return Status::OK();
 }
@@ -1859,6 +1899,7 @@ Status ObjectClientImpl::MSetD2H(const std::vector<std::string> &objectKeys,
     PerfPoint perfPoint(PerfKey::HETERO_CLIENT_MSET_D2H);
     auto access = AccessRecorder::Object(AccessRecorderKey::DS_HETERO_CLIENT_MSETD2H);
     access.ObjectKeysSummaryRef(objectKeys)
+        .TrackedTransportType()
         .DataSizeProvider([&devBlobList] { return CalculateDeviceBlobSize(devBlobList); });
     if (outLocalSetKeys != nullptr) {
         outLocalSetKeys->clear();
@@ -1868,10 +1909,8 @@ Status ObjectClientImpl::MSetD2H(const std::vector<std::string> &objectKeys,
         access.Result(rc).Record();
         return rc;
     }
-    // D2H never touches RemoteH2DManager, so this path must not initialize or update RH2D configuration.
-    // Device-id consistency is enforced later in DeviceDataCreate: ValidateDeviceDataCreateBlobs checks the
-    // whole batch shares one deviceIdx, and CheckDeviceValid verifies that device is available.
-    auto status = MSetD2HImpl(objectKeys, devBlobList, setParam, outLocalSetKeys);
+    auto status = UseRoutedDeviceWrites() ? MSetD2HRouted(objectKeys, devBlobList, setParam, outLocalSetKeys)
+                                          : MSetD2HImpl(objectKeys, devBlobList, setParam, outLocalSetKeys);
     access.Result(status).Record();
     return status;
 }
@@ -1904,6 +1943,76 @@ std::shared_future<AsyncResult> ObjectClientImpl::AsyncMSetD2H(const std::vector
             access->Result(rc).Record();
             return AsyncResult{ rc, {} };
         });
+}
+
+Status ObjectClientImpl::MSetD2HRouted(const std::vector<std::string> &keys,
+                                        const std::vector<DeviceBlobList> &blobs, const SetParam &param,
+                                        std::vector<std::string> *confirmedKeys)
+{
+    std::shared_lock<std::shared_timed_mutex> lock(shutdownMux_);
+    RETURN_IF_NOT_OK(IsClientReady());
+    RETURN_RUNTIME_ERROR_IF_NULL(transportLayer_);
+    ApiDeadlineGuard deadline(requestTimeoutMs_);
+    RETURN_IF_NOT_OK(ValidateDeviceDataCreateBlobs(blobs, blobs.front().deviceIdx));
+    RETURN_IF_NOT_OK(CheckDeviceValid({ static_cast<uint32_t>(blobs.front().deviceIdx) }));
+    auto routing = std::atomic_load(&routing_);
+    RETURN_RUNTIME_ERROR_IF_NULL(routing);
+    std::unordered_map<std::string, size_t> indexes;
+    indexes.reserve(keys.size());
+    for (size_t i = 0; i < keys.size(); ++i) {
+        CHECK_FAIL_RETURN_STATUS(indexes.emplace(keys[i], i).second, K_INVALID, "Duplicate D2H object key");
+    }
+    std::unordered_map<HostPort, std::vector<std::string>> groups;
+    RETURN_IF_NOT_OK(routing->SelectWorkers(keys, dataPlacementPolicy_, client::WorkerAccessAction::SET,
+                                            groups, MergeWriteTargetExclusions({})));
+    const bool boundIsLocal = workerApi_->IsShmEnable()
+                              || transportLayer_->IsSameHostWorker(workerApi_->hostPort_);
+    if (groups.size() == 1 && boundIsLocal && groups.begin()->first == workerApi_->hostPort_) {
+        lock.unlock();
+        return MSetD2HImpl(keys, blobs, param, confirmedKeys);
+    }
+    Status lastRc;
+    for (const auto &group : groups) {
+        if (boundIsLocal && group.first == workerApi_->hostPort_) {
+            std::vector<DeviceBlobList> localBlobs;
+            localBlobs.reserve(group.second.size());
+            for (const auto &key : group.second) {
+                localBlobs.push_back(blobs[indexes.at(key)]);
+            }
+            lock.unlock();
+            auto rc = MSetD2HImpl(group.second, localBlobs, param, confirmedKeys);
+            lock.lock();
+            RETURN_IF_NOT_OK(IsClientReady());
+            RETURN_RUNTIME_ERROR_IF_NULL(transportLayer_);
+            if (rc.IsError()) { lastRc = rc; }
+            continue;
+        }
+        CHECK_FAIL_RETURN_STATUS(!transportLayer_->IsSameHostWorker(group.first), K_NOT_SUPPORTED,
+                                 "Connect to the selected same-host Worker for local D2H");
+        std::vector<const DeviceBlobList *> sources;
+        sources.reserve(group.second.size());
+        for (const auto &key : group.second) {
+            auto it = indexes.find(key);
+            CHECK_FAIL_RETURN_STATUS(it != indexes.end(), K_RUNTIME_ERROR, "Routing returned an unknown D2H key");
+            sources.push_back(&blobs[it->second]);
+        }
+        SetRouteContext route;
+        RETURN_IF_NOT_OK(BuildSetRouteContext(group.first, route));
+        client::TransportCreateParam create;
+        create.requestContext = BuildTransportRequestContext();
+        create.writeMode = param.writeMode;
+        create.subTimeoutMs = requestTimeoutMs_;
+        client::TransportSetParam publish;
+        publish.requestContext = create.requestContext;
+        publish.existence = param.existence;
+        publish.ttlSecond = param.ttlSecond;
+        publish.subTimeoutMs = requestTimeoutMs_;
+        client::TransportMSetResult result;
+        auto *boundKeys = group.first == workerApi_->hostPort_ ? confirmedKeys : nullptr;
+        auto rc = transportLayer_->MSetDevice(group.first, group.second, sources, create, publish, result, boundKeys);
+        if (rc.IsError()) { lastRc = rc; }
+    }
+    return lastRc;
 }
 
 Status ObjectClientImpl::MSetD2HImpl(const std::vector<std::string> &objectKeys,
@@ -4774,7 +4883,10 @@ Status ObjectClientImpl::UpdateClientRemoteH2DConfig(int32_t devId)
     if (devId_ >= 0 && devId_ != devId) {
         LOG(WARNING) << "The client device id is changing from " << devId_ << " to " << devId;
     }
-    RETURN_IF_NOT_OK(SetClientRemoteH2DConfig(enableRemoteH2D_, devId, ipAddress_.Host()));
+    const char *localIp = std::getenv("DS_HIXL_D2RH_LOCAL_IP");
+    const auto &endpointIp = UseRoutedDeviceWrites() && localIp != nullptr && localIp[0] != '\0'
+                                ? std::string(localIp) : ipAddress_.Host();
+    RETURN_IF_NOT_OK(SetClientRemoteH2DConfig(enableRemoteH2D_, devId, endpointIp));
     devId_ = devId;
     return Status::OK();
 }

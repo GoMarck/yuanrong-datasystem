@@ -19,6 +19,8 @@
 
 #include "datasystem/common/flags/flags.h"
 
+DS_DECLARE_bool(enable_hixl_d2rh);
+DS_DECLARE_uint64(hixl_d2rh_protected_memory_mb);
 DS_DECLARE_bool(enable_sched_runtime);
 DS_DECLARE_uint32(node_timeout_s);
 DS_DECLARE_uint32(node_dead_timeout_s);

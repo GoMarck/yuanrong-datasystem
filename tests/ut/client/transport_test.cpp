@@ -2694,6 +2694,10 @@ TEST(WorkerRpcClientTest, DispatchesCreateAndSetWithoutBodySignatures)
     ASSERT_EQ(client.invokedDecreaseReferenceRequest.object_keys_size(), 2);
     EXPECT_EQ(client.invokedDecreaseReferenceRequest.object_keys(0), "shm-3");
     EXPECT_EQ(client.invokedDecreaseReferenceRequest.object_keys(1), "shm-4");
+    EXPECT_FALSE(client.invokedDecreaseReferenceRequest.release_hixl_write());
+    ASSERT_TRUE(client.ReleaseFinishedHixlWrites(context, { ShmKey::Intern("shm-4") }).IsOk());
+    EXPECT_TRUE(client.invokedDecreaseReferenceRequest.release_hixl_write());
+    EXPECT_FALSE(client.invokedDecreaseReferenceRequest.delay_release());
 }
 
 TEST(WorkerRpcClientTest, RecordsRoutedSetRpcTotalLatency)
@@ -4864,6 +4868,48 @@ TEST(DataPlaneManagerTest, UbRebuildCooldownIsFixedAtOneSecond)
     EXPECT_GE(deadline, before + cooldownMs);
     EXPECT_LE(deadline, after + cooldownMs);
 }
+
+#ifdef ASCEND_HIXL_AVAILABLE
+TEST(ObjectClientImplTest, HccsReadWithoutBufferPoolPreservesLegacyWrites)
+{
+    const char *link = std::getenv("DS_RH2D_LINK_TYPE");
+    const char *pool = std::getenv("DS_RH2D_HCCS_BUFFER_POOL");
+    Raii restore([hasLink = link != nullptr, oldLink = std::string(link ? link : ""),
+                  hasPool = pool != nullptr, oldPool = std::string(pool ? pool : "")] {
+        if (hasLink) { setenv("DS_RH2D_LINK_TYPE", oldLink.c_str(), 1); } else { unsetenv("DS_RH2D_LINK_TYPE"); }
+        if (hasPool) { setenv("DS_RH2D_HCCS_BUFFER_POOL", oldPool.c_str(), 1); } else { unsetenv("DS_RH2D_HCCS_BUFFER_POOL"); }
+    });
+    ASSERT_EQ(setenv("DS_RH2D_LINK_TYPE", "HCCS", 1), 0);
+    ASSERT_EQ(setenv("DS_RH2D_HCCS_BUFFER_POOL", "0:0", 1), 0);
+    ConnectOptions options;
+    options.host = "127.0.0.1";
+    options.port = 31501;
+    options.enableRemoteH2D = true;
+    options.enableLocalCache = false;
+    using Client = object_cache::ObjectClientImpl;
+    Client legacy(options, Client::DeviceAccessMode::BOUND_READ_ROUTED_WRITE);
+    EXPECT_FALSE(legacy.UseRoutedDeviceWrites());
+    EXPECT_FALSE(legacy.enableLocalCache_);
+
+    options.dataPlacementPolicy = datasystem::DataPlacementPolicy::PREFERRED_META_OWNER;
+    Client routed(options, Client::DeviceAccessMode::BOUND_READ_ROUTED_WRITE);
+    EXPECT_TRUE(routed.UseRoutedDeviceWrites());
+}
+#endif
+
+#if !defined(USE_NPU) && !defined(ASCEND_HIXL_AVAILABLE)
+TEST(ObjectClientImplTest, NonHixlDeviceModePreservesLocalCacheAndLegacyWrites)
+{
+    ConnectOptions options;
+    options.host = "127.0.0.1";
+    options.port = 31501;
+    options.enableLocalCache = false;
+    auto client = std::make_shared<object_cache::ObjectClientImpl>(
+        options, object_cache::ObjectClientImpl::DeviceAccessMode::BOUND_READ_ROUTED_WRITE);
+    EXPECT_FALSE(client->UseRoutedDeviceWrites());
+    EXPECT_FALSE(client->enableLocalCache_);
+}
+#endif
 
 TEST(ObjectClientImplTest, ProbeFallbackDoesNotExtendClientLifetimeOnRefreshThread)
 {

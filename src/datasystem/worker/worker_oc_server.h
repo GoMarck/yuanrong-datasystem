@@ -175,6 +175,7 @@ public:
      * @brief Check unfinished asynchronous tasks and active scale-in process if exists.
      */
     Status PreShutDown();
+    void DrainHixlWritesBeforeShutdown();
 
     master::MasterOCServiceImpl *GetOcMetaSvc()
     {

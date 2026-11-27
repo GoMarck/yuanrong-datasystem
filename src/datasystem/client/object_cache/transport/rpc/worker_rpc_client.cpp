@@ -583,6 +583,18 @@ Status WorkerRpcClient::InvokeDecreaseReference(const TransportRequestContext &c
 Status WorkerRpcClient::InvokeDecreaseReferences(const TransportRequestContext &context,
                                                  const std::vector<ShmKey> &shmIds, bool delayRelease)
 {
+    return DecreaseReferences(context, shmIds, delayRelease, false);
+}
+
+Status WorkerRpcClient::ReleaseFinishedHixlWrites(const TransportRequestContext &context,
+                                                 const std::vector<ShmKey> &shmIds)
+{
+    return DecreaseReferences(context, shmIds, false, true);
+}
+
+Status WorkerRpcClient::DecreaseReferences(const TransportRequestContext &context, const std::vector<ShmKey> &shmIds,
+                                          bool delayRelease, bool releaseHixlWrite)
+{
     CHECK_FAIL_RETURN_STATUS(IsAlive(), K_RPC_UNAVAILABLE,
                              "Routed worker RPC client is not initialized");
     CHECK_FAIL_RETURN_STATUS(!context.clientId.empty(), K_INVALID, "DecreaseReference client ID must not be empty");
@@ -597,6 +609,7 @@ Status WorkerRpcClient::InvokeDecreaseReferences(const TransportRequestContext &
     request.set_tenant_id(context.tenantId);
     request.set_is_routed(true);
     request.set_delay_release(delayRelease);
+    request.set_release_hixl_write(releaseHixlWrite);
     int32_t rpcTimeout;
     RETURN_IF_NOT_OK(GetRpcTimeout(channelConfig_.timeout_ms, rpcTimeout));
     RpcOptions options;

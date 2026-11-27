@@ -749,6 +749,11 @@ void WorkerOCServiceImpl::ConfigureDataMigrator(DataMigrator &migrator)
 
 Status WorkerOCServiceImpl::Init()
 {
+#ifdef ASCEND_HIXL_AVAILABLE
+    if (FLAGS_enable_hixl_d2rh) {
+        RETURN_IF_NOT_OK(memoryRefTable_->InitHixlWriteBudget());
+    }
+#endif
     InitMetaSize();
     SetUnhealthy();
     RETURN_IF_NOT_OK(StartTopologyHealthCoordinator());
@@ -880,6 +885,22 @@ void WorkerOCServiceImpl::ReleaseClientWriteAdmission()
         std::lock_guard<std::mutex> lock(clientWriteDrainMutex_);
         clientWriteDrainCv_.notify_all();
     }
+}
+
+void WorkerOCServiceImpl::DrainHixlWritesBeforeShutdown()
+{
+#ifdef ASCEND_HIXL_AVAILABLE
+    if (memoryRefTable_ != nullptr) {
+        constexpr auto reportInterval = std::chrono::seconds(30);
+        for (;;) {
+            auto status = memoryRefTable_->CloseHixlWriteAdmissionAndWait(reportInterval);
+            if (status.IsOk()) {
+                return;
+            }
+            LOG(WARNING) << "[Graceful exit] D2RH drain keeps RPC and target allocations alive: " << status.ToString();
+        }
+    }
+#endif
 }
 
 void WorkerOCServiceImpl::CloseClientWriteAdmission()
@@ -2470,7 +2491,15 @@ Status WorkerOCServiceImpl::DecreaseReference(const DecreaseReferenceRequest &re
     shmIds.reserve(req.object_keys().size());
     std::transform(req.object_keys().begin(), req.object_keys().end(), std::back_inserter(shmIds),
                    [](const auto &key) { return ShmKey::Intern(key); });
-    auto rc = DecreaseMemoryRef(ClientKey::Intern(req.client_id()), shmIds, req.delay_release());
+    const auto clientId = ClientKey::Intern(req.client_id());
+    if (req.release_hixl_write()) {
+        CHECK_FAIL_RETURN_STATUS(req.is_routed() && !req.delay_release(), K_INVALID,
+                                 "HIXL target release requires an immediate routed decrease");
+        std::vector<std::shared_ptr<ShmUnit>> released;
+        RETURN_IF_NOT_OK(memoryRefTable_->CompleteHixlWrites(tenantId, clientId, shmIds,
+                                                             SharedMemoryRefTable::HixlRelease::CLEANUP, released));
+    }
+    auto rc = DecreaseMemoryRef(clientId, shmIds, req.delay_release());
     if (rc.IsError()) {
         resp.mutable_error()->set_error_code(rc.GetCode());
         resp.mutable_error()->set_error_msg(rc.GetMsg());

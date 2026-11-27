@@ -345,6 +345,7 @@ public:
      * @brief Reject new client writes before the lossless-exit data snapshot is prepared.
      */
     void CloseClientWriteAdmission();
+    void DrainHixlWritesBeforeShutdown();
 
     /**
      * @brief Whether write admission is closed and every admitted client write has returned.

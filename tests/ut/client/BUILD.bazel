@@ -93,7 +93,10 @@ ds_cc_test(
         "//src/datasystem/protos:cluster_topology_cc_proto",
         "//src/datasystem/protos:object_posix_brpc",
         "//tests/ut:ut_common",
-    ],
+    ] + select({
+        "//:enable_urma_mock": ["//tests/support/datasystem/common/urma_mock:urma_mock_backend"],
+        "//conditions:default": [],
+    }),
 )
 
 ds_cc_test(

@@ -610,9 +610,36 @@ handler. Clearing the Router handler synchronously excludes later callback acces
     (`py::arg("enableLocalCache") = true`, `py::arg("dataPlacementPolicy") = PREFERRED_SAME_NODE`)
     so existing positional callers remain compatible; `DataPlacementPolicy` is registered as a pybind
     enum (`ds.DataPlacementPolicy.PREFERRED_SAME_NODE / REQUIRED_SAME_NODE / PREFERRED_META_OWNER`).
-    `HeteroClient` does not currently expose either kwarg; the underlying `ObjectClientImpl` still
-    honors `ConnectOptions::enableLocalCache` for D2H/H2D paths, so a future `HeteroClient` kwarg can
-    be added without changing the C++ side.
+    `HeteroClient` exposes only `data_placement_policy`, without an external local-cache toggle. Its internal
+    immutable `ObjectClientImpl::DeviceAccessMode::BOUND_READ_ROUTED_WRITE` is selected only with HiXL/HCCS,
+    keeps reads on the bound Worker
+    (`enableLocalCache_` true) and routes synchronous `MSetD2H` independently. The same client initializes transport
+    and routing for writes using master's existing endpoint admission; requests never toggle shared settings.
+    Generic ObjectClient/KVClient retain their original local-cache behavior and RH2D rejection when cache is off.
+    Synchronous device writes group keys through existing placement routing: same-host targets use SHM+D2H,
+    remote targets use `transport/data_plane/hixl_transporter` with MultiCreate/HIXL WRITE/MultiPublish.
+    Remote writes require one fixed pre-registered source device arena and HIXL buffer-pool mode; payload validation
+    skips existing keys, preserving their placeholder descriptors. `AsyncMSetD2H` retains the legacy bound-Worker path, without async routed writes.
+    `DS_HIXL_D2RH_LOCAL_IP` overrides the SDK endpoint IP for a remote bound Worker. The Worker flag
+    `enable_hixl_d2rh` defaults false. D2RH uses per-instance HIXL options from the environment without mutating
+    RH2D global flags; serial admission and Connect honor the remaining request deadline. With RH2D enabled,
+    preregistration shares the RH2D transport and its communicator UUID with D2RH. SDK processes still bind one
+    device each; DS_HIXL_D2RH_LOCAL_IP also supplies the RH2D local endpoint in this mode. MultiCreate carries
+    `hixl_comm_id` and validates the Worker's echo before DMA. The Worker hashes that UUID onto its startup device
+    list for both directions; D2RH-only clients generate a UUID per private engine. SDK and Workers must upgrade
+    together. The SDK engine explicitly sets `GlobalResourceConfig`'s `comm_resource_config.listen_port`
+    to its allocated endpoint port, avoiding a shared
+    default device-NIC port 16666; Worker engines retain device-NIC port 26666. HeteroClient pybind registration runs after KVClient
+    registers DataPlacementPolicy. An ambiguous native WRITE failure stops submissions and retains the engine/registration until
+    process exit; the caller must keep the source arena alive until then. Hardware timeout/fence semantics remain
+    unverified. Manual cases and constraints: `tests/st/device/README_hixl_d2rh.md`.
+    SDK HiXL transfer metrics (`hixl_d2rh_write_*`, `hixl_rh2d_read_*`) count native submitted batches,
+    transfer return errors, successful descriptor bytes and call latency. They exclude pre-submit connection errors
+    and local SHM traffic, include warmup/verification calls, and do not imply publication success.
+    Rebuilt SDKs emit them through the existing typed metrics exporter to kv_metrics.log or INFO; the HiXL wrapper
+    honors master's single log_monitor switch.
+    HiXL builds initialize the process-wide registry after successful HeteroClient Init, once logging has resolved
+    the log directory, matching KVClient/ObjectClient. This does not require an additional client instance.
   - remote H2D toggle
   - optional `IServiceDiscovery`; the public implementations are ETCD-backed `ServiceDiscovery` and coordinator-backed `CoordinatorServiceDiscovery`
   - fast transport shared-memory size
@@ -664,11 +691,12 @@ handler. Clearing the Router handler synchronously excludes later callback acces
   `H2DObjectView` entries for local/remote source grouping; async calls retain their existing owning state copy.
   Same-node H2D prepares flat pointer/reference arrays without copying `DeviceBlobList::blobs`, while RH2D uses one
   flat backing allocation for all `P2pScatterEntry` destination pointers and sizes in a source group.
-- Synchronous `MSetD2H` filters existing objects with request-scoped non-owning `D2HObjectView`/descriptor references
+- The bound-worker synchronous `MSetD2HImpl` filters existing objects with request-scoped non-owning `D2HObjectView`/descriptor references
   and moves the selected Buffer owners instead of deep-copying `DeviceBlobList::blobs`; async calls build the same
   views from `AsyncMSetD2HState`'s owning copy. The D2H composer and ACL/CUDA resource managers consume these refs,
   while local/remote `MultiPublish` serializes protobuf `blob_sizes` directly from them with pre-reserved
-  `RepeatedField` capacity. D2H does not initialize RH2D/HIXL configuration.
+  `RepeatedField` capacity. This bound-worker D2H path does not initialize RH2D/HIXL configuration; routed D2RH
+  uses the separate pre-registration path described above.
 - Python exposes both ETCD-backed `ServiceDiscovery` and coordinator-backed `CoordinatorServiceDiscovery`. When a
   `KVClient` is constructed with either discovery wrapper, the Python layer passes the native `IServiceDiscovery`
   object from the wrapper's public `native_discovery` property into the pybind `KVClient` constructor so the C++
@@ -1224,3 +1252,17 @@ vector+set per failover call.
   `tests/st/client/kv_cache/fast_isolation_guard_test.cpp`
   `FastIsolationGuardTest.LEVEL1_FailoverTrafficSpreadsToSurvivors` (manual external-cluster run against a
   coordinator-mode cluster; the bazel sandbox cannot launch ExternalCluster tests).
+
+### D2RH master integration boundaries
+
+- The automatic bound-read/routed-write mode is selected only in HiXL builds with HCCS configured at SDK construction
+  (`DS_RH2D_LINK_TYPE=HCCS` or the corresponding flag). Non-HiXL, GPU and RoCE builds retain the existing device write
+  path and local-cache setting. HCCS RH2D with the default same-node placement and disabled buffer pool (0:0) also
+  keeps legacy writes. Same-device arenas may be registered together or in separate calls. Non-HiXL TransportLayer does not instantiate HiXL transport or acquire its locks.
+- Same-host connected-Worker groups reuse DeviceDataCreate/MultiPublish, preserving existence filtering, NONE/NX publication
+  semantics and bound-Worker-only `outLocalSetKeys`. A single same-host connected-Worker group does not copy descriptors.
+  Other same-host Workers are not supported by this new route: connect to the target Worker for local D2H.
+- Remote D2RH validates payload ranges after filtering existing keys, so placeholders for existing keys do not cause
+  device transfers. Asynchronous writes keep their existing bound path.
+- Protobuf MultiCreateRspPb preserves URMA health field 3; HiXL endpoint/communicator append fields 4/5. Ordinary
+  URMA Create/Publish builders and worker failure recovery remain the master implementations.

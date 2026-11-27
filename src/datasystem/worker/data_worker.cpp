@@ -285,6 +285,10 @@ Status DataWorker::InvokeOnStop()
 
 Status DataWorker::FinishShutdown(Status firstError)
 {
+    if (worker_ != nullptr) {
+        // Completion RPCs still need the running server and the embedding application's callbacks.
+        worker_->DrainHixlWritesBeforeShutdown();
+    }
     PreserveFirstError(firstError, InvokeOnStop(), "Worker lifecycle onStop");
     PreserveFirstError(firstError, PreShutDown(), "Worker pre-shutdown");
     PreserveFirstError(firstError, ShutDown(), "Worker shutdown");

@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "datasystem/client/mmap_manager/host_memory_pin_manager.h"
+#include "datasystem/client/object_cache/transport/data_plane/hixl_transporter.h"
 #include "datasystem/client/object_cache/routing/ub_health_filter.h"
 #include "datasystem/client/object_cache/transport/data_plane/data_plane_manager.h"
 #include "datasystem/common/object_cache/ub_port_health.h"
@@ -130,6 +131,12 @@ public:
     {
         return rpcDispatcher_;
     }
+    Status RegisterD2RHDeviceMemory(int32_t deviceId, const std::string &localIp,
+                                    const std::vector<void *> &addresses, const std::vector<uint64_t> &sizes);
+    Status MSetDevice(const HostPort &worker, const std::vector<std::string> &keys,
+                      const std::vector<const DeviceBlobList *> &blobs, TransportCreateParam createParam,
+                      const TransportSetParam &setParam, TransportMSetResult &result,
+                      std::vector<std::string> *confirmedKeys);
 
     /**
      * @brief Create an ObjectBuffer with transport-native memory.
@@ -301,6 +308,7 @@ private:
         std::shared_ptr<IDataTransporter> &transporter, const std::shared_ptr<DataPlaneManager> &manager,
         const std::shared_ptr<TransportAdvisor> &advisor);
 
+    std::unique_ptr<HixlTransporter> hixlTransporter_;
     std::shared_ptr<DataPlaneManager> manager_;
     std::shared_ptr<WorkerRpcDispatcher> rpcDispatcher_;
     std::shared_ptr<TransportAdvisor> advisor_;

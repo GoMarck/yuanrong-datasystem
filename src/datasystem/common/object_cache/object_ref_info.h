@@ -18,6 +18,8 @@
 #define DATASYSTEM_COMMON_OBJECT_CACHE_OBJECTREFINFO_H
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -506,6 +508,24 @@ public:
      */
     Status RemoveClient(const ClientKey &clientId);
 
+    static constexpr uint64_t DEFAULT_MAX_HIXL_WRITE_BYTES = 256ULL * 1024 * 1024;
+    static constexpr size_t MAX_HIXL_WRITE_ALLOCATIONS = 1024;
+    // Configure before publishing this table to request handlers; the limit stays immutable while serving.
+    Status InitHixlWriteBudget();
+    Status CloseHixlWriteAdmissionAndWait(std::chrono::milliseconds timeout);
+    uint64_t GetHixlWriteLimitBytes() const
+    {
+        return hixlWriteLimitBytes_;
+    }
+    Status ReserveHixlWriteBudget(uint64_t bytes, size_t count);
+    void ReleaseHixlWriteBudget(uint64_t bytes, size_t count);
+    // Protect consumes the reservation only on success; the caller releases it on failure.
+    Status ProtectHixlWrites(const ClientKey &clientId, const std::vector<std::shared_ptr<ShmUnit>> &units,
+                             uint64_t reservedBytes, size_t reservedCount);
+    enum class HixlRelease { PUBLISH, CLEANUP };
+    Status CompleteHixlWrites(const std::string &tenantId, const ClientKey &clientId, const std::vector<ShmKey> &ids,
+                              HixlRelease mode, std::vector<std::shared_ptr<ShmUnit>> &completed);
+
     void ClientTableGetOrInsert(const ClientKey &clientId, TbbMemoryClientRefTable::const_accessor &accessor);
 
     void InitShmRefForClient(const ClientKey &clientId, bool supportMultiShmRefCount);
@@ -605,6 +625,18 @@ private:
     TbbMemoryClientRefTable clientRefTable_;
     // The map is shared memory id and the client ids referenced by this object.
     TbbMemoryObjectRefTable shmRefTable_;
+    struct HixlWriteOwner {
+        ClientKey clientId;
+        std::shared_ptr<ShmUnit> unit;
+    };
+    void ReleaseHixlWriteBudgetLocked(uint64_t bytes, size_t count);
+    std::mutex hixlWriteMutex_;
+    std::condition_variable hixlWriteDrainCv_;
+    bool hixlWriteAdmissionClosed_ = false;
+    std::unordered_map<ShmKey, HixlWriteOwner> hixlWrites_;
+    uint64_t hixlWriteLimitBytes_ = DEFAULT_MAX_HIXL_WRITE_BYTES;
+    uint64_t hixlWriteBytes_ = 0;
+    size_t hixlWriteAllocations_ = 0;
     struct MaybeExpiredShmItemCmp {
         bool operator()(const MaybeExpiredShmItem &lhs, const MaybeExpiredShmItem &rhs) const
         {

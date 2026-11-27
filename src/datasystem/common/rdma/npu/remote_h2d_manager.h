@@ -44,6 +44,8 @@
 DS_DECLARE_string(remote_h2d_device_ids);
 
 namespace datasystem {
+class HixlTransport;
+
 struct HostSegment {
     std::byte *data;
     std::uint64_t dataSize;
@@ -127,6 +129,9 @@ public:
      * @return Status of the call.
      */
     Status GetWorkerDeviceIds(std::vector<int32_t> *devIds = nullptr);
+
+    Status GetHixlWriteEndpoint(const std::string &commId, std::string &endpoint);
+    Status GetClientHixlTransport(int32_t deviceId, std::shared_ptr<HixlTransport> &transport);
 
     /**
      * @brief Get the root info for communicator connection.
@@ -269,6 +274,7 @@ private:
     std::vector<std::string> CheckDisconnectedClients();
     void CleanupDisconnectedClients(const std::vector<std::string> &disconnected);
     void EnsureStateMaps();
+    Status GetConnectionIdentityForComm(const std::string &commId, std::string &identity);
     static std::unique_ptr<RH2DTransportStrategy> CreateTransport();
 
     static std::string hccsLocalEndpointIp_;
@@ -290,7 +296,7 @@ private:
     static int32_t clientDeviceId_;
     // CommId to device id mapping
     tbb::concurrent_hash_map<std::string, int32_t> commDevIdMap_;
-    // Index for next devId to use in worker device ids (round-robin for GetDevIdForComm)
+    // Index for the next Worker device used by RoCE communicators.
     std::atomic<unsigned int> nextDevIdIndex_{ 0 };
     // Heartbeat variables
     std::thread heartbeatThread_;
@@ -303,7 +309,7 @@ private:
     int64_t heartbeatTimeoutS_{ 60 };
 
     // Transport strategy
-    std::unique_ptr<RH2DTransportStrategy> transport_;
+    std::shared_ptr<RH2DTransportStrategy> transport_;
     Status initStatus_;
     bool aclInitialized_{ false };
 };

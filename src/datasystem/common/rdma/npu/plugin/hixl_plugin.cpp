@@ -13,6 +13,7 @@
 
 #include "datasystem/common/rdma/npu/hixl_plugin_api.h"
 
+#include <acl/acl.h>
 #include <hixl/hixl.h>
 #include <hixl/hixl_types.h>
 
@@ -29,7 +30,34 @@ namespace {
 struct HixlEngineContext {
     std::unique_ptr<hixl::Hixl> engine;
     bool initialized = false;
-    std::vector<hixl::TransferOpDesc> transferDescriptors;
+    aclrtContext deviceContext = nullptr;
+};
+
+class DeviceContextGuard {
+public:
+    explicit DeviceContextGuard(aclrtContext target)
+    {
+        if (aclrtGetCurrentContext(&previous_) != ACL_SUCCESS) { previous_ = nullptr; }
+        if (previous_ != target) {
+            status_ = aclrtSetCurrentContext(target);
+            restore_ = status_ == ACL_SUCCESS;
+        }
+    }
+
+    ~DeviceContextGuard()
+    {
+        if (restore_ && previous_ != nullptr) { (void)aclrtSetCurrentContext(previous_); }
+    }
+
+    DeviceContextGuard(const DeviceContextGuard &) = delete;
+    DeviceContextGuard &operator=(const DeviceContextGuard &) = delete;
+
+    aclError GetStatus() const { return status_; }
+
+private:
+    aclrtContext previous_ = nullptr;
+    aclError status_ = ACL_SUCCESS;
+    bool restore_ = false;
 };
 
 bool IsValidString(DsHixlStringView value, bool allowEmpty)
@@ -119,7 +147,6 @@ DsHixlResult FinalizeEngine(DsHixlEngineHandle engine) noexcept
             context->engine->Finalize();
             context->initialized = false;
         }
-        context->transferDescriptors.clear();
         return DS_HIXL_OK;
     });
 }
@@ -158,6 +185,11 @@ DsHixlResult InitializeEngine(DsHixlEngineHandle engine, DsHixlStringView localE
             hixlOptions.emplace(ToAscendString(options[i].key), ToAscendString(options[i].value));
         }
 
+        const auto contextStatus = aclrtGetCurrentContext(&context->deviceContext);
+        if (contextStatus != ACL_SUCCESS || context->deviceContext == nullptr) {
+            SetVendorStatus(vendorStatus, contextStatus);
+            return DS_HIXL_RUNTIME_ERROR;
+        }
         hixl::Status status = context->engine->Initialize(ToAscendString(localEndpoint), hixlOptions);
         SetVendorStatus(vendorStatus, status);
         if (status == hixl::SUCCESS) {
@@ -177,6 +209,11 @@ DsHixlResult ConnectEngine(DsHixlEngineHandle engine, DsHixlStringView remoteEnd
             || !IsValidString(remoteEndpoint, false) || timeoutMs <= 0) {
             return DS_HIXL_INVALID_ARGUMENT;
         }
+        DeviceContextGuard deviceContext(context->deviceContext);
+        if (deviceContext.GetStatus() != ACL_SUCCESS) {
+            SetVendorStatus(vendorStatus, deviceContext.GetStatus());
+            return DS_HIXL_RUNTIME_ERROR;
+        }
         hixl::Status status = context->engine->Connect(ToAscendString(remoteEndpoint), timeoutMs);
         SetVendorStatus(vendorStatus, status);
         return status == hixl::ALREADY_CONNECTED ? DS_HIXL_OK : ToDsResult(status);
@@ -192,6 +229,11 @@ DsHixlResult DisconnectEngine(DsHixlEngineHandle engine, DsHixlStringView remote
         if (context == nullptr || context->engine == nullptr || !context->initialized
             || !IsValidString(remoteEndpoint, false) || timeoutMs <= 0) {
             return DS_HIXL_INVALID_ARGUMENT;
+        }
+        DeviceContextGuard deviceContext(context->deviceContext);
+        if (deviceContext.GetStatus() != ACL_SUCCESS) {
+            SetVendorStatus(vendorStatus, deviceContext.GetStatus());
+            return DS_HIXL_RUNTIME_ERROR;
         }
         hixl::Status status = context->engine->Disconnect(ToAscendString(remoteEndpoint), timeoutMs);
         SetVendorStatus(vendorStatus, status);
@@ -213,6 +255,11 @@ DsHixlResult RegisterMemory(DsHixlEngineHandle engine, const DsHixlRegisterMemor
             || request->address == 0 || request->length == 0 || !FitsSizeT(request->length)
             || (request->memoryType != DS_HIXL_MEMORY_DEVICE && request->memoryType != DS_HIXL_MEMORY_HOST)) {
             return DS_HIXL_INVALID_ARGUMENT;
+        }
+        DeviceContextGuard deviceContext(context->deviceContext);
+        if (deviceContext.GetStatus() != ACL_SUCCESS) {
+            SetVendorStatus(vendorStatus, deviceContext.GetStatus());
+            return DS_HIXL_RUNTIME_ERROR;
         }
         hixl::MemDesc descriptor{ request->address, static_cast<size_t>(request->length) };
         hixl::MemHandle handle = nullptr;
@@ -238,6 +285,11 @@ DsHixlResult DeregisterMemory(DsHixlEngineHandle engine, DsHixlMemHandle memoryH
         if (context == nullptr || context->engine == nullptr || !context->initialized || memoryHandle == nullptr) {
             return DS_HIXL_INVALID_ARGUMENT;
         }
+        DeviceContextGuard deviceContext(context->deviceContext);
+        if (deviceContext.GetStatus() != ACL_SUCCESS) {
+            SetVendorStatus(vendorStatus, deviceContext.GetStatus());
+            return DS_HIXL_RUNTIME_ERROR;
+        }
         hixl::Status status = context->engine->DeregisterMem(reinterpret_cast<hixl::MemHandle>(memoryHandle));
         SetVendorStatus(vendorStatus, status);
         return ToDsResult(status);
@@ -260,24 +312,30 @@ DsHixlResult TransferSync(DsHixlEngineHandle engine, const DsHixlTransferRequest
             return DS_HIXL_INVALID_ARGUMENT;
         }
 
-        context->transferDescriptors.clear();
-        context->transferDescriptors.reserve(request->descriptorCount);
+        DeviceContextGuard deviceContext(context->deviceContext);
+        if (deviceContext.GetStatus() != ACL_SUCCESS) {
+            SetVendorStatus(vendorStatus, deviceContext.GetStatus());
+            return DS_HIXL_RUNTIME_ERROR;
+        }
+        thread_local std::vector<hixl::TransferOpDesc> transferDescriptors;
+        transferDescriptors.clear();
+        transferDescriptors.reserve(request->descriptorCount);
         for (uint32_t i = 0; i < request->descriptorCount; ++i) {
             const auto &descriptor = request->descriptors[i];
             if (descriptor.localAddr == 0 || descriptor.remoteAddr == 0 || descriptor.length == 0
                 || !FitsSizeT(descriptor.length)) {
-                context->transferDescriptors.clear();
+                transferDescriptors.clear();
                 return DS_HIXL_INVALID_ARGUMENT;
             }
-            context->transferDescriptors.push_back(hixl::TransferOpDesc{ descriptor.localAddr, descriptor.remoteAddr,
-                                                                         static_cast<size_t>(descriptor.length) });
+            transferDescriptors.push_back(hixl::TransferOpDesc{ descriptor.localAddr, descriptor.remoteAddr,
+                                                               static_cast<size_t>(descriptor.length) });
         }
 
         hixl::TransferOp transferOperation =
             request->operation == DS_HIXL_TRANSFER_READ ? hixl::READ : hixl::WRITE;
         hixl::Status status = context->engine->TransferSync(ToAscendString(request->remoteEndpoint), transferOperation,
-                                                            context->transferDescriptors, request->timeoutMs);
-        context->transferDescriptors.clear();
+                                                          transferDescriptors, request->timeoutMs);
+        transferDescriptors.clear();
         SetVendorStatus(vendorStatus, status);
         return ToDsResult(status);
     });
